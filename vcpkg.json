@@ -1,0 +1,13 @@
+{
+  "name": "skia-relaydesk",
+  "version-string": "0.1.0",
+  "dependencies": [
+    {
+      "name": "skia",
+      "default-features": false,
+      "features": [
+        "gl"
+      ]
+    }
+  ]
+}
