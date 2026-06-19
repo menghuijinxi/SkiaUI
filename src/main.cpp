@@ -25,6 +25,7 @@
 #include "include/core/SkSurface.h"
 #include "include/core/SkTypeface.h"
 #include "include/ports/SkTypeface_win.h"
+#include <yoga/Yoga.h>
 
 #include <algorithm>
 #include <array>
@@ -43,6 +44,7 @@ constexpr int kBaseWidth = 1536;
 constexpr int kBaseHeight = 960;
 constexpr int kChromeHeight = 46;
 constexpr int kContentHeight = kBaseHeight - kChromeHeight;
+constexpr float kHeaderHeight = 148.0f;
 
 SkColor rgb(uint8_t r, uint8_t g, uint8_t b) {
     return SkColorSetRGB(r, g, b);
@@ -73,6 +75,64 @@ struct Device {
     bool online = true;
 };
 
+struct Layout {
+    float width = 0.0f;
+    float height = 0.0f;
+    Rect sidebar;
+    Rect chat;
+    Rect inspector;
+    Rect chatHeader;
+    Rect messages;
+    Rect composer;
+    Rect composerInput;
+    Rect composerSend;
+    Rect msgToday;
+    Rect msgAskBubble;
+    Rect msgAskTime;
+    Rect msgUploadBubble;
+    Rect msgUploadTime;
+    Rect msgUploadCheck;
+    Rect msgReportCard;
+    Rect msgThanksBubble;
+    Rect msgThanksTime;
+    Rect msgDesignCard;
+    Rect msgFinalBubble;
+    Rect msgFinalTime;
+    Rect msgFinalCheck;
+    Rect msgScrollbar;
+    float composerSmileX = 0.0f;
+    float composerPaperclipX = 0.0f;
+    float composerFolderX = 0.0f;
+    float sidebarW = 0.0f;
+    float chatLeft = 0.0f;
+    float chatRight = 0.0f;
+    float chatW = 0.0f;
+    float inspectorLeft = 0.0f;
+    float inspectorW = 0.0f;
+    float composerTop = 0.0f;
+    bool showInspector = true;
+};
+
+class YogaNode {
+public:
+    YogaNode() : node_(YGNodeNew()) {}
+    ~YogaNode() {
+        if (node_) {
+            YGNodeFree(node_);
+        }
+    }
+
+    YogaNode(const YogaNode&) = delete;
+    YogaNode& operator=(const YogaNode&) = delete;
+
+    YGNodeRef get() const {
+        return node_;
+    }
+
+private:
+    YGNodeRef node_ = nullptr;
+};
+
 class Renderer {
 public:
     Renderer() {
@@ -86,20 +146,7 @@ public:
 
     void draw(SkCanvas& canvas, int width, int height) {
         canvas.clear(rgb(248, 250, 252));
-        const float sx = static_cast<float>(width) / kBaseWidth;
-        const float sy = static_cast<float>(height) / kContentHeight;
-        const float s = std::max(0.1f, std::min(sx, sy));
-        const float drawWidth = kBaseWidth * s;
-        const float drawHeight = kContentHeight * s;
-        const float originX = (static_cast<float>(width) - drawWidth) * 0.5f;
-        const float originY = (static_cast<float>(height) - drawHeight) * 0.5f;
-
-        canvas.save();
-        canvas.translate(originX, originY);
-        canvas.scale(s, s);
-        canvas.translate(0, -kChromeHeight);
-        drawApp(canvas);
-        canvas.restore();
+        drawApp(canvas, makeLayout(static_cast<float>(width), static_cast<float>(height)));
     }
 
 private:
@@ -185,32 +232,385 @@ private:
         c.drawLine(x1, y1, x2, y2, stroke(color, width));
     }
 
-    void drawApp(SkCanvas& c) {
-        drawSidebar(c);
-        drawConversation(c);
-        drawInspector(c);
+    Rect layoutRect(YGNodeConstRef node, float offsetX = 0.0f, float offsetY = 0.0f) const {
+        return {offsetX + YGNodeLayoutGetLeft(node),
+                offsetY + YGNodeLayoutGetTop(node),
+                YGNodeLayoutGetWidth(node),
+                YGNodeLayoutGetHeight(node)};
     }
 
-    void drawSidebar(SkCanvas& c) {
-        const float x = 0;
-        const float y = 46;
-        const float w = 386;
-        c.drawRect(SkRect::MakeXYWH(x, y, w, 914), fill(rgb(252, 254, 255)));
-        line(c, 385.5f, 46, 385.5f, 960, rgb(216, 222, 229));
+    Rect childLayoutRect(YGNodeConstRef parent, YGNodeConstRef child, const Rect& offset) const {
+        return layoutRect(child, offset.x + YGNodeLayoutGetLeft(parent), offset.y + YGNodeLayoutGetTop(parent));
+    }
 
-        c.drawRRect(rr({22, 65, 43, 43}, 12), fill(rgb(0, 157, 153)));
-        centeredText(c, "林", {22, 65, 43, 43}, 23, SK_ColorWHITE, true);
-        text(c, "林一凡", 80, 82, 18, rgb(13, 17, 23), true);
-        text(c, "本机 · 192.168.1.8", 80, 103, 14, rgb(64, 74, 88));
-        drawGear(c, 344, 87, 12, rgb(90, 100, 115));
+    void setNodeSize(YGNodeRef node, float width, float height) const {
+        YGNodeStyleSetWidth(node, width);
+        YGNodeStyleSetHeight(node, height);
+        YGNodeStyleSetFlexShrink(node, 0.0f);
+    }
 
-        Rect search{23, 125, 340, 46};
+    void setMessageNode(YGNodeRef node, float width, float height, bool outgoing, float bottomGap) const {
+        setNodeSize(node, width, height);
+        YGNodeStyleSetAlignSelf(node, outgoing ? YGAlignFlexEnd : YGAlignFlexStart);
+        YGNodeStyleSetMargin(node, YGEdgeBottom, bottomGap);
+    }
+
+    Layout makeLayout(float width, float height) const {
+        Layout l;
+        l.width = width;
+        l.height = height;
+
+        YogaNode root;
+        YogaNode sidebar;
+        YogaNode chat;
+        YogaNode inspector;
+        YGNodeStyleSetWidth(root.get(), width);
+        YGNodeStyleSetHeight(root.get(), height);
+        YGNodeStyleSetFlexDirection(root.get(), YGFlexDirectionRow);
+        YGNodeStyleSetAlignItems(root.get(), YGAlignStretch);
+
+        YGNodeStyleSetWidthPercent(sidebar.get(), 30.0f);
+        YGNodeStyleSetMinWidth(sidebar.get(), 230.0f);
+        YGNodeStyleSetMaxWidth(sidebar.get(), 386.0f);
+        YGNodeStyleSetFlexShrink(sidebar.get(), 0.0f);
+
+        l.showInspector = width >= 1120.0f;
+        if (l.showInspector) {
+            YGNodeStyleSetWidthPercent(inspector.get(), 25.0f);
+            YGNodeStyleSetMinWidth(inspector.get(), 300.0f);
+            YGNodeStyleSetMaxWidth(inspector.get(), 384.0f);
+            YGNodeStyleSetFlexShrink(inspector.get(), 1.0f);
+        }
+
+        YGNodeStyleSetFlexGrow(chat.get(), 1.0f);
+        YGNodeStyleSetFlexShrink(chat.get(), 1.0f);
+        YGNodeStyleSetMinWidth(chat.get(), 440.0f);
+
+        YGNodeInsertChild(root.get(), sidebar.get(), 0);
+        YGNodeInsertChild(root.get(), chat.get(), 1);
+        if (l.showInspector) {
+            YGNodeInsertChild(root.get(), inspector.get(), 2);
+            YGNodeCalculateLayout(root.get(), width, height, YGDirectionLTR);
+            if (YGNodeLayoutGetWidth(inspector.get()) < 280.0f || YGNodeLayoutGetWidth(chat.get()) < 440.0f) {
+                YGNodeRemoveChild(root.get(), inspector.get());
+                l.showInspector = false;
+            }
+        }
+
+        YGNodeCalculateLayout(root.get(), width, height, YGDirectionLTR);
+
+        l.sidebar = layoutRect(sidebar.get());
+        l.chat = layoutRect(chat.get());
+        l.inspector = l.showInspector ? layoutRect(inspector.get()) : Rect{};
+
+        YogaNode chatRoot;
+        YogaNode header;
+        YogaNode messages;
+        YogaNode composer;
+        YGNodeStyleSetWidth(chatRoot.get(), l.chat.w);
+        YGNodeStyleSetHeight(chatRoot.get(), l.chat.h);
+        YGNodeStyleSetFlexDirection(chatRoot.get(), YGFlexDirectionColumn);
+
+        YGNodeStyleSetHeight(header.get(), kHeaderHeight);
+        YGNodeStyleSetFlexShrink(header.get(), 0.0f);
+
+        YGNodeStyleSetFlexGrow(messages.get(), 1.0f);
+        YGNodeStyleSetFlexShrink(messages.get(), 1.0f);
+
+        YGNodeStyleSetHeight(composer.get(), 112.0f);
+        YGNodeStyleSetFlexShrink(composer.get(), 0.0f);
+
+        YGNodeInsertChild(chatRoot.get(), header.get(), 0);
+        YGNodeInsertChild(chatRoot.get(), messages.get(), 1);
+        YGNodeInsertChild(chatRoot.get(), composer.get(), 2);
+        YGNodeCalculateLayout(chatRoot.get(), l.chat.w, l.chat.h, YGDirectionLTR);
+
+        l.chatHeader = layoutRect(header.get(), l.chat.x, l.chat.y);
+        l.messages = layoutRect(messages.get(), l.chat.x, l.chat.y);
+        l.composer = layoutRect(composer.get(), l.chat.x, l.chat.y);
+
+        YogaNode messageRoot;
+        YogaNode today;
+        YogaNode askRow;
+        YogaNode askBubble;
+        YogaNode askTime;
+        YogaNode uploadRow;
+        YogaNode uploadBubble;
+        YogaNode uploadTime;
+        YogaNode uploadCheck;
+        YogaNode reportCard;
+        YogaNode thanksRow;
+        YogaNode thanksBubble;
+        YogaNode thanksTime;
+        YogaNode designCard;
+        YogaNode finalRow;
+        YogaNode finalBubble;
+        YogaNode finalTime;
+        YogaNode finalCheck;
+        YGNodeStyleSetWidth(messageRoot.get(), l.messages.w);
+        YGNodeStyleSetHeight(messageRoot.get(), 700.0f);
+        YGNodeStyleSetFlexDirection(messageRoot.get(), YGFlexDirectionColumn);
+        YGNodeStyleSetPadding(messageRoot.get(), YGEdgeLeft, 30.0f);
+        YGNodeStyleSetPadding(messageRoot.get(), YGEdgeRight, 30.0f);
+        YGNodeStyleSetPadding(messageRoot.get(), YGEdgeTop, 16.0f);
+
+        setMessageNode(today.get(), 62.0f, 32.0f, false, 10.0f);
+        YGNodeStyleSetAlignSelf(today.get(), YGAlignCenter);
+
+        setNodeSize(askRow.get(), l.messages.w - 60.0f, 51.0f);
+        YGNodeStyleSetFlexDirection(askRow.get(), YGFlexDirectionRow);
+        YGNodeStyleSetAlignItems(askRow.get(), YGAlignCenter);
+        YGNodeStyleSetMargin(askRow.get(), YGEdgeBottom, 12.0f);
+        setNodeSize(askBubble.get(), 264.0f, 51.0f);
+        setNodeSize(askTime.get(), 48.0f, 24.0f);
+        YGNodeStyleSetMargin(askTime.get(), YGEdgeLeft, 12.0f);
+
+        setNodeSize(uploadRow.get(), l.messages.w - 60.0f, 51.0f);
+        YGNodeStyleSetFlexDirection(uploadRow.get(), YGFlexDirectionRow);
+        YGNodeStyleSetJustifyContent(uploadRow.get(), YGJustifyFlexEnd);
+        YGNodeStyleSetAlignItems(uploadRow.get(), YGAlignCenter);
+        YGNodeStyleSetMargin(uploadRow.get(), YGEdgeBottom, 18.0f);
+        setNodeSize(uploadBubble.get(), 171.0f, 51.0f);
+        setNodeSize(uploadTime.get(), 41.0f, 24.0f);
+        setNodeSize(uploadCheck.get(), 16.0f, 16.0f);
+        YGNodeStyleSetMargin(uploadTime.get(), YGEdgeLeft, 12.0f);
+        YGNodeStyleSetMargin(uploadCheck.get(), YGEdgeLeft, 8.0f);
+
+        setMessageNode(
+            reportCard.get(),
+            std::min(clampf(l.messages.w - 160.0f, 360.0f, 600.0f), std::max(240.0f, l.messages.w - 60.0f)),
+            141.0f,
+            true,
+            18.0f);
+
+        setNodeSize(thanksRow.get(), l.messages.w - 60.0f, 51.0f);
+        YGNodeStyleSetFlexDirection(thanksRow.get(), YGFlexDirectionRow);
+        YGNodeStyleSetAlignItems(thanksRow.get(), YGAlignCenter);
+        YGNodeStyleSetMargin(thanksRow.get(), YGEdgeBottom, 20.0f);
+        setNodeSize(thanksBubble.get(), 241.0f, 51.0f);
+        setNodeSize(thanksTime.get(), 48.0f, 24.0f);
+        YGNodeStyleSetMargin(thanksTime.get(), YGEdgeLeft, 12.0f);
+
+        setMessageNode(
+            designCard.get(),
+            std::min(clampf(l.messages.w - 90.0f, 380.0f, 668.0f), std::max(260.0f, l.messages.w - 60.0f)),
+            137.0f,
+            false,
+            20.0f);
+
+        setNodeSize(finalRow.get(), l.messages.w - 60.0f, 51.0f);
+        YGNodeStyleSetFlexDirection(finalRow.get(), YGFlexDirectionRow);
+        YGNodeStyleSetJustifyContent(finalRow.get(), YGJustifyFlexEnd);
+        YGNodeStyleSetAlignItems(finalRow.get(), YGAlignCenter);
+        setNodeSize(finalBubble.get(), 222.0f, 51.0f);
+        setNodeSize(finalTime.get(), 41.0f, 24.0f);
+        setNodeSize(finalCheck.get(), 16.0f, 16.0f);
+        YGNodeStyleSetMargin(finalTime.get(), YGEdgeLeft, 12.0f);
+        YGNodeStyleSetMargin(finalCheck.get(), YGEdgeLeft, 8.0f);
+
+        YGNodeInsertChild(askRow.get(), askBubble.get(), 0);
+        YGNodeInsertChild(askRow.get(), askTime.get(), 1);
+        YGNodeInsertChild(uploadRow.get(), uploadBubble.get(), 0);
+        YGNodeInsertChild(uploadRow.get(), uploadTime.get(), 1);
+        YGNodeInsertChild(uploadRow.get(), uploadCheck.get(), 2);
+        YGNodeInsertChild(thanksRow.get(), thanksBubble.get(), 0);
+        YGNodeInsertChild(thanksRow.get(), thanksTime.get(), 1);
+        YGNodeInsertChild(finalRow.get(), finalBubble.get(), 0);
+        YGNodeInsertChild(finalRow.get(), finalTime.get(), 1);
+        YGNodeInsertChild(finalRow.get(), finalCheck.get(), 2);
+
+        YGNodeInsertChild(messageRoot.get(), today.get(), 0);
+        YGNodeInsertChild(messageRoot.get(), askRow.get(), 1);
+        YGNodeInsertChild(messageRoot.get(), uploadRow.get(), 2);
+        YGNodeInsertChild(messageRoot.get(), reportCard.get(), 3);
+        YGNodeInsertChild(messageRoot.get(), thanksRow.get(), 4);
+        YGNodeInsertChild(messageRoot.get(), designCard.get(), 5);
+        YGNodeInsertChild(messageRoot.get(), finalRow.get(), 6);
+        YGNodeCalculateLayout(messageRoot.get(), l.messages.w, 700.0f, YGDirectionLTR);
+
+        l.msgToday = layoutRect(today.get(), l.messages.x, l.messages.y);
+        l.msgAskBubble = childLayoutRect(askRow.get(), askBubble.get(), l.messages);
+        l.msgAskTime = childLayoutRect(askRow.get(), askTime.get(), l.messages);
+        l.msgUploadBubble = childLayoutRect(uploadRow.get(), uploadBubble.get(), l.messages);
+        l.msgUploadTime = childLayoutRect(uploadRow.get(), uploadTime.get(), l.messages);
+        l.msgUploadCheck = childLayoutRect(uploadRow.get(), uploadCheck.get(), l.messages);
+        l.msgReportCard = layoutRect(reportCard.get(), l.messages.x, l.messages.y);
+        l.msgThanksBubble = childLayoutRect(thanksRow.get(), thanksBubble.get(), l.messages);
+        l.msgThanksTime = childLayoutRect(thanksRow.get(), thanksTime.get(), l.messages);
+        l.msgDesignCard = layoutRect(designCard.get(), l.messages.x, l.messages.y);
+        l.msgFinalBubble = childLayoutRect(finalRow.get(), finalBubble.get(), l.messages);
+        l.msgFinalTime = childLayoutRect(finalRow.get(), finalTime.get(), l.messages);
+        l.msgFinalCheck = childLayoutRect(finalRow.get(), finalCheck.get(), l.messages);
+        l.msgScrollbar = {l.messages.x + l.messages.w - 14.0f, l.messages.y + 14.0f, 6.0f, 342.0f};
+
+        YogaNode composerRoot;
+        YogaNode input;
+        YogaNode textSlot;
+        YogaNode smile;
+        YogaNode paperclip;
+        YogaNode folder;
+        YogaNode send;
+        YGNodeStyleSetWidth(composerRoot.get(), l.composer.w);
+        YGNodeStyleSetHeight(composerRoot.get(), l.composer.h);
+        YGNodeStyleSetFlexDirection(composerRoot.get(), YGFlexDirectionRow);
+        YGNodeStyleSetAlignItems(composerRoot.get(), YGAlignCenter);
+        YGNodeStyleSetPadding(composerRoot.get(), YGEdgeLeft, 26.0f);
+        YGNodeStyleSetPadding(composerRoot.get(), YGEdgeRight, 26.0f);
+
+        YGNodeStyleSetHeight(input.get(), 78.0f);
+        YGNodeStyleSetFlexGrow(input.get(), 1.0f);
+        YGNodeStyleSetFlexShrink(input.get(), 1.0f);
+        YGNodeStyleSetMinWidth(input.get(), 280.0f);
+        YGNodeStyleSetFlexDirection(input.get(), YGFlexDirectionRow);
+        YGNodeStyleSetAlignItems(input.get(), YGAlignCenter);
+        YGNodeStyleSetPadding(input.get(), YGEdgeLeft, 16.0f);
+        YGNodeStyleSetPadding(input.get(), YGEdgeRight, 10.0f);
+
+        YGNodeStyleSetFlexGrow(textSlot.get(), 1.0f);
+        YGNodeStyleSetFlexShrink(textSlot.get(), 1.0f);
+        YGNodeStyleSetMinWidth(textSlot.get(), 120.0f);
+
+        for (YGNodeRef icon : {smile.get(), paperclip.get(), folder.get()}) {
+            YGNodeStyleSetWidth(icon, 38.0f);
+            YGNodeStyleSetHeight(icon, 46.0f);
+            YGNodeStyleSetMargin(icon, YGEdgeLeft, 22.0f);
+            YGNodeStyleSetFlexShrink(icon, 0.0f);
+        }
+
+        YGNodeStyleSetWidth(send.get(), 84.0f);
+        YGNodeStyleSetHeight(send.get(), 46.0f);
+        YGNodeStyleSetMargin(send.get(), YGEdgeLeft, 12.0f);
+        YGNodeStyleSetFlexShrink(send.get(), 0.0f);
+
+        YGNodeInsertChild(input.get(), textSlot.get(), 0);
+        YGNodeInsertChild(input.get(), smile.get(), 1);
+        YGNodeInsertChild(input.get(), paperclip.get(), 2);
+        YGNodeInsertChild(input.get(), folder.get(), 3);
+        YGNodeInsertChild(input.get(), send.get(), 4);
+        YGNodeInsertChild(composerRoot.get(), input.get(), 0);
+        YGNodeCalculateLayout(composerRoot.get(), l.composer.w, l.composer.h, YGDirectionLTR);
+
+        l.composerInput = layoutRect(input.get(), l.composer.x, l.composer.y);
+        l.composerSend = layoutRect(send.get(), l.composerInput.x, l.composerInput.y);
+        l.composerSmileX =
+            l.composerInput.x + YGNodeLayoutGetLeft(smile.get()) + YGNodeLayoutGetWidth(smile.get()) * 0.5f;
+        l.composerPaperclipX =
+            l.composerInput.x + YGNodeLayoutGetLeft(paperclip.get()) + YGNodeLayoutGetWidth(paperclip.get()) * 0.5f;
+        l.composerFolderX =
+            l.composerInput.x + YGNodeLayoutGetLeft(folder.get()) + YGNodeLayoutGetWidth(folder.get()) * 0.5f;
+
+        l.sidebarW = l.sidebar.w;
+        l.chatLeft = l.chat.x;
+        l.chatRight = l.chat.x + l.chat.w;
+        l.chatW = l.chat.w;
+        l.inspectorLeft = l.inspector.x;
+        l.inspectorW = l.inspector.w;
+        l.composerTop = l.composer.y;
+
+        return l;
+    }
+
+    void drawApp(SkCanvas& c, const Layout& l) {
+        drawSidebar(c, l);
+        drawConversation(c, l);
+        drawInspector(c, l);
+    }
+
+    void drawSidebar(SkCanvas& c, const Layout& l) {
+        c.drawRect(l.sidebar.sk(), fill(rgb(252, 254, 255)));
+        line(c,
+             l.sidebar.x + l.sidebar.w - 0.5f,
+             l.sidebar.y,
+             l.sidebar.x + l.sidebar.w - 0.5f,
+             l.sidebar.y + l.sidebar.h,
+             rgb(216, 222, 229));
+
+        YogaNode root;
+        YogaNode profile;
+        YogaNode avatar;
+        YogaNode identity;
+        YogaNode gear;
+        YogaNode searchNode;
+        YogaNode onlineLabel;
+        std::array<YogaNode, 5> onlineRows;
+        YogaNode offlineLabel;
+        std::array<YogaNode, 3> offlineRows;
+
+        YGNodeStyleSetWidth(root.get(), l.sidebar.w);
+        YGNodeStyleSetHeight(root.get(), l.sidebar.h);
+        YGNodeStyleSetFlexDirection(root.get(), YGFlexDirectionColumn);
+
+        setNodeSize(profile.get(), l.sidebar.w - 44.0f, 43.0f);
+        YGNodeStyleSetFlexDirection(profile.get(), YGFlexDirectionRow);
+        YGNodeStyleSetAlignItems(profile.get(), YGAlignCenter);
+        YGNodeStyleSetMargin(profile.get(), YGEdgeLeft, 22.0f);
+        YGNodeStyleSetMargin(profile.get(), YGEdgeTop, 19.0f);
+        setNodeSize(avatar.get(), 43.0f, 43.0f);
+        YGNodeStyleSetWidth(identity.get(), 160.0f);
+        YGNodeStyleSetFlexGrow(identity.get(), 1.0f);
+        YGNodeStyleSetFlexShrink(identity.get(), 1.0f);
+        YGNodeStyleSetMargin(identity.get(), YGEdgeLeft, 15.0f);
+        setNodeSize(gear.get(), 28.0f, 28.0f);
+
+        setNodeSize(searchNode.get(), l.sidebar.w - 46.0f, 46.0f);
+        YGNodeStyleSetMargin(searchNode.get(), YGEdgeLeft, 23.0f);
+        YGNodeStyleSetMargin(searchNode.get(), YGEdgeTop, 17.0f);
+
+        setNodeSize(onlineLabel.get(), l.sidebar.w - 78.0f, 24.0f);
+        YGNodeStyleSetMargin(onlineLabel.get(), YGEdgeLeft, 39.0f);
+        YGNodeStyleSetMargin(onlineLabel.get(), YGEdgeTop, 36.0f);
+        YGNodeStyleSetMargin(onlineLabel.get(), YGEdgeBottom, 12.0f);
+
+        for (auto& row : onlineRows) {
+            setNodeSize(row.get(), l.sidebar.w - 40.0f, 81.0f);
+            YGNodeStyleSetMargin(row.get(), YGEdgeLeft, 20.0f);
+        }
+
+        setNodeSize(offlineLabel.get(), l.sidebar.w - 78.0f, 24.0f);
+        YGNodeStyleSetMargin(offlineLabel.get(), YGEdgeLeft, 39.0f);
+        YGNodeStyleSetMargin(offlineLabel.get(), YGEdgeTop, 34.0f);
+        YGNodeStyleSetMargin(offlineLabel.get(), YGEdgeBottom, 12.0f);
+
+        for (auto& row : offlineRows) {
+            setNodeSize(row.get(), l.sidebar.w - 40.0f, 78.0f);
+            YGNodeStyleSetMargin(row.get(), YGEdgeLeft, 20.0f);
+        }
+
+        YGNodeInsertChild(profile.get(), avatar.get(), 0);
+        YGNodeInsertChild(profile.get(), identity.get(), 1);
+        YGNodeInsertChild(profile.get(), gear.get(), 2);
+        YGNodeInsertChild(root.get(), profile.get(), 0);
+        YGNodeInsertChild(root.get(), searchNode.get(), 1);
+        YGNodeInsertChild(root.get(), onlineLabel.get(), 2);
+        for (size_t i = 0; i < onlineRows.size(); ++i) {
+            YGNodeInsertChild(root.get(), onlineRows[i].get(), 3 + i);
+        }
+        YGNodeInsertChild(root.get(), offlineLabel.get(), 8);
+        for (size_t i = 0; i < offlineRows.size(); ++i) {
+            YGNodeInsertChild(root.get(), offlineRows[i].get(), 9 + i);
+        }
+        YGNodeCalculateLayout(root.get(), l.sidebar.w, l.sidebar.h, YGDirectionLTR);
+
+        const Rect profileRect = layoutRect(profile.get(), l.sidebar.x, l.sidebar.y);
+        const Rect avatarRect = childLayoutRect(profile.get(), avatar.get(), l.sidebar);
+        const Rect identityRect = childLayoutRect(profile.get(), identity.get(), l.sidebar);
+        const Rect gearRect = childLayoutRect(profile.get(), gear.get(), l.sidebar);
+        const Rect search = layoutRect(searchNode.get(), l.sidebar.x, l.sidebar.y);
+        const Rect onlineLabelRect = layoutRect(onlineLabel.get(), l.sidebar.x, l.sidebar.y);
+        const Rect offlineLabelRect = layoutRect(offlineLabel.get(), l.sidebar.x, l.sidebar.y);
+
+        c.drawRRect(rr(avatarRect, 12), fill(rgb(0, 157, 153)));
+        centeredText(c, "林", avatarRect, 23, SK_ColorWHITE, true);
+        text(c, "林一凡", identityRect.x, profileRect.y + 17.0f, 18, rgb(13, 17, 23), true);
+        text(c, "本机 · 192.168.1.8", identityRect.x, profileRect.y + 38.0f, 14, rgb(64, 74, 88));
+        drawGear(c, gearRect.x + gearRect.w * 0.5f, gearRect.y + gearRect.h * 0.5f, 12, rgb(90, 100, 115));
+
         c.drawRRect(rr(search, 7), fill(SK_ColorWHITE));
         c.drawRRect(rr(search, 7), stroke(rgb(205, 214, 224)));
-        drawSearch(c, 50, 148, 10, rgb(24, 29, 38), 2.0f);
-        text(c, "搜索设备", 78, 154, 14, rgb(136, 148, 162));
+        drawSearch(c, search.x + 27.0f, search.y + 23.0f, 10, rgb(24, 29, 38), 2.0f);
+        text(c, "搜索设备", search.x + 55.0f, search.y + 29.0f, 14, rgb(136, 148, 162));
 
-        text(c, "在线设备 (5)", 39, 209, 15, rgb(18, 23, 31), true);
+        text(c, "在线设备 (5)", onlineLabelRect.x, onlineLabelRect.y + 15.0f, 15, rgb(18, 23, 31), true);
 
         std::vector<Device> online = {
             {"Alex-PC", "192.168.1.24", true},
@@ -220,101 +620,199 @@ private:
             {"MARK-PC", "192.168.1.77", true},
         };
 
-        float itemY = 230;
         for (size_t i = 0; i < online.size(); ++i) {
-            drawDeviceRow(c, online[i], itemY, i == 0);
-            itemY += 81;
+            drawDeviceRow(c, online[i], layoutRect(onlineRows[i].get(), l.sidebar.x, l.sidebar.y), i == 0);
         }
 
-        text(c, "离线设备 (3)", 39, 669, 15, rgb(18, 23, 31), true);
+        text(c, "离线设备 (3)", offlineLabelRect.x, offlineLabelRect.y + 15.0f, 15, rgb(18, 23, 31), true);
         std::vector<Device> offline = {
             {"FINANCE-PC", "192.168.1.15", false},
             {"HR-LAPTOP", "192.168.1.28", false},
             {"OLD-PC", "192.168.1.55", false},
         };
-        itemY = 697;
-        for (const auto& d : offline) {
-            drawDeviceRow(c, d, itemY, false);
-            itemY += 78;
+        for (size_t i = 0; i < offline.size(); ++i) {
+            drawDeviceRow(c, offline[i], layoutRect(offlineRows[i].get(), l.sidebar.x, l.sidebar.y), false);
         }
     }
 
-    void drawDeviceRow(SkCanvas& c, const Device& d, float y, bool selected) {
+    void drawDeviceRow(SkCanvas& c, const Device& d, const Rect& row, bool selected) {
         if (selected) {
-            Rect r{20, y, 343, 81};
-            c.drawRRect(rr(r, 7), fill(rgb(235, 254, 254)));
-            c.drawRRect(rr(r, 7), stroke(rgb(118, 214, 213), 1.0f));
+            c.drawRRect(rr(row, 7), fill(rgb(235, 254, 254)));
+            c.drawRRect(rr(row, 7), stroke(rgb(118, 214, 213), 1.0f));
         }
-        c.drawCircle(40, y + 38, 5.3f, fill(d.online ? rgb(45, 181, 36) : rgb(157, 168, 181)));
-        drawMonitor(c, 82, y + 38, 18, rgb(13, 17, 23));
-        text(c, d.name, 117, y + 33, 15.5f, rgb(19, 25, 34), true);
-        text(c, d.ip, 117, y + 56, 13.2f, rgb(53, 63, 78));
+
+        YogaNode root;
+        YogaNode dot;
+        YogaNode monitor;
+        YogaNode label;
+        YGNodeStyleSetWidth(root.get(), row.w);
+        YGNodeStyleSetHeight(root.get(), row.h);
+        YGNodeStyleSetFlexDirection(root.get(), YGFlexDirectionRow);
+        YGNodeStyleSetAlignItems(root.get(), YGAlignCenter);
+        YGNodeStyleSetPadding(root.get(), YGEdgeLeft, 15.0f);
+        setNodeSize(dot.get(), 11.0f, 11.0f);
+        YGNodeStyleSetMargin(dot.get(), YGEdgeRight, 17.0f);
+        setNodeSize(monitor.get(), 36.0f, 36.0f);
+        YGNodeStyleSetMargin(monitor.get(), YGEdgeRight, 17.0f);
+        YGNodeStyleSetFlexGrow(label.get(), 1.0f);
+        YGNodeStyleSetFlexShrink(label.get(), 1.0f);
+        YGNodeStyleSetHeight(label.get(), 44.0f);
+
+        YGNodeInsertChild(root.get(), dot.get(), 0);
+        YGNodeInsertChild(root.get(), monitor.get(), 1);
+        YGNodeInsertChild(root.get(), label.get(), 2);
+        YGNodeCalculateLayout(root.get(), row.w, row.h, YGDirectionLTR);
+
+        const Rect dotRect = layoutRect(dot.get(), row.x, row.y);
+        const Rect monitorRect = layoutRect(monitor.get(), row.x, row.y);
+        const Rect labelRect = layoutRect(label.get(), row.x, row.y);
+        c.drawCircle(dotRect.x + dotRect.w * 0.5f, dotRect.y + dotRect.h * 0.5f, 5.3f, fill(d.online ? rgb(45, 181, 36) : rgb(157, 168, 181)));
+        drawMonitor(c, monitorRect.x + monitorRect.w * 0.5f, monitorRect.y + monitorRect.h * 0.5f, 18, rgb(13, 17, 23));
+        text(c, d.name, labelRect.x, labelRect.y + 18.0f, 15.5f, rgb(19, 25, 34), true);
+        text(c, d.ip, labelRect.x, labelRect.y + 41.0f, 13.2f, rgb(53, 63, 78));
     }
 
-    void drawConversation(SkCanvas& c) {
-        const float left = 386;
-        const float right = 1151;
-        c.drawRect(SkRect::MakeXYWH(left, 46, right - left, 914), fill(SK_ColorWHITE));
-        line(c, 386, 194.5f, 1151, 194.5f, rgb(217, 223, 230));
-        line(c, 386, 848.5f, 1151, 848.5f, rgb(217, 223, 230));
-        line(c, 1151.5f, 46, 1151.5f, 960, rgb(216, 222, 229));
+    void drawConversation(SkCanvas& c, const Layout& l) {
+        c.drawRect(l.chat.sk(), fill(SK_ColorWHITE));
+        line(c,
+             l.chat.x,
+             l.chatHeader.y + l.chatHeader.h - 0.5f,
+             l.chat.x + l.chat.w,
+             l.chatHeader.y + l.chatHeader.h - 0.5f,
+             rgb(217, 223, 230));
+        line(c, l.chat.x, l.composer.y - 0.5f, l.chat.x + l.chat.w, l.composer.y - 0.5f, rgb(217, 223, 230));
+        if (l.showInspector) {
+            line(c,
+                 l.chat.x + l.chat.w + 0.5f,
+                 l.chat.y,
+                 l.chat.x + l.chat.w + 0.5f,
+                 l.chat.y + l.chat.h,
+                 rgb(216, 222, 229));
+        }
 
-        drawChatHeader(c);
-        drawTabs(c);
-        drawMessages(c);
-        drawComposer(c);
+        drawChatHeader(c, l);
+        drawTabs(c, l);
+
+        c.save();
+        c.clipRect(l.messages.sk());
+        drawMessages(c, l);
+        c.restore();
+
+        drawComposer(c, l);
     }
 
-    void drawChatHeader(SkCanvas& c) {
-        drawMonitor(c, 437, 94, 26, rgb(13, 17, 23));
-        text(c, "Alex-PC", 481, 89, 21, rgb(18, 23, 31), true);
-        c.drawCircle(470, 108, 5.8f, fill(rgb(45, 181, 36)));
-        text(c, "192.168.1.24", 486, 113, 13.5f, rgb(53, 63, 78));
+    void drawChatHeader(SkCanvas& c, const Layout& l) {
+        YogaNode root;
+        YogaNode monitor;
+        YogaNode info;
+        YogaNode spacer;
+        YogaNode phone;
+        YogaNode search;
+        YogaNode more;
+        YGNodeStyleSetWidth(root.get(), l.chatHeader.w);
+        YGNodeStyleSetHeight(root.get(), 86.0f);
+        YGNodeStyleSetFlexDirection(root.get(), YGFlexDirectionRow);
+        YGNodeStyleSetAlignItems(root.get(), YGAlignCenter);
+        YGNodeStyleSetPadding(root.get(), YGEdgeLeft, 31.0f);
+        YGNodeStyleSetPadding(root.get(), YGEdgeRight, 24.0f);
 
-        drawPhone(c, 968, 96, 16, rgb(8, 12, 20));
-        drawSearch(c, 1044, 96, 14, rgb(8, 12, 20), 3.4f);
-        drawMore(c, 1113, 95, rgb(8, 12, 20));
+        setNodeSize(monitor.get(), 52.0f, 52.0f);
+        YGNodeStyleSetMargin(monitor.get(), YGEdgeRight, 18.0f);
+        setNodeSize(info.get(), 180.0f, 48.0f);
+        YGNodeStyleSetFlexGrow(spacer.get(), 1.0f);
+        YGNodeStyleSetFlexShrink(spacer.get(), 1.0f);
+        for (YGNodeRef action : {phone.get(), search.get(), more.get()}) {
+            setNodeSize(action, 50.0f, 52.0f);
+            YGNodeStyleSetMargin(action, YGEdgeLeft, 26.0f);
+        }
+
+        YGNodeInsertChild(root.get(), monitor.get(), 0);
+        YGNodeInsertChild(root.get(), info.get(), 1);
+        YGNodeInsertChild(root.get(), spacer.get(), 2);
+        YGNodeInsertChild(root.get(), phone.get(), 3);
+        YGNodeInsertChild(root.get(), search.get(), 4);
+        YGNodeInsertChild(root.get(), more.get(), 5);
+        YGNodeCalculateLayout(root.get(), l.chatHeader.w, 86.0f, YGDirectionLTR);
+
+        const Rect monitorRect = layoutRect(monitor.get(), l.chatHeader.x, l.chatHeader.y);
+        const Rect infoRect = layoutRect(info.get(), l.chatHeader.x, l.chatHeader.y);
+        const Rect phoneRect = layoutRect(phone.get(), l.chatHeader.x, l.chatHeader.y);
+        const Rect searchRect = layoutRect(search.get(), l.chatHeader.x, l.chatHeader.y);
+        const Rect moreRect = layoutRect(more.get(), l.chatHeader.x, l.chatHeader.y);
+
+        drawMonitor(c, monitorRect.x + monitorRect.w * 0.5f, monitorRect.y + monitorRect.h * 0.5f, 26, rgb(13, 17, 23));
+        text(c, "Alex-PC", infoRect.x, infoRect.y + 19.0f, 21, rgb(18, 23, 31), true);
+        c.drawCircle(infoRect.x - 11.0f, infoRect.y + 38.0f, 5.8f, fill(rgb(45, 181, 36)));
+        text(c, "192.168.1.24", infoRect.x + 5.0f, infoRect.y + 43.0f, 13.5f, rgb(53, 63, 78));
+
+        drawPhone(c, phoneRect.x + phoneRect.w * 0.5f, phoneRect.y + phoneRect.h * 0.5f, 16, rgb(8, 12, 20));
+        drawSearch(c, searchRect.x + searchRect.w * 0.5f, searchRect.y + searchRect.h * 0.5f, 14, rgb(8, 12, 20), 3.4f);
+        drawMore(c, moreRect.x + moreRect.w * 0.5f, moreRect.y + moreRect.h * 0.5f - 1.0f, rgb(8, 12, 20));
     }
 
-    void drawTabs(SkCanvas& c) {
-        Rect outer{417, 140, 542, 39};
+    void drawTabs(SkCanvas& c, const Layout& l) {
+        YogaNode root;
+        YogaNode outerNode;
+        std::array<YogaNode, 3> segments;
+        const float tabW = std::min(clampf(l.chatW - 190.0f, 300.0f, 542.0f), std::max(180.0f, l.chatW - 62.0f));
+        YGNodeStyleSetWidth(root.get(), l.chatHeader.w);
+        YGNodeStyleSetHeight(root.get(), 62.0f);
+        YGNodeStyleSetFlexDirection(root.get(), YGFlexDirectionColumn);
+        YGNodeStyleSetPadding(root.get(), YGEdgeLeft, 31.0f);
+        setNodeSize(outerNode.get(), tabW, 39.0f);
+        YGNodeStyleSetFlexDirection(outerNode.get(), YGFlexDirectionRow);
+        YGNodeStyleSetMargin(outerNode.get(), YGEdgeTop, 8.0f);
+        for (auto& segment : segments) {
+            YGNodeStyleSetFlexGrow(segment.get(), 1.0f);
+            YGNodeStyleSetFlexBasis(segment.get(), 0.0f);
+            YGNodeStyleSetHeight(segment.get(), 39.0f);
+        }
+        for (size_t i = 0; i < segments.size(); ++i) {
+            YGNodeInsertChild(outerNode.get(), segments[i].get(), i);
+        }
+        YGNodeInsertChild(root.get(), outerNode.get(), 0);
+        YGNodeCalculateLayout(root.get(), l.chatHeader.w, 62.0f, YGDirectionLTR);
+
+        const Rect outer = layoutRect(outerNode.get(), l.chatHeader.x, l.chatHeader.y + 86.0f);
+        const Rect first = childLayoutRect(outerNode.get(), segments[0].get(), {l.chatHeader.x, l.chatHeader.y + 86.0f, 0.0f, 0.0f});
+        const Rect second = childLayoutRect(outerNode.get(), segments[1].get(), {l.chatHeader.x, l.chatHeader.y + 86.0f, 0.0f, 0.0f});
+        const Rect third = childLayoutRect(outerNode.get(), segments[2].get(), {l.chatHeader.x, l.chatHeader.y + 86.0f, 0.0f, 0.0f});
+
         c.drawRRect(rr(outer, 6), fill(SK_ColorWHITE));
         c.drawRRect(rr(outer, 6), stroke(rgb(202, 211, 222)));
-        Rect active{417, 140, 177, 39};
-        c.drawRRect(rr(active, 6), fill(rgb(0, 157, 153)));
-        c.drawRect(SkRect::MakeXYWH(585, 140, 10, 39), fill(rgb(0, 157, 153)));
-        line(c, 594, 140, 594, 179, rgb(202, 211, 222));
-        line(c, 781, 140, 781, 179, rgb(202, 211, 222));
-        centeredText(c, "聊天", {417, 140, 177, 39}, 14, SK_ColorWHITE, true);
-        centeredText(c, "历史", {594, 140, 187, 39}, 14, rgb(70, 79, 94), true);
-        centeredText(c, "传输", {781, 140, 178, 39}, 14, rgb(70, 79, 94), true);
+        c.drawRRect(rr(first, 6), fill(rgb(0, 157, 153)));
+        c.drawRect(SkRect::MakeXYWH(first.x + first.w - 8, first.y, 8, first.h), fill(rgb(0, 157, 153)));
+        line(c, second.x, outer.y, second.x, outer.y + outer.h, rgb(202, 211, 222));
+        line(c, third.x, outer.y, third.x, outer.y + outer.h, rgb(202, 211, 222));
+        centeredText(c, "聊天", first, 14, SK_ColorWHITE, true);
+        centeredText(c, "历史", second, 14, rgb(70, 79, 94), true);
+        centeredText(c, "传输", third, 14, rgb(70, 79, 94), true);
     }
 
-    void drawMessages(SkCanvas& c) {
-        Rect today{718, 210, 62, 32};
-        c.drawRRect(rr(today, 7), fill(SK_ColorWHITE));
-        c.drawRRect(rr(today, 7), stroke(rgb(205, 214, 224)));
-        centeredText(c, "今天", today, 12.8f, rgb(90, 100, 115), true);
+    void drawMessages(SkCanvas& c, const Layout& l) {
+        c.drawRRect(rr(l.msgToday, 7), fill(SK_ColorWHITE));
+        c.drawRRect(rr(l.msgToday, 7), stroke(rgb(205, 214, 224)));
+        centeredText(c, "今天", l.msgToday, 12.8f, rgb(90, 100, 115), true);
 
-        drawBubble(c, {416, 253, 264, 51}, "能把最新的 Q2 报告发我吗?", false);
-        text(c, "09:21", 692, 282, 12, rgb(86, 98, 115));
+        drawBubble(c, l.msgAskBubble, "能把最新的 Q2 报告发我吗?", false);
+        text(c, "09:21", l.msgAskTime.x, l.msgAskTime.y + 16, 12, rgb(86, 98, 115));
 
-        drawBubble(c, {868, 316, 171, 51}, "可以，正在上传。", true);
-        text(c, "09:21", 1050, 346, 12, rgb(86, 98, 115));
-        drawCheck(c, 1091, 343, rgb(0, 157, 153));
+        drawBubble(c, l.msgUploadBubble, "可以，正在上传。", true);
+        text(c, "09:21", l.msgUploadTime.x, l.msgUploadTime.y + 16, 12, rgb(86, 98, 115));
+        drawCheck(c, l.msgUploadCheck.x, l.msgUploadCheck.y + 10, rgb(0, 157, 153));
 
-        drawTransferCard(c, {483, 385, 600, 141}, true);
+        drawTransferCard(c, l.msgReportCard, true);
 
-        drawBubble(c, {416, 545, 241, 51}, "谢谢! 设计说明也在吗?", false);
-        text(c, "09:23", 667, 575, 12, rgb(86, 98, 115));
+        drawBubble(c, l.msgThanksBubble, "谢谢! 设计说明也在吗?", false);
+        text(c, "09:23", l.msgThanksTime.x, l.msgThanksTime.y + 16, 12, rgb(86, 98, 115));
 
-        drawTransferCard(c, {416, 616, 668, 137}, false);
+        drawTransferCard(c, l.msgDesignCard, false);
 
-        drawBubble(c, {795, 775, 222, 51}, "是的，这是最新版本。", true);
-        text(c, "09:25", 1030, 805, 12, rgb(86, 98, 115));
-        drawCheck(c, 1074, 802, rgb(0, 157, 153));
+        drawBubble(c, l.msgFinalBubble, "是的，这是最新版本。", true);
+        text(c, "09:25", l.msgFinalTime.x, l.msgFinalTime.y + 16, 12, rgb(86, 98, 115));
+        drawCheck(c, l.msgFinalCheck.x, l.msgFinalCheck.y + 10, rgb(0, 157, 153));
 
-        c.drawRoundRect(SkRect::MakeXYWH(1137, 208, 6, 342), 3, 3, fill(rgb(180, 190, 202)));
+        c.drawRoundRect(l.msgScrollbar.sk(), 3, 3, fill(rgb(180, 190, 202)));
     }
 
     void drawBubble(SkCanvas& c, const Rect& r, std::string_view value, bool outgoing) {
@@ -332,8 +830,6 @@ private:
         c.drawRRect(rr(r, 7), fill(bg));
         c.drawRRect(rr(r, 7), stroke(border));
 
-        drawFileIcon(c, r.x + 25, r.y + 28, accent);
-
         const std::string name = teal ? "Q2_Report_2024.pdf" : "Design_Specs_v2.zip";
         const std::string size = teal ? "24.8 MB" : "112.6 MB";
         const std::string percent = teal ? "78%" : "45%";
@@ -342,73 +838,299 @@ private:
         const std::string time = teal ? "09:22" : "09:24";
         const float progress = teal ? 0.78f : 0.45f;
 
-        text(c, name, r.x + 77, r.y + 38, 14.2f, rgb(18, 23, 31), true);
-        text(c, size, r.x + 77, r.y + 70, 12.8f, rgb(65, 76, 92), true);
-        text(c, percent, r.x + r.w - 64, r.y + 70, 12.8f, rgb(18, 23, 31), true);
-        drawProgress(c, r.x + 77, r.y + 85, r.w - 122, progress, accent, 6);
-        text(c, detail, r.x + 77, r.y + 119, 12.3f, rgb(80, 92, 108), true);
-        text(c, time, r.x + r.w - 82, r.y + 119, 12.0f, rgb(80, 92, 108));
-        drawCheck(c, r.x + r.w - 38, r.y + 116, rgb(0, 157, 153));
+        YogaNode root;
+        YogaNode topRow;
+        YogaNode icon;
+        YogaNode content;
+        YogaNode percentNode;
+        YogaNode progressNode;
+        YogaNode bottomRow;
+        YogaNode detailNode;
+        YogaNode timeNode;
+        YogaNode checkNode;
+        YGNodeStyleSetWidth(root.get(), r.w);
+        YGNodeStyleSetHeight(root.get(), r.h);
+        YGNodeStyleSetFlexDirection(root.get(), YGFlexDirectionColumn);
+        YGNodeStyleSetPadding(root.get(), YGEdgeLeft, 25.0f);
+        YGNodeStyleSetPadding(root.get(), YGEdgeRight, 38.0f);
+        YGNodeStyleSetPadding(root.get(), YGEdgeTop, 28.0f);
+
+        setNodeSize(topRow.get(), r.w - 63.0f, 47.0f);
+        YGNodeStyleSetFlexDirection(topRow.get(), YGFlexDirectionRow);
+        YGNodeStyleSetAlignItems(topRow.get(), YGAlignFlexStart);
+        setNodeSize(icon.get(), 35.0f, 35.0f);
+        YGNodeStyleSetMargin(icon.get(), YGEdgeRight, 42.0f);
+        YGNodeStyleSetFlexGrow(content.get(), 1.0f);
+        YGNodeStyleSetFlexShrink(content.get(), 1.0f);
+        YGNodeStyleSetHeight(content.get(), 47.0f);
+        setNodeSize(percentNode.get(), 48.0f, 20.0f);
+        YGNodeStyleSetMargin(percentNode.get(), YGEdgeTop, 30.0f);
+
+        setNodeSize(progressNode.get(), std::max(80.0f, r.w - 122.0f), 6.0f);
+        YGNodeStyleSetMargin(progressNode.get(), YGEdgeLeft, 77.0f);
+        YGNodeStyleSetMargin(progressNode.get(), YGEdgeTop, 10.0f);
+
+        setNodeSize(bottomRow.get(), std::max(80.0f, r.w - 122.0f), 24.0f);
+        YGNodeStyleSetFlexDirection(bottomRow.get(), YGFlexDirectionRow);
+        YGNodeStyleSetAlignItems(bottomRow.get(), YGAlignCenter);
+        YGNodeStyleSetMargin(bottomRow.get(), YGEdgeLeft, 77.0f);
+        YGNodeStyleSetMargin(bottomRow.get(), YGEdgeTop, 16.0f);
+        YGNodeStyleSetFlexGrow(detailNode.get(), 1.0f);
+        YGNodeStyleSetFlexShrink(detailNode.get(), 1.0f);
+        YGNodeStyleSetHeight(detailNode.get(), 24.0f);
+        setNodeSize(timeNode.get(), 44.0f, 24.0f);
+        YGNodeStyleSetMargin(timeNode.get(), YGEdgeLeft, 8.0f);
+        setNodeSize(checkNode.get(), 16.0f, 16.0f);
+        YGNodeStyleSetMargin(checkNode.get(), YGEdgeLeft, 8.0f);
+
+        YGNodeInsertChild(topRow.get(), icon.get(), 0);
+        YGNodeInsertChild(topRow.get(), content.get(), 1);
+        YGNodeInsertChild(topRow.get(), percentNode.get(), 2);
+        YGNodeInsertChild(bottomRow.get(), detailNode.get(), 0);
+        YGNodeInsertChild(bottomRow.get(), timeNode.get(), 1);
+        YGNodeInsertChild(bottomRow.get(), checkNode.get(), 2);
+        YGNodeInsertChild(root.get(), topRow.get(), 0);
+        YGNodeInsertChild(root.get(), progressNode.get(), 1);
+        YGNodeInsertChild(root.get(), bottomRow.get(), 2);
+        YGNodeCalculateLayout(root.get(), r.w, r.h, YGDirectionLTR);
+
+        const Rect iconRect = childLayoutRect(topRow.get(), icon.get(), r);
+        const Rect contentRect = childLayoutRect(topRow.get(), content.get(), r);
+        const Rect percentRect = childLayoutRect(topRow.get(), percentNode.get(), r);
+        const Rect progressRect = layoutRect(progressNode.get(), r.x, r.y);
+        const Rect detailRect = childLayoutRect(bottomRow.get(), detailNode.get(), r);
+        const Rect timeRect = childLayoutRect(bottomRow.get(), timeNode.get(), r);
+        const Rect checkRect = childLayoutRect(bottomRow.get(), checkNode.get(), r);
+
+        drawFileIcon(c, iconRect.x, iconRect.y, accent);
+        text(c, name, contentRect.x, contentRect.y + 10.0f, 14.2f, rgb(18, 23, 31), true);
+        text(c, size, contentRect.x, contentRect.y + 42.0f, 12.8f, rgb(65, 76, 92), true);
+        text(c, percent, percentRect.x, percentRect.y + 12.0f, 12.8f, rgb(18, 23, 31), true);
+        drawProgress(c, progressRect.x, progressRect.y, progressRect.w, progress, accent, 6);
+        text(c, detail, detailRect.x, detailRect.y + 16.0f, 12.3f, rgb(80, 92, 108), true);
+        text(c, time, timeRect.x, timeRect.y + 16.0f, 12.0f, rgb(80, 92, 108));
+        drawCheck(c, checkRect.x, checkRect.y + 10.0f, rgb(0, 157, 153));
     }
 
-    void drawComposer(SkCanvas& c) {
-        Rect input{413, 870, 712, 78};
+    void drawComposer(SkCanvas& c, const Layout& l) {
+        const Rect input = l.composerInput;
         c.drawRRect(rr(input, 8), fill(SK_ColorWHITE));
         c.drawRRect(rr(input, 8), stroke(rgb(214, 222, 231)));
-        text(c, "给 Alex-PC 发送消息", 429, 914, 14, rgb(139, 150, 165));
-        drawSmile(c, 854, 909, 14, rgb(8, 12, 20));
-        drawPaperclip(c, 918, 909, rgb(8, 12, 20));
-        drawFolder(c, 980, 910, rgb(8, 12, 20));
-        Rect send{1030, 886, 84, 46};
-        c.drawRRect(rr(send, 7), fill(rgb(0, 157, 153)));
-        centeredText(c, "发送", send, 15, SK_ColorWHITE, true);
+        text(c, "给 Alex-PC 发送消息", input.x + 16, input.y + 36, 14, rgb(139, 150, 165));
+
+        drawSmile(c, l.composerSmileX, l.composerInput.y + 39, 14, rgb(8, 12, 20));
+        drawPaperclip(c, l.composerPaperclipX, l.composerInput.y + 39, rgb(8, 12, 20));
+        drawFolder(c, l.composerFolderX, l.composerInput.y + 40, rgb(8, 12, 20));
+        c.drawRRect(rr(l.composerSend, 7), fill(rgb(0, 157, 153)));
+        centeredText(c, "发送", l.composerSend, 15, SK_ColorWHITE, true);
     }
 
-    void drawInspector(SkCanvas& c) {
-        c.drawRect(SkRect::MakeXYWH(1152, 46, 384, 914), fill(SK_ColorWHITE));
-        text(c, "Alex-PC", 1178, 91, 18, rgb(18, 23, 31), true);
-        drawClose(c, 1495, 86, 15, rgb(8, 12, 20));
+    void drawInspector(SkCanvas& c, const Layout& l) {
+        if (!l.showInspector) {
+            return;
+        }
 
-        drawMonitor(c, 1256, 181, 39, rgb(13, 17, 23));
-        c.drawCircle(1328, 176, 7, fill(rgb(45, 181, 36)));
-        text(c, "在线", 1347, 182, 15, rgb(45, 181, 36), true);
-        text(c, "192.168.1.24", 1347, 216, 14, rgb(18, 23, 31), true);
-        line(c, 1152, 267.5f, 1536, 267.5f, rgb(217, 223, 230));
+        const float x = l.inspector.x;
+        const float right = l.inspector.x + l.inspector.w;
+        c.drawRect(l.inspector.sk(), fill(SK_ColorWHITE));
 
-        text(c, "设备信息", 1176, 306, 15, rgb(18, 23, 31), true);
-        drawInfoRow(c, 1176, 350, "电脑名", "Alex-PC");
-        drawInfoRow(c, 1176, 385, "用户名", "Alex");
-        drawInfoRow(c, 1176, 420, "系统", "Windows 11 Pro 23H2");
-        drawInfoRow(c, 1176, 455, "IP 地址", "192.168.1.24");
-        drawInfoRow(c, 1176, 490, "MAC 地址", "00-15-5D-8E-2A-7C");
-        drawInfoRow(c, 1176, 525, "在线时长", "2天 4时 18分");
+        YogaNode root;
+        YogaNode titleBar;
+        YogaNode title;
+        YogaNode close;
+        YogaNode statusRow;
+        YogaNode monitor;
+        YogaNode statusText;
+        YogaNode infoSection;
+        YogaNode infoTitle;
+        std::array<YogaNode, 6> infoRows;
+        YogaNode transfersSection;
+        YogaNode transferTitle;
+        YogaNode transferA;
+        YogaNode divider;
+        YogaNode transferB;
+        YogaNode allTransfers;
 
-        line(c, 1152, 558.5f, 1536, 558.5f, rgb(217, 223, 230));
-        text(c, "活跃传输 (2)", 1176, 604, 15, rgb(18, 23, 31), true);
-        drawMiniTransfer(c, 1179, 644, true);
-        line(c, 1176, 734, 1484, 734, rgb(224, 230, 237));
-        drawMiniTransfer(c, 1179, 763, false);
-        text(c, "查看全部传输", 1176, 921, 14, rgb(0, 157, 153), true);
+        YGNodeStyleSetWidth(root.get(), l.inspector.w);
+        YGNodeStyleSetHeight(root.get(), l.inspector.h);
+        YGNodeStyleSetFlexDirection(root.get(), YGFlexDirectionColumn);
+
+        setNodeSize(titleBar.get(), l.inspector.w, 74.0f);
+        YGNodeStyleSetFlexDirection(titleBar.get(), YGFlexDirectionRow);
+        YGNodeStyleSetAlignItems(titleBar.get(), YGAlignCenter);
+        YGNodeStyleSetPadding(titleBar.get(), YGEdgeLeft, 26.0f);
+        YGNodeStyleSetPadding(titleBar.get(), YGEdgeRight, 26.0f);
+        YGNodeStyleSetFlexGrow(title.get(), 1.0f);
+        YGNodeStyleSetFlexShrink(title.get(), 1.0f);
+        YGNodeStyleSetHeight(title.get(), 28.0f);
+        setNodeSize(close.get(), 30.0f, 30.0f);
+
+        setNodeSize(statusRow.get(), l.inspector.w, 147.0f);
+        YGNodeStyleSetFlexDirection(statusRow.get(), YGFlexDirectionRow);
+        YGNodeStyleSetAlignItems(statusRow.get(), YGAlignCenter);
+        YGNodeStyleSetPadding(statusRow.get(), YGEdgeLeft, 66.0f);
+        YGNodeStyleSetPadding(statusRow.get(), YGEdgeRight, 36.0f);
+        setNodeSize(monitor.get(), 78.0f, 78.0f);
+        YGNodeStyleSetMargin(monitor.get(), YGEdgeRight, 34.0f);
+        YGNodeStyleSetFlexGrow(statusText.get(), 1.0f);
+        YGNodeStyleSetFlexShrink(statusText.get(), 1.0f);
+        YGNodeStyleSetHeight(statusText.get(), 58.0f);
+
+        setNodeSize(infoSection.get(), l.inspector.w, 291.0f);
+        YGNodeStyleSetFlexDirection(infoSection.get(), YGFlexDirectionColumn);
+        YGNodeStyleSetPadding(infoSection.get(), YGEdgeLeft, 24.0f);
+        YGNodeStyleSetPadding(infoSection.get(), YGEdgeRight, 36.0f);
+        YGNodeStyleSetPadding(infoSection.get(), YGEdgeTop, 31.0f);
+        setNodeSize(infoTitle.get(), l.inspector.w - 60.0f, 20.0f);
+        YGNodeStyleSetMargin(infoTitle.get(), YGEdgeBottom, 24.0f);
+        for (auto& row : infoRows) {
+            setNodeSize(row.get(), l.inspector.w - 60.0f, 35.0f);
+        }
+
+        setNodeSize(transfersSection.get(), l.inspector.w, 430.0f);
+        YGNodeStyleSetFlexDirection(transfersSection.get(), YGFlexDirectionColumn);
+        YGNodeStyleSetPadding(transfersSection.get(), YGEdgeLeft, 24.0f);
+        YGNodeStyleSetPadding(transfersSection.get(), YGEdgeRight, 36.0f);
+        YGNodeStyleSetPadding(transfersSection.get(), YGEdgeTop, 34.0f);
+        setNodeSize(transferTitle.get(), l.inspector.w - 60.0f, 20.0f);
+        YGNodeStyleSetMargin(transferTitle.get(), YGEdgeBottom, 20.0f);
+        setNodeSize(transferA.get(), l.inspector.w - 54.0f, 90.0f);
+        setNodeSize(divider.get(), l.inspector.w - 76.0f, 1.0f);
+        YGNodeStyleSetMargin(divider.get(), YGEdgeTop, 0.0f);
+        YGNodeStyleSetMargin(divider.get(), YGEdgeBottom, 29.0f);
+        setNodeSize(transferB.get(), l.inspector.w - 54.0f, 90.0f);
+        YGNodeStyleSetFlexGrow(allTransfers.get(), 1.0f);
+        YGNodeStyleSetFlexShrink(allTransfers.get(), 1.0f);
+        YGNodeStyleSetMinHeight(allTransfers.get(), 36.0f);
+
+        YGNodeInsertChild(titleBar.get(), title.get(), 0);
+        YGNodeInsertChild(titleBar.get(), close.get(), 1);
+        YGNodeInsertChild(statusRow.get(), monitor.get(), 0);
+        YGNodeInsertChild(statusRow.get(), statusText.get(), 1);
+        YGNodeInsertChild(infoSection.get(), infoTitle.get(), 0);
+        for (size_t i = 0; i < infoRows.size(); ++i) {
+            YGNodeInsertChild(infoSection.get(), infoRows[i].get(), i + 1);
+        }
+        YGNodeInsertChild(transfersSection.get(), transferTitle.get(), 0);
+        YGNodeInsertChild(transfersSection.get(), transferA.get(), 1);
+        YGNodeInsertChild(transfersSection.get(), divider.get(), 2);
+        YGNodeInsertChild(transfersSection.get(), transferB.get(), 3);
+        YGNodeInsertChild(transfersSection.get(), allTransfers.get(), 4);
+        YGNodeInsertChild(root.get(), titleBar.get(), 0);
+        YGNodeInsertChild(root.get(), statusRow.get(), 1);
+        YGNodeInsertChild(root.get(), infoSection.get(), 2);
+        YGNodeInsertChild(root.get(), transfersSection.get(), 3);
+        YGNodeCalculateLayout(root.get(), l.inspector.w, l.inspector.h, YGDirectionLTR);
+
+        const Rect titleRect = childLayoutRect(titleBar.get(), title.get(), l.inspector);
+        const Rect closeRect = childLayoutRect(titleBar.get(), close.get(), l.inspector);
+        const Rect monitorRect = childLayoutRect(statusRow.get(), monitor.get(), l.inspector);
+        const Rect statusTextRect = childLayoutRect(statusRow.get(), statusText.get(), l.inspector);
+        const Rect infoSectionRect = layoutRect(infoSection.get(), l.inspector.x, l.inspector.y);
+        const Rect infoTitleRect = childLayoutRect(infoSection.get(), infoTitle.get(), l.inspector);
+        const Rect transferSectionRect = layoutRect(transfersSection.get(), l.inspector.x, l.inspector.y);
+        const Rect transferTitleRect = childLayoutRect(transfersSection.get(), transferTitle.get(), l.inspector);
+        const Rect transferARect = childLayoutRect(transfersSection.get(), transferA.get(), l.inspector);
+        const Rect dividerRect = childLayoutRect(transfersSection.get(), divider.get(), l.inspector);
+        const Rect transferBRect = childLayoutRect(transfersSection.get(), transferB.get(), l.inspector);
+        const Rect allTransfersRect = childLayoutRect(transfersSection.get(), allTransfers.get(), l.inspector);
+
+        text(c, "Alex-PC", titleRect.x, titleRect.y + 18.0f, 18, rgb(18, 23, 31), true);
+        drawClose(c, closeRect.x + closeRect.w * 0.5f, closeRect.y + closeRect.h * 0.5f, 15, rgb(8, 12, 20));
+
+        drawMonitor(c, monitorRect.x + monitorRect.w * 0.5f, monitorRect.y + monitorRect.h * 0.5f, 39, rgb(13, 17, 23));
+        c.drawCircle(statusTextRect.x - 19.0f, statusTextRect.y + 18.0f, 7, fill(rgb(45, 181, 36)));
+        text(c, "在线", statusTextRect.x, statusTextRect.y + 24.0f, 15, rgb(45, 181, 36), true);
+        text(c, "192.168.1.24", statusTextRect.x, statusTextRect.y + 58.0f, 14, rgb(18, 23, 31), true);
+        line(c, x, infoSectionRect.y - 0.5f, right, infoSectionRect.y - 0.5f, rgb(217, 223, 230));
+
+        text(c, "设备信息", infoTitleRect.x, infoTitleRect.y + 15.0f, 15, rgb(18, 23, 31), true);
+        const std::array<std::pair<std::string_view, std::string_view>, 6> rows = {{
+            {"电脑名", "Alex-PC"},
+            {"用户名", "Alex"},
+            {"系统", "Windows 11 Pro 23H2"},
+            {"IP 地址", "192.168.1.24"},
+            {"MAC 地址", "00-15-5D-8E-2A-7C"},
+            {"在线时长", "2天 4时 18分"},
+        }};
+        for (size_t i = 0; i < rows.size(); ++i) {
+            const Rect row = childLayoutRect(infoSection.get(), infoRows[i].get(), l.inspector);
+            drawInfoRow(c, row, rows[i].first, rows[i].second);
+        }
+
+        line(c, x, transferSectionRect.y - 0.5f, right, transferSectionRect.y - 0.5f, rgb(217, 223, 230));
+        text(c, "活跃传输 (2)", transferTitleRect.x, transferTitleRect.y + 15.0f, 15, rgb(18, 23, 31), true);
+        drawMiniTransfer(c, transferARect, true);
+        line(c, dividerRect.x, dividerRect.y, dividerRect.x + dividerRect.w, dividerRect.y, rgb(224, 230, 237));
+        drawMiniTransfer(c, transferBRect, false);
+        text(c,
+             "查看全部传输",
+             allTransfersRect.x,
+             std::min(l.inspector.y + l.inspector.h - 36.0f, allTransfersRect.y + allTransfersRect.h - 10.0f),
+             14,
+             rgb(0, 157, 153),
+             true);
     }
 
-    void drawInfoRow(SkCanvas& c, float x, float y, std::string_view label, std::string_view value) {
-        text(c, label, x, y, 13.2f, rgb(83, 94, 111), true);
+    void drawInfoRow(SkCanvas& c, const Rect& row, std::string_view label, std::string_view value) {
+        text(c, label, row.x, row.y + 13.0f, 13.2f, rgb(83, 94, 111), true);
         const float w = textWidth(value, 13.2f, true);
-        text(c, value, 1500 - w, y, 13.2f, rgb(18, 23, 31), true);
+        text(c, value, row.x + row.w - w, row.y + 13.0f, 13.2f, rgb(18, 23, 31), true);
     }
 
-    void drawMiniTransfer(SkCanvas& c, float x, float y, bool teal) {
+    void drawMiniTransfer(SkCanvas& c, const Rect& r, bool teal) {
         const SkColor accent = teal ? rgb(0, 157, 153) : rgb(230, 143, 0);
-        drawFileIcon(c, x, y, accent, 30);
         const std::string name = teal ? "Q2_Report_2024.pdf" : "Design_Specs_v2.zip";
         const std::string direction = teal ? "发给 Alex-PC" : "来自 Alex-PC";
         const std::string pct = teal ? "78%" : "45%";
         const std::string detail = teal ? "19.4 MB / 24.8 MB  -  5.2 MB/s" : "50.7 MB / 112.6 MB  -  4.1 MB/s";
-        text(c, name, x + 46, y + 10, 13.2f, rgb(18, 23, 31), true);
-        text(c, direction, x + 46, y + 40, 12.2f, rgb(80, 92, 108), true);
-        text(c, pct, 1456, y + 40, 12.2f, accent, true);
-        drawProgress(c, x, y + 57, 303, teal ? 0.78f : 0.45f, accent, 5);
-        text(c, detail, x, y + 83, 12.0f, rgb(80, 92, 108), true);
+
+        YogaNode root;
+        YogaNode topRow;
+        YogaNode icon;
+        YogaNode textBlock;
+        YogaNode pctNode;
+        YogaNode progressNode;
+        YogaNode detailNode;
+        YGNodeStyleSetWidth(root.get(), r.w);
+        YGNodeStyleSetHeight(root.get(), r.h);
+        YGNodeStyleSetFlexDirection(root.get(), YGFlexDirectionColumn);
+
+        setNodeSize(topRow.get(), r.w, 50.0f);
+        YGNodeStyleSetFlexDirection(topRow.get(), YGFlexDirectionRow);
+        setNodeSize(icon.get(), 30.0f, 30.0f);
+        YGNodeStyleSetMargin(icon.get(), YGEdgeRight, 16.0f);
+        YGNodeStyleSetFlexGrow(textBlock.get(), 1.0f);
+        YGNodeStyleSetFlexShrink(textBlock.get(), 1.0f);
+        YGNodeStyleSetHeight(textBlock.get(), 50.0f);
+        setNodeSize(pctNode.get(), 38.0f, 20.0f);
+        YGNodeStyleSetMargin(pctNode.get(), YGEdgeTop, 30.0f);
+
+        setNodeSize(progressNode.get(), r.w - 2.0f, 5.0f);
+        YGNodeStyleSetMargin(progressNode.get(), YGEdgeTop, 7.0f);
+        setNodeSize(detailNode.get(), r.w, 24.0f);
+        YGNodeStyleSetMargin(detailNode.get(), YGEdgeTop, 14.0f);
+
+        YGNodeInsertChild(topRow.get(), icon.get(), 0);
+        YGNodeInsertChild(topRow.get(), textBlock.get(), 1);
+        YGNodeInsertChild(topRow.get(), pctNode.get(), 2);
+        YGNodeInsertChild(root.get(), topRow.get(), 0);
+        YGNodeInsertChild(root.get(), progressNode.get(), 1);
+        YGNodeInsertChild(root.get(), detailNode.get(), 2);
+        YGNodeCalculateLayout(root.get(), r.w, r.h, YGDirectionLTR);
+
+        const Rect iconRect = childLayoutRect(topRow.get(), icon.get(), r);
+        const Rect textRect = childLayoutRect(topRow.get(), textBlock.get(), r);
+        const Rect pctRect = childLayoutRect(topRow.get(), pctNode.get(), r);
+        const Rect progressRect = layoutRect(progressNode.get(), r.x, r.y);
+        const Rect detailRect = layoutRect(detailNode.get(), r.x, r.y);
+
+        drawFileIcon(c, iconRect.x, iconRect.y, accent, 30);
+        text(c, name, textRect.x, textRect.y + 10.0f, 13.2f, rgb(18, 23, 31), true);
+        text(c, direction, textRect.x, textRect.y + 40.0f, 12.2f, rgb(80, 92, 108), true);
+        text(c, pct, pctRect.x + pctRect.w - textWidth(pct, 12.2f, true), pctRect.y + 10.0f, 12.2f, accent, true);
+        drawProgress(c, progressRect.x, progressRect.y, progressRect.w, teal ? 0.78f : 0.45f, accent, 5);
+        text(c, detail, detailRect.x, detailRect.y + 12.0f, 12.0f, rgb(80, 92, 108), true);
     }
 
     void drawProgress(SkCanvas& c, float x, float y, float w, float progress, SkColor accent, float h) {

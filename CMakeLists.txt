@@ -7,6 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(unofficial-skia CONFIG REQUIRED)
+find_package(yoga CONFIG REQUIRED)
 
 add_executable(SkiaRelayDesk WIN32
     src/main.cpp
@@ -14,6 +15,7 @@ add_executable(SkiaRelayDesk WIN32
 
 target_link_libraries(SkiaRelayDesk PRIVATE
     unofficial::skia::skia
+    yoga::yogacore
     user32
     gdi32
     dwmapi
