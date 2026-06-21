@@ -45,6 +45,7 @@ constexpr int kBaseHeight = 960;
 constexpr int kChromeHeight = 46;
 constexpr int kContentHeight = kBaseHeight - kChromeHeight;
 constexpr float kHeaderHeight = 148.0f;
+constexpr float kDefaultDpi = 96.0f;
 
 SkColor rgb(uint8_t r, uint8_t g, uint8_t b) {
     return SkColorSetRGB(r, g, b);
@@ -144,9 +145,16 @@ public:
         bold_ = pickTypeface(true);
     }
 
-    void draw(SkCanvas& canvas, int width, int height) {
+    void draw(SkCanvas& canvas, int width, int height, float dpiScale) {
         canvas.clear(rgb(248, 250, 252));
-        drawApp(canvas, makeLayout(static_cast<float>(width), static_cast<float>(height)));
+        const float scale = std::max(0.1f, dpiScale);
+        const float logicalWidth = static_cast<float>(width) / scale;
+        const float logicalHeight = static_cast<float>(height) / scale;
+
+        canvas.save();
+        canvas.scale(scale, scale);
+        drawApp(canvas, makeLayout(logicalWidth, logicalHeight));
+        canvas.restore();
     }
 
 private:
@@ -1287,6 +1295,8 @@ class AppWindow {
 public:
     int run(HINSTANCE instance, int showCmd) {
         SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE);
+        dpi_ = getSystemDpi();
+        const float dpiScale = dpiScaleForDpi(dpi_);
 
         WNDCLASSEXW wc{};
         wc.cbSize = sizeof(wc);
@@ -1301,15 +1311,17 @@ public:
         SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0);
         const int workWidth = workArea.right - workArea.left;
         const int workHeight = workArea.bottom - workArea.top;
-        RECT desired{0, 0, kBaseWidth, kContentHeight};
-        AdjustWindowRectEx(&desired, WS_OVERLAPPEDWINDOW, FALSE, 0);
+        const int desiredClientWidth = static_cast<int>(std::round(kBaseWidth * dpiScale));
+        const int desiredClientHeight = static_cast<int>(std::round(kContentHeight * dpiScale));
+        RECT desired{0, 0, desiredClientWidth, desiredClientHeight};
+        adjustWindowRectForDpi(desired, dpi_);
         const int frameWidth = desired.right - desired.left;
         const int frameHeight = desired.bottom - desired.top;
         const float scale = std::min(1.0f, std::min((workWidth - 80.0f) / frameWidth, (workHeight - 80.0f) / frameHeight));
-        const int width = static_cast<int>(kBaseWidth * std::max(0.72f, scale));
-        const int height = static_cast<int>(kContentHeight * std::max(0.72f, scale));
+        const int width = static_cast<int>(desiredClientWidth * std::max(0.72f, scale));
+        const int height = static_cast<int>(desiredClientHeight * std::max(0.72f, scale));
         RECT initialRect{0, 0, width, height};
-        AdjustWindowRectEx(&initialRect, WS_OVERLAPPEDWINDOW, FALSE, 0);
+        adjustWindowRectForDpi(initialRect, dpi_);
         const int windowWidth = initialRect.right - initialRect.left;
         const int windowHeight = initialRect.bottom - initialRect.top;
         const int x = workArea.left + (workWidth - windowWidth) / 2;
@@ -1349,6 +1361,27 @@ private:
     std::vector<uint32_t> pixels_;
     int surfaceWidth_ = 0;
     int surfaceHeight_ = 0;
+    UINT dpi_ = static_cast<UINT>(kDefaultDpi);
+
+    static float dpiScaleForDpi(UINT dpi) {
+        return static_cast<float>(std::max<UINT>(dpi, 1)) / kDefaultDpi;
+    }
+
+    static UINT getSystemDpi() {
+        const UINT dpi = GetDpiForSystem();
+        return dpi != 0 ? dpi : static_cast<UINT>(kDefaultDpi);
+    }
+
+    static UINT getWindowDpi(HWND hwnd) {
+        const UINT dpi = GetDpiForWindow(hwnd);
+        return dpi != 0 ? dpi : getSystemDpi();
+    }
+
+    static void adjustWindowRectForDpi(RECT& rect, UINT dpi) {
+        if (!AdjustWindowRectExForDpi(&rect, WS_OVERLAPPEDWINDOW, FALSE, 0, dpi)) {
+            AdjustWindowRectEx(&rect, WS_OVERLAPPEDWINDOW, FALSE, 0);
+        }
+    }
 
     static AppWindow* get(HWND hwnd) {
         return reinterpret_cast<AppWindow*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
@@ -1370,6 +1403,19 @@ private:
             app->resize(LOWORD(lParam), HIWORD(lParam));
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
+        case WM_DPICHANGED: {
+            app->dpi_ = HIWORD(wParam);
+            const auto* suggested = reinterpret_cast<RECT*>(lParam);
+            SetWindowPos(hwnd,
+                         nullptr,
+                         suggested->left,
+                         suggested->top,
+                         suggested->right - suggested->left,
+                         suggested->bottom - suggested->top,
+                         SWP_NOZORDER | SWP_NOACTIVATE);
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        }
         case WM_PAINT:
             app->paint(hwnd);
             return 0;
@@ -1400,11 +1446,12 @@ private:
         if (width != surfaceWidth_ || height != surfaceHeight_ || pixels_.empty()) {
             resize(width, height);
         }
+        dpi_ = getWindowDpi(hwnd);
 
         const SkImageInfo info = SkImageInfo::MakeN32Premul(surfaceWidth_, surfaceHeight_);
         sk_sp<SkSurface> surface = SkSurfaces::WrapPixels(info, pixels_.data(), static_cast<size_t>(surfaceWidth_) * sizeof(uint32_t));
         if (surface) {
-            renderer_.draw(*surface->getCanvas(), surfaceWidth_, surfaceHeight_);
+            renderer_.draw(*surface->getCanvas(), surfaceWidth_, surfaceHeight_, dpiScaleForDpi(dpi_));
         }
 
         BITMAPINFO bmi{};
