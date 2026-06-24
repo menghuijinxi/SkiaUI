@@ -13,23 +13,30 @@ add_executable(SkiaRelayDesk WIN32
     src/main.cpp
 )
 
-target_link_libraries(SkiaRelayDesk PRIVATE
-    unofficial::skia::skia
-    yoga::yogacore
-    user32
-    gdi32
-    dwmapi
-    shcore
-    usp10
+add_executable(SkiaLayerDesk WIN32
+    src/layer_desk.cpp
 )
 
-target_compile_definitions(SkiaRelayDesk PRIVATE
-    WIN32_LEAN_AND_MEAN
-    NOMINMAX
-    UNICODE
-    _UNICODE
-)
+foreach(app_target IN ITEMS SkiaRelayDesk SkiaLayerDesk)
+    target_link_libraries(${app_target} PRIVATE
+        unofficial::skia::skia
+        unofficial::skia::modules::svg
+        yoga::yogacore
+        user32
+        gdi32
+        dwmapi
+        shcore
+        usp10
+    )
 
-if(MSVC)
-    target_compile_options(SkiaRelayDesk PRIVATE /utf-8 /permissive- /Zc:__cplusplus)
-endif()
+    target_compile_definitions(${app_target} PRIVATE
+        WIN32_LEAN_AND_MEAN
+        NOMINMAX
+        UNICODE
+        _UNICODE
+    )
+
+    if(MSVC)
+        target_compile_options(${app_target} PRIVATE /utf-8 /permissive- /Zc:__cplusplus)
+    endif()
+endforeach()

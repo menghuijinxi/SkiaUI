@@ -1,0 +1,903 @@
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+
+#include <windows.h>
+#include <dwmapi.h>
+#include <shellscalingapi.h>
+
+#include "include/core/SkCanvas.h"
+#include "include/core/SkColor.h"
+#include "include/core/SkFont.h"
+#include "include/core/SkFontMgr.h"
+#include "include/core/SkFontStyle.h"
+#include "include/core/SkImageInfo.h"
+#include "include/core/SkPaint.h"
+#include "include/core/SkPath.h"
+#include "include/core/SkPathBuilder.h"
+#include "include/core/SkPoint.h"
+#include "include/core/SkRRect.h"
+#include "include/core/SkRect.h"
+#include "include/core/SkRefCnt.h"
+#include "include/core/SkScalar.h"
+#include "include/core/SkShader.h"
+#include "include/core/SkStream.h"
+#include "include/core/SkSurface.h"
+#include "include/core/SkTypeface.h"
+#include "include/effects/SkGradient.h"
+#include "include/ports/SkTypeface_win.h"
+#include "modules/svg/include/SkSVGDOM.h"
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstdio>
+#include <cstdint>
+#include <memory>
+#include <string>
+#include <string_view>
+#include <vector>
+
+namespace {
+
+constexpr int kBaseWidth = 1672;
+constexpr int kBaseHeight = 941;
+constexpr float kDefaultDpi = 96.0f;
+constexpr float kPi = 3.14159265358979323846f;
+
+SkColor rgb(uint8_t r, uint8_t g, uint8_t b) {
+    return SkColorSetRGB(r, g, b);
+}
+
+SkColor rgba(uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
+    return SkColorSetARGB(a, r, g, b);
+}
+
+SkColor withAlpha(SkColor color, uint8_t alpha) {
+    return SkColorSetARGB(alpha, SkColorGetR(color), SkColorGetG(color), SkColorGetB(color));
+}
+
+float clampf(float value, float lo, float hi) {
+    return std::max(lo, std::min(value, hi));
+}
+
+struct Rect {
+    float x = 0.0f;
+    float y = 0.0f;
+    float w = 0.0f;
+    float h = 0.0f;
+
+    SkRect sk() const {
+        return SkRect::MakeXYWH(x, y, w, h);
+    }
+};
+
+class Renderer {
+public:
+    Renderer() {
+        fontMgr_ = SkFontMgr_New_DirectWrite();
+        if (!fontMgr_) {
+            fontMgr_ = SkFontMgr_New_GDI();
+        }
+        regular_ = pickTypeface(false);
+        medium_ = pickTypeface(true);
+    }
+
+    void draw(SkCanvas& canvas, int width, int height, float dpiScale) {
+        const float scale = std::max(0.1f, dpiScale);
+        const float logicalWidth = static_cast<float>(width) / scale;
+        const float logicalHeight = static_cast<float>(height) / scale;
+
+        canvas.clear(rgb(7, 12, 18));
+        canvas.save();
+        canvas.scale(scale, scale);
+        drawApp(canvas, logicalWidth, logicalHeight);
+        canvas.restore();
+    }
+
+private:
+    sk_sp<SkFontMgr> fontMgr_;
+    sk_sp<SkTypeface> regular_;
+    sk_sp<SkTypeface> medium_;
+
+    sk_sp<SkTypeface> pickTypeface(bool bold) {
+        const SkFontStyle style = bold ? SkFontStyle::Bold() : SkFontStyle::Normal();
+        const std::array<const char*, 5> families = {
+            "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", "Arial", nullptr};
+        for (const char* family : families) {
+            if (!fontMgr_) {
+                continue;
+            }
+            sk_sp<SkTypeface> typeface = fontMgr_->matchFamilyStyle(family, style);
+            if (typeface) {
+                return typeface;
+            }
+        }
+        return nullptr;
+    }
+
+    SkFont font(float size, bool bold = false) const {
+        SkFont f(bold ? medium_ : regular_, size);
+        f.setEdging(SkFont::Edging::kAntiAlias);
+        f.setSubpixel(true);
+        return f;
+    }
+
+    SkPaint fill(SkColor color) const {
+        SkPaint p;
+        p.setAntiAlias(true);
+        p.setStyle(SkPaint::kFill_Style);
+        p.setColor(color);
+        return p;
+    }
+
+    SkPaint stroke(SkColor color, float width = 1.0f) const {
+        SkPaint p;
+        p.setAntiAlias(true);
+        p.setStyle(SkPaint::kStroke_Style);
+        p.setStrokeWidth(width);
+        p.setColor(color);
+        p.setStrokeCap(SkPaint::kRound_Cap);
+        p.setStrokeJoin(SkPaint::kRound_Join);
+        return p;
+    }
+
+    SkRRect rr(const Rect& r, float radius) const {
+        return SkRRect::MakeRectXY(r.sk(), radius, radius);
+    }
+
+    void text(SkCanvas& c,
+              std::string_view value,
+              float x,
+              float y,
+              float size,
+              SkColor color,
+              bool isBold = false) const {
+        SkPaint p = fill(color);
+        SkFont f = font(size, isBold);
+        c.drawSimpleText(value.data(), value.size(), SkTextEncoding::kUTF8, x, y, f, p);
+    }
+
+    float textWidth(std::string_view value, float size, bool isBold = false) const {
+        SkFont f = font(size, isBold);
+        return f.measureText(value.data(), value.size(), SkTextEncoding::kUTF8);
+    }
+
+    std::string svgHex(SkColor color) const {
+        char buf[16];
+        std::snprintf(buf,
+                      sizeof(buf),
+                      "#%02X%02X%02X",
+                      SkColorGetR(color),
+                      SkColorGetG(color),
+                      SkColorGetB(color));
+        return buf;
+    }
+
+    std::string svgOpacity(SkColor color) const {
+        char buf[16];
+        std::snprintf(buf, sizeof(buf), "%.3f", static_cast<float>(SkColorGetA(color)) / 255.0f);
+        return buf;
+    }
+
+    std::string svgFloat(float value) const {
+        char buf[24];
+        std::snprintf(buf, sizeof(buf), "%.2f", value);
+        return buf;
+    }
+
+    std::string svgStrokeAttrs(SkColor color, float width) const {
+        return "stroke=\"" + svgHex(color) + "\" stroke-opacity=\"" + svgOpacity(color) +
+               "\" stroke-width=\"" + svgFloat(width) + "\" stroke-linecap=\"round\" stroke-linejoin=\"round\"";
+    }
+
+    std::string svgFillAttrs(SkColor color) const {
+        return "fill=\"" + svgHex(color) + "\" fill-opacity=\"" + svgOpacity(color) + "\"";
+    }
+
+    std::string svgWrap(std::string_view body, const std::string& attrs) const {
+        std::string svg =
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" ";
+        svg += attrs;
+        svg += ">";
+        svg += body;
+        svg += "</svg>";
+        return svg;
+    }
+
+    void drawSvgIcon(SkCanvas& c, const std::string& svg, float cx, float cy, float size) const {
+        SkMemoryStream stream(svg.data(), svg.size(), false);
+        sk_sp<SkSVGDOM> dom = SkSVGDOM::MakeFromStream(stream);
+        if (!dom) {
+            return;
+        }
+        dom->setContainerSize(SkSize::Make(24.0f, 24.0f));
+        c.save();
+        c.translate(cx - size * 0.5f, cy - size * 0.5f);
+        c.scale(size / 24.0f, size / 24.0f);
+        dom->render(&c);
+        c.restore();
+    }
+
+    void centeredText(SkCanvas& c,
+                      std::string_view value,
+                      const Rect& box,
+                      float size,
+                      SkColor color,
+                      bool isBold = false) const {
+        SkFont f = font(size, isBold);
+        SkRect bounds;
+        const float w = f.measureText(value.data(), value.size(), SkTextEncoding::kUTF8, &bounds);
+        const float x = box.x + (box.w - w) * 0.5f;
+        const float y = box.y + box.h * 0.5f - (bounds.fTop + bounds.fBottom) * 0.5f;
+        c.drawSimpleText(value.data(), value.size(), SkTextEncoding::kUTF8, x, y, f, fill(color));
+    }
+
+    void line(SkCanvas& c, float x1, float y1, float x2, float y2, SkColor color, float width = 1.0f) const {
+        c.drawLine(x1, y1, x2, y2, stroke(color, width));
+    }
+
+    std::vector<SkColor4f> gradientColors(const SkColor* colors, int count) const {
+        std::vector<SkColor4f> stops;
+        stops.reserve(static_cast<size_t>(count));
+        for (int i = 0; i < count; ++i) {
+            stops.push_back(SkColor4f::FromColor(colors[i]));
+        }
+        return stops;
+    }
+
+    std::vector<float> gradientPositions(const SkScalar* positions, int count) const {
+        std::vector<float> stops;
+        if (!positions) {
+            return stops;
+        }
+        stops.reserve(static_cast<size_t>(count));
+        for (int i = 0; i < count; ++i) {
+            stops.push_back(positions[i]);
+        }
+        return stops;
+    }
+
+    SkGradient makeGradient(SkSpan<const SkColor4f> colors, SkSpan<const float> positions) const {
+        return SkGradient(SkGradient::Colors(colors, positions, SkTileMode::kClamp), {});
+    }
+
+    SkPaint linearPaint(SkPoint a,
+                        SkPoint b,
+                        const SkColor* colors,
+                        const SkScalar* positions,
+                        int count,
+                        uint8_t alpha = 255) const {
+        SkPaint p;
+        p.setAntiAlias(true);
+        p.setStyle(SkPaint::kFill_Style);
+        p.setAlphaf(static_cast<float>(alpha) / 255.0f);
+        const SkPoint pts[2] = {a, b};
+        const std::vector<SkColor4f> gradientColorStops = gradientColors(colors, count);
+        const std::vector<float> gradientPositionStops = gradientPositions(positions, count);
+        const SkGradient gradient = makeGradient(gradientColorStops, gradientPositionStops);
+        p.setShader(SkShaders::LinearGradient(pts, gradient));
+        return p;
+    }
+
+    SkPaint radialPaint(SkPoint center,
+                        float radius,
+                        const SkColor* colors,
+                        const SkScalar* positions,
+                        int count) const {
+        SkPaint p;
+        p.setAntiAlias(true);
+        p.setStyle(SkPaint::kFill_Style);
+        const std::vector<SkColor4f> gradientColorStops = gradientColors(colors, count);
+        const std::vector<float> gradientPositionStops = gradientPositions(positions, count);
+        const SkGradient gradient = makeGradient(gradientColorStops, gradientPositionStops);
+        p.setShader(SkShaders::RadialGradient(center, radius, gradient));
+        return p;
+    }
+
+    void drawApp(SkCanvas& c, float width, float height) {
+        drawBackground(c, width, height);
+        drawSidebar(c, height);
+        drawLayerPanel(c);
+        drawCompass(c, width - 94.0f, height - 162.0f);
+        drawStatusBar(c, width, height);
+        c.drawRoundRect(SkRect::MakeXYWH(2.0f, 2.0f, width - 4.0f, height - 4.0f),
+                        10.0f,
+                        10.0f,
+                        stroke(rgba(125, 155, 173, 105), 1.0f));
+    }
+
+    void drawBackground(SkCanvas& c, float width, float height) {
+        const SkColor baseColors[] = {rgb(7, 13, 20), rgb(21, 34, 49), rgb(12, 22, 33)};
+        const SkScalar basePos[] = {0.0f, 0.48f, 1.0f};
+        c.drawRect(SkRect::MakeWH(width, height),
+                   linearPaint(SkPoint::Make(0.0f, 0.0f), SkPoint::Make(width, height), baseColors, basePos, 3));
+
+        const SkColor upperGlow[] = {rgba(83, 119, 151, 120), rgba(26, 55, 83, 70), rgba(8, 15, 22, 0)};
+        const SkScalar glowPos[] = {0.0f, 0.38f, 1.0f};
+        c.drawRect(SkRect::MakeWH(width, height),
+                   radialPaint(SkPoint::Make(575.0f, -130.0f), 820.0f, upperGlow, glowPos, 3));
+
+        const SkColor sideGlow[] = {rgba(48, 84, 115, 70), rgba(16, 31, 47, 20), rgba(4, 9, 14, 0)};
+        c.drawRect(SkRect::MakeWH(width, height),
+                   radialPaint(SkPoint::Make(width * 0.78f, 190.0f), 980.0f, sideGlow, glowPos, 3));
+
+        const SkColor vignette[] = {rgba(0, 0, 0, 0), rgba(2, 5, 8, 155)};
+        const SkScalar vignettePos[] = {0.42f, 1.0f};
+        c.drawRect(SkRect::MakeWH(width, height),
+                   radialPaint(SkPoint::Make(width * 0.54f, height * 0.44f), width * 0.82f, vignette, vignettePos, 2));
+    }
+
+    void drawSidebar(SkCanvas& c, float height) {
+        constexpr float sidebarW = 118.0f;
+        const Rect sidebar{0.0f, 0.0f, sidebarW, height - 60.0f};
+        const SkColor colors[] = {rgba(5, 10, 16, 238), rgba(10, 18, 27, 218)};
+        const SkScalar pos[] = {0.0f, 1.0f};
+        c.drawRect(sidebar.sk(),
+                   linearPaint(SkPoint::Make(0.0f, 0.0f), SkPoint::Make(sidebarW, 0.0f), colors, pos, 2));
+        line(c, sidebarW - 0.5f, 0.0f, sidebarW - 0.5f, height - 60.0f, rgba(83, 118, 143, 46), 1.0f);
+
+        for (int i = 0; i < 3; ++i) {
+            line(c, 47.0f, 35.0f + i * 12.0f, 77.0f, 35.0f + i * 12.0f, rgba(213, 224, 234, 220), 3.2f);
+        }
+
+        const Rect active{3.0f, 88.0f, sidebarW - 3.0f, 102.0f};
+        const SkColor activeColors[] = {rgba(16, 224, 207, 38), rgba(81, 178, 203, 16)};
+        c.drawRect(active.sk(),
+                   linearPaint(SkPoint::Make(active.x, 0.0f), SkPoint::Make(active.x + active.w, 0.0f), activeColors, pos, 2));
+        c.drawRect(SkRect::MakeXYWH(3.0f, 88.0f, 5.0f, 102.0f), fill(rgb(34, 224, 211)));
+
+        drawNavItem(c, 64.0f, 127.0f, "图层", 0, true);
+        drawNavItem(c, 64.0f, 230.0f, "编辑", 1, false);
+        drawNavItem(c, 64.0f, 333.0f, "绘制", 2, false);
+        drawNavItem(c, 64.0f, 436.0f, "高亮", 3, false);
+        drawNavItem(c, 64.0f, 540.0f, "属性", 4, false);
+        drawNavItem(c, 64.0f, 645.0f, "变更", 5, false);
+        drawNavItem(c, 64.0f, 752.0f, "设置", 6, false);
+    }
+
+    void drawNavItem(SkCanvas& c, float cx, float iconY, std::string_view label, int icon, bool active) {
+        const SkColor color = active ? rgb(48, 234, 220) : rgba(222, 230, 242, 210);
+        switch (icon) {
+        case 0:
+            drawLayerStack(c, cx, iconY, 44.0f, color, active);
+            break;
+        case 1:
+            drawEditIcon(c, cx, iconY, color);
+            break;
+        case 2:
+            drawPencilIcon(c, cx, iconY, color);
+            break;
+        case 3:
+            drawTargetIcon(c, cx, iconY, color);
+            break;
+        case 4:
+            drawDocIcon(c, cx, iconY, color);
+            break;
+        case 5:
+            drawSwitchIcon(c, cx, iconY, color);
+            break;
+        default:
+            drawGearIcon(c, cx, iconY, color);
+            break;
+        }
+        const float w = textWidth(label, 17.0f, true);
+        text(c, label, cx - w * 0.5f, iconY + 47.0f, 17.0f, color, true);
+    }
+
+    void drawLayerPanel(SkCanvas& c) {
+        const Rect panel{134.0f, 25.0f, 602.0f, 825.0f};
+        const SkColor shadowColors[] = {rgba(0, 0, 0, 70), rgba(0, 0, 0, 0)};
+        const SkScalar shadowPos[] = {0.0f, 1.0f};
+        c.drawRoundRect(SkRect::MakeXYWH(panel.x - 8.0f, panel.y - 8.0f, panel.w + 16.0f, panel.h + 16.0f),
+                        14.0f,
+                        14.0f,
+                        radialPaint(SkPoint::Make(panel.x + panel.w * 0.45f, panel.y + panel.h * 0.5f),
+                                    520.0f,
+                                    shadowColors,
+                                    shadowPos,
+                                    2));
+
+        const SkColor panelFill[] = {rgba(23, 39, 55, 214), rgba(11, 22, 32, 228), rgba(20, 34, 48, 205)};
+        const SkScalar panelPos[] = {0.0f, 0.58f, 1.0f};
+        c.drawRRect(rr(panel, 9.0f),
+                    linearPaint(SkPoint::Make(panel.x, panel.y), SkPoint::Make(panel.x + panel.w, panel.y + panel.h), panelFill, panelPos, 3));
+        c.drawRRect(rr(panel, 9.0f), stroke(rgba(146, 179, 199, 160), 1.25f));
+        c.drawRRect(rr({panel.x + 1.0f, panel.y + 1.0f, panel.w - 2.0f, panel.h - 2.0f}, 8.0f),
+                    stroke(rgba(222, 244, 252, 38), 1.0f));
+
+        drawLayerStack(c, 183.0f, 62.0f, 44.0f, rgba(221, 252, 255, 240), false);
+        text(c, "图层 / 图层管理", 215.0f, 72.0f, 27.0f, rgba(239, 247, 253, 245), true);
+
+        drawActionButton(c, {160.0f, 110.0f, 253.0f, 47.0f}, "导入SHP", true);
+        drawActionButton(c, {431.0f, 110.0f, 266.0f, 47.0f}, "新建图层", false);
+        drawSearchBox(c, {161.0f, 180.0f, 536.0f, 46.0f});
+        drawTable(c);
+        drawLayerDetails(c, {149.0f, 566.0f, 568.0f, 262.0f});
+    }
+
+    void drawActionButton(SkCanvas& c, const Rect& r, std::string_view label, bool primary) {
+        if (primary) {
+            const SkColor colors[] = {rgba(18, 190, 178, 130), rgba(8, 95, 102, 150)};
+            const SkScalar pos[] = {0.0f, 1.0f};
+            c.drawRRect(rr(r, 7.0f),
+                        linearPaint(SkPoint::Make(r.x, r.y), SkPoint::Make(r.x + r.w, r.y + r.h), colors, pos, 2));
+            c.drawRRect(rr(r, 7.0f), stroke(rgba(38, 237, 218, 175), 1.1f));
+        drawUploadIcon(c, r.x + 80.0f, r.y + r.h * 0.5f + 1.0f, rgba(242, 252, 255, 235));
+        } else {
+            c.drawRRect(rr(r, 7.0f), fill(rgba(19, 32, 45, 104)));
+            c.drawRRect(rr(r, 7.0f), stroke(rgba(142, 170, 193, 142), 1.1f));
+            drawPlusIcon(c, r.x + 86.0f, r.y + r.h * 0.5f, rgba(241, 247, 254, 230));
+        }
+        centeredText(c, label, {r.x + 32.0f, r.y, r.w - 32.0f, r.h}, 20.5f, rgba(240, 247, 252, 238), true);
+    }
+
+    void drawSearchBox(SkCanvas& c, const Rect& r) {
+        c.drawRRect(rr(r, 7.0f), fill(rgba(11, 22, 32, 130)));
+        c.drawRRect(rr(r, 7.0f), stroke(rgba(132, 164, 190, 130), 1.15f));
+        drawSearchIcon(c, r.x + 26.0f, r.y + r.h * 0.5f, 9.0f, rgba(213, 224, 236, 220), 2.7f);
+        text(c, "搜索图层...", r.x + 55.0f, r.y + 29.0f, 17.5f, rgba(180, 195, 207, 132), true);
+    }
+
+    void drawTable(SkCanvas& c) {
+        text(c, "名称", 224.0f, 264.0f, 16.5f, rgba(229, 239, 247, 230), true);
+        text(c, "可见", 356.0f, 264.0f, 16.5f, rgba(229, 239, 247, 230), true);
+        text(c, "要素数", 423.0f, 264.0f, 16.5f, rgba(229, 239, 247, 230), true);
+        text(c, "类型", 508.0f, 264.0f, 16.5f, rgba(229, 239, 247, 230), true);
+        text(c, "坐标系", 596.0f, 264.0f, 16.5f, rgba(229, 239, 247, 230), true);
+
+        drawLayerRow(c, 280.0f, true, 0, "地块边界", "6,523", "Polygon");
+        drawLayerRow(c, 334.0f, false, 1, "道路中心线", "2,431", "LineString");
+        drawLayerRow(c, 388.0f, false, 2, "控制点", "1,842", "Point");
+        drawLayerRow(c, 442.0f, false, 3, "河流", "312", "LineString");
+        drawLayerRow(c, 496.0f, false, 4, "建筑物", "164", "Polygon");
+    }
+
+    void drawLayerRow(SkCanvas& c,
+                      float y,
+                      bool selected,
+                      int icon,
+                      std::string_view name,
+                      std::string_view count,
+                      std::string_view type) {
+        const Rect row{149.0f, y, 570.0f, 54.0f};
+        if (selected) {
+            const SkColor colors[] = {rgba(0, 168, 150, 150), rgba(20, 173, 166, 105)};
+            const SkScalar pos[] = {0.0f, 1.0f};
+            c.drawRect(row.sk(),
+                       linearPaint(SkPoint::Make(row.x, y), SkPoint::Make(row.x + row.w, y), colors, pos, 2));
+        } else {
+            c.drawRRect(rr({row.x, row.y, row.w, row.h - 1.0f}, 4.0f), fill(rgba(11, 23, 33, 60)));
+            line(c, row.x + 2.0f, y + row.h - 0.5f, row.x + row.w - 2.0f, y + row.h - 0.5f, rgba(120, 149, 169, 32), 1.0f);
+        }
+
+        drawDragDots(c, row.x + 19.0f, y + 27.0f, rgba(220, 232, 241, selected ? 215 : 165));
+        drawGeometryIcon(c, icon, row.x + 59.0f, y + 27.0f, selected ? rgb(63, 237, 225) : rgba(216, 226, 238, 220));
+        text(c, name, row.x + 84.0f, y + 34.0f, 16.5f, rgba(239, 246, 251, 238), true);
+        drawEyeIcon(c, row.x + 221.0f, y + 27.0f, rgb(48, 234, 220));
+        text(c, count, row.x + 274.0f, y + 34.0f, 15.8f, rgba(235, 244, 249, 232), false);
+        text(c, type, row.x + 356.0f, y + 34.0f, 15.0f, rgba(235, 244, 249, 232), false);
+        text(c, "EPSG:4326", row.x + 447.0f, y + 34.0f, 15.0f, rgba(235, 244, 249, 232), false);
+        drawMoreIcon(c, row.x + 551.0f, y + 27.0f, rgba(232, 241, 248, 215));
+    }
+
+    void drawLayerDetails(SkCanvas& c, const Rect& card) {
+        c.drawRRect(rr(card, 10.0f), fill(rgba(11, 23, 33, 108)));
+        c.drawRRect(rr(card, 10.0f), stroke(rgba(142, 170, 193, 135), 1.1f));
+
+        constexpr float titleSize = 24.5f;
+        const float titleX = card.x + 65.0f;
+        const float titleBaseline = card.y + 43.0f;
+        drawGeometryIcon(c, 0, card.x + 36.0f, card.y + 35.0f, rgb(64, 236, 225), 28.0f);
+        text(c, "地块边界", titleX, titleBaseline, titleSize, rgba(239, 248, 252, 242), true);
+
+        const float pillX = std::min(titleX + textWidth("地块边界", titleSize, true) + 16.0f, card.x + card.w - 106.0f);
+        const Rect pill{pillX, card.y + 19.0f, 82.0f, 29.0f};
+        const SkColor pillColors[] = {rgba(20, 212, 198, 108), rgba(10, 121, 125, 120)};
+        const SkScalar pillPos[] = {0.0f, 1.0f};
+        c.drawRoundRect(pill.sk(), 15.0f, 15.0f,
+                        linearPaint(SkPoint::Make(pill.x, pill.y), SkPoint::Make(pill.x + pill.w, pill.y), pillColors, pillPos, 2));
+        centeredText(c, "Polygon", pill, 14.0f, rgb(68, 236, 224), false);
+
+        line(c, card.x + 20.0f, card.y + 64.0f, card.x + card.w - 20.0f, card.y + 64.0f, rgba(140, 170, 191, 104), 1.0f);
+
+        drawInfo(c, card.x + 20.0f, card.y + 101.0f, "图层名称:", "地块边界");
+        drawInfo(c, card.x + 20.0f, card.y + 137.0f, "数据源:", "parcels.shp");
+        drawInfo(c, card.x + 20.0f, card.y + 173.0f, "坐标系:", "EPSG:4326");
+        drawInfo(c, card.x + 20.0f, card.y + 225.0f, "创建时间:", "2024-05-16 14:32:18");
+
+        drawInfo(c, card.x + 302.0f, card.y + 101.0f, "要素数量:", "6,523");
+        drawInfo(c, card.x + 302.0f, card.y + 137.0f, "几何类型:", "Polygon");
+        drawInfo(c, card.x + 302.0f, card.y + 173.0f, "范围:", "113.2142,22.4987");
+        text(c, "-114.9876,23.9145", card.x + 360.0f, card.y + 199.0f, 16.0f, rgba(238, 246, 251, 232), false);
+        drawInfo(c, card.x + 302.0f, card.y + 225.0f, "最后编辑:", "2024-05-16 15:47:09");
+    }
+
+    void drawInfo(SkCanvas& c, float x, float y, std::string_view label, std::string_view value) {
+        text(c, label, x, y, 16.0f, rgba(192, 207, 220, 215), false);
+        text(c, value, x + 76.0f, y, 16.0f, rgba(238, 246, 251, 232), false);
+    }
+
+    void drawStatusBar(SkCanvas& c, float width, float height) {
+        const Rect bar{0.0f, height - 60.0f, width, 60.0f};
+        const SkColor colors[] = {rgba(8, 16, 24, 214), rgba(4, 10, 16, 236)};
+        const SkScalar pos[] = {0.0f, 1.0f};
+        c.drawRect(bar.sk(),
+                   linearPaint(SkPoint::Make(0.0f, bar.y), SkPoint::Make(0.0f, height), colors, pos, 2));
+        line(c, 0.0f, bar.y + 0.5f, width, bar.y + 0.5f, rgba(108, 136, 158, 66), 1.0f);
+
+        drawLayerStack(c, 63.0f, height - 30.0f, 31.0f, rgba(216, 226, 238, 210), false);
+        text(c, "图层:5", 89.0f, height - 22.0f, 20.0f, rgba(222, 232, 241, 235), false);
+        drawEyeIcon(c, 293.0f, height - 30.0f, rgba(216, 226, 238, 210), 29.0f);
+        text(c, "可见:5", 323.0f, height - 22.0f, 20.0f, rgba(222, 232, 241, 235), false);
+        drawChartIcon(c, 524.0f, height - 30.0f, rgba(216, 226, 238, 210));
+        text(c, "总要素:11,272", 549.0f, height - 22.0f, 20.0f, rgba(222, 232, 241, 235), false);
+    }
+
+    void drawCompass(SkCanvas& c, float cx, float cy) {
+        const float r = 51.0f;
+        c.drawCircle(cx, cy, r, stroke(rgba(197, 213, 224, 145), 1.1f));
+        c.drawCircle(cx, cy, r * 0.74f, stroke(rgba(197, 213, 224, 45), 1.0f));
+
+        for (int i = 0; i < 24; ++i) {
+            const float angle = -kPi * 0.5f + i * (2.0f * kPi / 24.0f);
+            const float len = (i % 6 == 0) ? 11.0f : 6.0f;
+            const float x1 = cx + std::cos(angle) * (r - len);
+            const float y1 = cy + std::sin(angle) * (r - len);
+            const float x2 = cx + std::cos(angle) * r;
+            const float y2 = cy + std::sin(angle) * r;
+            line(c, x1, y1, x2, y2, rgba(207, 220, 230, i % 6 == 0 ? 150 : 95), 1.0f);
+        }
+
+        centeredText(c, "N", {cx - 10.0f, cy - r - 29.0f, 20.0f, 20.0f}, 17.0f, rgba(237, 245, 251, 235), true);
+        centeredText(c, "E", {cx + r + 7.0f, cy - 10.0f, 20.0f, 20.0f}, 16.0f, rgba(237, 245, 251, 220), false);
+        centeredText(c, "S", {cx - 10.0f, cy + r + 10.0f, 20.0f, 20.0f}, 16.0f, rgba(237, 245, 251, 220), false);
+        centeredText(c, "W", {cx - r - 28.0f, cy - 10.0f, 20.0f, 20.0f}, 16.0f, rgba(237, 245, 251, 220), false);
+
+        SkPathBuilder north;
+        north.moveTo(cx, cy - r + 12.0f);
+        north.lineTo(cx + 9.0f, cy - 1.0f);
+        north.lineTo(cx, cy - 8.0f);
+        north.lineTo(cx - 9.0f, cy - 1.0f);
+        north.close();
+        c.drawPath(north.detach(), fill(rgb(227, 74, 82)));
+
+        SkPathBuilder south;
+        south.moveTo(cx, cy + r - 13.0f);
+        south.lineTo(cx + 9.0f, cy + 1.0f);
+        south.lineTo(cx, cy + 8.0f);
+        south.lineTo(cx - 9.0f, cy + 1.0f);
+        south.close();
+        c.drawPath(south.detach(), fill(rgba(224, 232, 239, 230)));
+        c.drawCircle(cx, cy, 6.5f, fill(rgba(11, 20, 30, 240)));
+        c.drawCircle(cx, cy, 3.0f, fill(rgba(190, 210, 222, 215)));
+    }
+
+    void drawLayerStack(SkCanvas& c, float cx, float cy, float size, SkColor color, bool glow) {
+        if (glow) {
+            c.drawCircle(cx, cy + 3.0f, size * 0.78f, fill(rgba(41, 233, 220, 42)));
+        }
+        std::string body;
+        body += "<path d=\"M12 3.2 4.2 7.2 12 11.2l7.8-4-7.8-4Z\" ";
+        body += svgFillAttrs(withAlpha(color, glow ? 210 : 235));
+        body += "/>";
+        body +=
+            "<path d=\"M4.2 12 12 16l7.8-4\"/>"
+            "<path d=\"M4.2 16.6 12 20.6l7.8-4\"/>";
+        drawSvgIcon(c, svgWrap(body, svgStrokeAttrs(color, 2.05f)), cx, cy, size);
+    }
+
+    void drawSearchIcon(SkCanvas& c, float cx, float cy, float r, SkColor color, float strokeWidth) {
+        const std::string body = "<circle cx=\"10.5\" cy=\"10.5\" r=\"6.3\"/><path d=\"M15.4 15.4 21 21\"/>";
+        drawSvgIcon(c, svgWrap(body, svgStrokeAttrs(color, strokeWidth)), cx, cy, r * 2.8f);
+    }
+
+    void drawUploadIcon(SkCanvas& c, float cx, float cy, SkColor color) {
+        const std::string body =
+            "<path d=\"M12 16.5V5.4\"/>"
+            "<path d=\"M7.1 10.3 12 5.4l4.9 4.9\"/>"
+            "<path d=\"M5.2 15.6v3.2h13.6v-3.2\"/>";
+        drawSvgIcon(c, svgWrap(body, svgStrokeAttrs(color, 2.15f)), cx, cy, 31.0f);
+    }
+
+    void drawPlusIcon(SkCanvas& c, float cx, float cy, SkColor color) {
+        const std::string body = "<path d=\"M12 5v14\"/><path d=\"M5 12h14\"/>";
+        drawSvgIcon(c, svgWrap(body, svgStrokeAttrs(color, 1.9f)), cx, cy, 29.0f);
+    }
+
+    void drawDragDots(SkCanvas& c, float cx, float cy, SkColor color) {
+        for (int row = -1; row <= 1; ++row) {
+            c.drawCircle(cx - 4.0f, cy + row * 6.0f, 1.9f, fill(color));
+            c.drawCircle(cx + 4.0f, cy + row * 6.0f, 1.9f, fill(color));
+        }
+    }
+
+    void drawGeometryIcon(SkCanvas& c, int icon, float cx, float cy, SkColor color, float size = 22.0f) {
+        std::string body;
+        switch (icon) {
+        case 0:
+            body = "<path d=\"M12.2 2.9 20.1 8.8 17.2 21 5.7 20.2 3.7 9.1 12.2 2.9Z\"/>";
+            break;
+        case 1:
+            body = "<path d=\"M3.8 5.4 9.1 9.6 13.6 13.2 20.2 18.3\"/><circle cx=\"3.8\" cy=\"5.4\" r=\"1.35\"/><circle cx=\"20.2\" cy=\"18.3\" r=\"1.35\"/>";
+            break;
+        case 2:
+            body = "<circle cx=\"12\" cy=\"12\" r=\"6.2\"/>";
+            break;
+        case 3:
+            body = "<path d=\"M3.8 9.4c3.3 2.4 6.1 2.4 9.3 0 2.7-2 5-2.1 7.1-.3\"/><path d=\"M3.8 14.8c3.3 2.4 6.1 2.4 9.3 0 2.7-2 5-2.1 7.1-.3\"/>";
+            break;
+        default:
+            body = "<path d=\"M5.1 5.1h13.8v13.8H5.1Z\"/>";
+            break;
+        }
+        drawSvgIcon(c, svgWrap(body, svgStrokeAttrs(color, 2.1f)), cx, cy, size);
+    }
+
+    void drawEyeIcon(SkCanvas& c, float cx, float cy, SkColor color, float size = 27.0f) {
+        std::string body = "<path d=\"M3.2 12s3.3-5.2 8.8-5.2 8.8 5.2 8.8 5.2-3.3 5.2-8.8 5.2S3.2 12 3.2 12Z\"/>";
+        body += "<circle cx=\"12\" cy=\"12\" r=\"2.25\" ";
+        body += svgFillAttrs(color);
+        body += " stroke=\"none\"/>";
+        drawSvgIcon(c, svgWrap(body, svgStrokeAttrs(color, 1.9f)), cx, cy, size);
+    }
+
+    void drawMoreIcon(SkCanvas& c, float cx, float cy, SkColor color) {
+        c.drawCircle(cx, cy - 9.0f, 2.0f, fill(color));
+        c.drawCircle(cx, cy, 2.0f, fill(color));
+        c.drawCircle(cx, cy + 9.0f, 2.0f, fill(color));
+    }
+
+    void drawChartIcon(SkCanvas& c, float cx, float cy, SkColor color) {
+        std::string body = "<path d=\"M4.4 4.4h15.2v15.2H4.4Z\"/>";
+        body += "<path d=\"M8 15.7v-4.2M12 15.7V8.2M16 15.7v-6\"/>";
+        drawSvgIcon(c, svgWrap(body, svgStrokeAttrs(color, 1.8f)), cx, cy, 29.0f);
+    }
+
+    void drawEditIcon(SkCanvas& c, float cx, float cy, SkColor color) {
+        const std::string body =
+            "<path d=\"M5.1 5.5h10.3v3.1\"/>"
+            "<path d=\"M5.1 5.5v13.4h13.4v-6\"/>"
+            "<path d=\"M8.8 15.3 17 7.1l2.5 2.5-8.2 8.2-3.4.9.9-3.4Z\"/>";
+        drawSvgIcon(c, svgWrap(body, svgStrokeAttrs(color, 1.85f)), cx, cy, 42.0f);
+    }
+
+    void drawPencilIcon(SkCanvas& c, float cx, float cy, SkColor color) {
+        const std::string body =
+            "<path d=\"M4.2 19.8 5 16.2 16.4 4.8l2.8 2.8L7.8 19l-3.6.8Z\"/>"
+            "<path d=\"M14.8 6.4 17.6 9.2\"/>";
+        drawSvgIcon(c, svgWrap(body, svgStrokeAttrs(color, 2.0f)), cx, cy, 41.0f);
+    }
+
+    void drawTargetIcon(SkCanvas& c, float cx, float cy, SkColor color) {
+        std::string body =
+            "<circle cx=\"12\" cy=\"12\" r=\"8.1\"/>"
+            "<circle cx=\"12\" cy=\"12\" r=\"3.8\"/>";
+        body += "<circle cx=\"12\" cy=\"12\" r=\"1.25\" ";
+        body += svgFillAttrs(color);
+        body += " stroke=\"none\"/>";
+        drawSvgIcon(c, svgWrap(body, svgStrokeAttrs(color, 1.85f)), cx, cy, 44.0f);
+    }
+
+    void drawDocIcon(SkCanvas& c, float cx, float cy, SkColor color) {
+        const std::string body =
+            "<path d=\"M6.1 3.5h11.8v17H6.1Z\"/>"
+            "<path d=\"M9 7.2h6\"/>"
+            "<path d=\"M9 11.5h6\"/>"
+            "<path d=\"M9 15.8h6\"/>";
+        drawSvgIcon(c, svgWrap(body, svgStrokeAttrs(color, 1.95f)), cx, cy, 42.0f);
+    }
+
+    void drawSwitchIcon(SkCanvas& c, float cx, float cy, SkColor color) {
+        const std::string body =
+            "<path d=\"M4 7.2h15\"/>"
+            "<path d=\"M15.1 3.9 19 7.2l-3.9 3.3\"/>"
+            "<path d=\"M20 16.8H5\"/>"
+            "<path d=\"M8.9 13.5 5 16.8l3.9 3.3\"/>";
+        drawSvgIcon(c, svgWrap(body, svgStrokeAttrs(color, 1.95f)), cx, cy, 42.0f);
+    }
+
+    void drawGearIcon(SkCanvas& c, float cx, float cy, SkColor color) {
+        std::string body;
+        body += "<path fill-rule=\"evenodd\" d=\"M12 2.7 14 3.6l.45 2.15 1.75 1.02 2.1-.65 1.25 1.9-1.05 1.96.35 2.02 1.6 1.48-.78 2.15-2.25.28-1.42 1.42-.28 2.25-2.15.78L12 18.95l-1.56 1.43-2.15-.78-.28-2.25-1.42-1.42-2.25-.28-.78-2.15 1.6-1.48.35-2.02-1.05-1.96 1.25-1.9 2.1.65 1.75-1.02L10 3.6 12 2.7Zm0 6.2a3.1 3.1 0 1 0 0 6.2 3.1 3.1 0 0 0 0-6.2Z\" ";
+        body += svgFillAttrs(color);
+        body += "/>";
+        drawSvgIcon(c, svgWrap(body, svgStrokeAttrs(color, 0.0f)), cx, cy, 43.0f);
+    }
+};
+
+class AppWindow {
+public:
+    int run(HINSTANCE instance, int showCmd) {
+        SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE);
+        dpi_ = getSystemDpi();
+        const float dpiScale = dpiScaleForDpi(dpi_);
+
+        WNDCLASSEXW wc{};
+        wc.cbSize = sizeof(wc);
+        wc.hInstance = instance;
+        wc.lpfnWndProc = &AppWindow::WndProc;
+        wc.lpszClassName = L"SkiaLayerDeskWindow";
+        wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+        wc.hbrBackground = reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
+        RegisterClassExW(&wc);
+
+        RECT workArea{};
+        SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0);
+        const int workWidth = workArea.right - workArea.left;
+        const int workHeight = workArea.bottom - workArea.top;
+        int clientWidth = static_cast<int>(std::round(kBaseWidth * dpiScale));
+        int clientHeight = static_cast<int>(std::round(kBaseHeight * dpiScale));
+        const float fit = std::min(1.0f, std::min((workWidth - 40.0f) / clientWidth, (workHeight - 40.0f) / clientHeight));
+        clientWidth = static_cast<int>(std::round(clientWidth * std::max(0.70f, fit)));
+        clientHeight = static_cast<int>(std::round(clientHeight * std::max(0.70f, fit)));
+        const int x = workArea.left + (workWidth - clientWidth) / 2;
+        const int y = workArea.top + (workHeight - clientHeight) / 2;
+
+        HWND hwnd = CreateWindowExW(WS_EX_APPWINDOW,
+                                    wc.lpszClassName,
+                                    L"SkiaLayerDesk",
+                                    WS_POPUP,
+                                    x,
+                                    y,
+                                    clientWidth,
+                                    clientHeight,
+                                    nullptr,
+                                    nullptr,
+                                    instance,
+                                    this);
+        if (!hwnd) {
+            return 1;
+        }
+
+        BOOL dark = TRUE;
+        DwmSetWindowAttribute(hwnd, 20, &dark, sizeof(dark));
+        ShowWindow(hwnd, showCmd == SW_HIDE ? SW_SHOWNORMAL : showCmd);
+        UpdateWindow(hwnd);
+
+        MSG msg{};
+        while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+        return static_cast<int>(msg.wParam);
+    }
+
+private:
+    Renderer renderer_;
+    std::vector<uint32_t> pixels_;
+    int surfaceWidth_ = 0;
+    int surfaceHeight_ = 0;
+    UINT dpi_ = static_cast<UINT>(kDefaultDpi);
+
+    static float dpiScaleForDpi(UINT dpi) {
+        return static_cast<float>(std::max<UINT>(dpi, 1)) / kDefaultDpi;
+    }
+
+    static UINT getSystemDpi() {
+        const UINT dpi = GetDpiForSystem();
+        return dpi != 0 ? dpi : static_cast<UINT>(kDefaultDpi);
+    }
+
+    static UINT getWindowDpi(HWND hwnd) {
+        const UINT dpi = GetDpiForWindow(hwnd);
+        return dpi != 0 ? dpi : getSystemDpi();
+    }
+
+    static AppWindow* get(HWND hwnd) {
+        return reinterpret_cast<AppWindow*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    }
+
+    static LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
+        if (message == WM_NCCREATE) {
+            const auto* create = reinterpret_cast<CREATESTRUCTW*>(lParam);
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(create->lpCreateParams));
+        }
+
+        AppWindow* app = get(hwnd);
+        if (!app) {
+            return DefWindowProcW(hwnd, message, wParam, lParam);
+        }
+
+        switch (message) {
+        case WM_SIZE:
+            app->resize(LOWORD(lParam), HIWORD(lParam));
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        case WM_DPICHANGED: {
+            app->dpi_ = HIWORD(wParam);
+            const auto* suggested = reinterpret_cast<RECT*>(lParam);
+            SetWindowPos(hwnd,
+                         nullptr,
+                         suggested->left,
+                         suggested->top,
+                         suggested->right - suggested->left,
+                         suggested->bottom - suggested->top,
+                         SWP_NOZORDER | SWP_NOACTIVATE);
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        }
+        case WM_LBUTTONDOWN:
+            ReleaseCapture();
+            SendMessageW(hwnd, WM_NCLBUTTONDOWN, HTCAPTION, 0);
+            return 0;
+        case WM_KEYDOWN:
+            if (wParam == VK_ESCAPE) {
+                DestroyWindow(hwnd);
+                return 0;
+            }
+            break;
+        case WM_PAINT:
+            app->paint(hwnd);
+            return 0;
+        case WM_ERASEBKGND:
+            return 1;
+        case WM_DESTROY:
+            PostQuitMessage(0);
+            return 0;
+        default:
+            break;
+        }
+        return DefWindowProcW(hwnd, message, wParam, lParam);
+    }
+
+    void resize(int width, int height) {
+        surfaceWidth_ = std::max(1, width);
+        surfaceHeight_ = std::max(1, height);
+        pixels_.assign(static_cast<size_t>(surfaceWidth_) * static_cast<size_t>(surfaceHeight_), 0xFF070C12u);
+    }
+
+    void paint(HWND hwnd) {
+        PAINTSTRUCT ps{};
+        HDC hdc = BeginPaint(hwnd, &ps);
+
+        RECT client{};
+        GetClientRect(hwnd, &client);
+        const int width = std::max<LONG>(1, client.right - client.left);
+        const int height = std::max<LONG>(1, client.bottom - client.top);
+        if (width != surfaceWidth_ || height != surfaceHeight_ || pixels_.empty()) {
+            resize(width, height);
+        }
+        dpi_ = getWindowDpi(hwnd);
+
+        const SkImageInfo info = SkImageInfo::MakeN32Premul(surfaceWidth_, surfaceHeight_);
+        sk_sp<SkSurface> surface =
+            SkSurfaces::WrapPixels(info, pixels_.data(), static_cast<size_t>(surfaceWidth_) * sizeof(uint32_t));
+        if (surface) {
+            renderer_.draw(*surface->getCanvas(), surfaceWidth_, surfaceHeight_, dpiScaleForDpi(dpi_));
+        }
+
+        BITMAPINFO bmi{};
+        bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        bmi.bmiHeader.biWidth = surfaceWidth_;
+        bmi.bmiHeader.biHeight = -surfaceHeight_;
+        bmi.bmiHeader.biPlanes = 1;
+        bmi.bmiHeader.biBitCount = 32;
+        bmi.bmiHeader.biCompression = BI_RGB;
+
+        StretchDIBits(hdc,
+                      0,
+                      0,
+                      surfaceWidth_,
+                      surfaceHeight_,
+                      0,
+                      0,
+                      surfaceWidth_,
+                      surfaceHeight_,
+                      pixels_.data(),
+                      &bmi,
+                      DIB_RGB_COLORS,
+                      SRCCOPY);
+        EndPaint(hwnd, &ps);
+    }
+};
+
+}  // namespace
+
+int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCmd) {
+    AppWindow app;
+    return app.run(instance, showCmd);
+}
