@@ -9,6 +9,8 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 find_package(unofficial-skia CONFIG REQUIRED)
 find_package(yoga CONFIG REQUIRED)
 
+option(SKIATEST_USE_SKIA_D3D "Render SkiaLayerDesk through Skia Ganesh D3D12 backend" ON)
+
 add_executable(SkiaRelayDesk WIN32
     src/main.cpp
 )
@@ -26,6 +28,10 @@ foreach(app_target IN ITEMS SkiaRelayDesk SkiaLayerDesk)
         gdi32
         dwmapi
         shcore
+        d3d12
+        dxgi
+        dxguid
+        dbghelp
         usp10
     )
 
@@ -40,3 +46,7 @@ foreach(app_target IN ITEMS SkiaRelayDesk SkiaLayerDesk)
         target_compile_options(${app_target} PRIVATE /utf-8 /permissive- /Zc:__cplusplus)
     endif()
 endforeach()
+
+if(SKIATEST_USE_SKIA_D3D)
+    target_compile_definitions(SkiaLayerDesk PRIVATE SKIATEST_USE_SKIA_D3D=1)
+endif()

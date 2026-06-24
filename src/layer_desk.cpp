@@ -6,14 +6,20 @@
 #endif
 
 #include <windows.h>
+#include <d3d12.h>
+#include <dbghelp.h>
 #include <dwmapi.h>
+#include <dxgi1_4.h>
 #include <shellscalingapi.h>
+#include <wrl/client.h>
 
 #include "include/core/SkCanvas.h"
 #include "include/core/SkColor.h"
+#include "include/core/SkColorType.h"
 #include "include/core/SkFont.h"
 #include "include/core/SkFontMgr.h"
 #include "include/core/SkFontStyle.h"
+#include "include/core/SkFontTypes.h"
 #include "include/core/SkImageInfo.h"
 #include "include/core/SkPaint.h"
 #include "include/core/SkPath.h"
@@ -28,6 +34,14 @@
 #include "include/core/SkSurface.h"
 #include "include/core/SkTypeface.h"
 #include "include/effects/SkGradient.h"
+#if defined(SKIATEST_USE_SKIA_D3D) && SKIATEST_USE_SKIA_D3D
+#include "include/gpu/ganesh/GrBackendSurface.h"
+#include "include/gpu/ganesh/GrDirectContext.h"
+#include "include/gpu/ganesh/SkSurfaceGanesh.h"
+#include "include/gpu/ganesh/d3d/GrD3DBackendContext.h"
+#include "include/gpu/ganesh/d3d/GrD3DBackendSurface.h"
+#include "include/gpu/ganesh/d3d/GrD3DDirectContext.h"
+#endif
 #include "include/ports/SkTypeface_win.h"
 #include "modules/svg/include/SkSVGDOM.h"
 
@@ -36,9 +50,13 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdint>
+#include <cstring>
+#include <cwchar>
 #include <memory>
 #include <string>
 #include <string_view>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -47,6 +65,67 @@ constexpr int kBaseWidth = 1672;
 constexpr int kBaseHeight = 941;
 constexpr float kDefaultDpi = 96.0f;
 constexpr float kPi = 3.14159265358979323846f;
+constexpr int kSwapBufferCount = 2;
+constexpr DXGI_FORMAT kSwapFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
+constexpr COLORREF kWin32Background = RGB(7, 12, 18);
+
+constexpr UINT alignTo(UINT value, UINT alignment) {
+    return (value + alignment - 1u) & ~(alignment - 1u);
+}
+
+LONG WINAPI writeMiniDump(EXCEPTION_POINTERS* exceptionPointers) {
+    wchar_t exePath[MAX_PATH]{};
+    if (!GetModuleFileNameW(nullptr, exePath, MAX_PATH)) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    wchar_t* lastSlash = std::wcsrchr(exePath, L'\\');
+    if (lastSlash) {
+        *(lastSlash + 1) = L'\0';
+    } else {
+        exePath[0] = L'\0';
+    }
+
+    SYSTEMTIME now{};
+    GetLocalTime(&now);
+
+    wchar_t dumpPath[MAX_PATH]{};
+    std::swprintf(dumpPath,
+                  MAX_PATH,
+                  L"%sSkiaLayerDesk_%04u%02u%02u_%02u%02u%02u.dmp",
+                  exePath,
+                  now.wYear,
+                  now.wMonth,
+                  now.wDay,
+                  now.wHour,
+                  now.wMinute,
+                  now.wSecond);
+
+    HANDLE file = CreateFileW(dumpPath,
+                              GENERIC_WRITE,
+                              0,
+                              nullptr,
+                              CREATE_ALWAYS,
+                              FILE_ATTRIBUTE_NORMAL,
+                              nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    MINIDUMP_EXCEPTION_INFORMATION info{};
+    info.ThreadId = GetCurrentThreadId();
+    info.ExceptionPointers = exceptionPointers;
+    info.ClientPointers = FALSE;
+    MiniDumpWriteDump(GetCurrentProcess(),
+                      GetCurrentProcessId(),
+                      file,
+                      MiniDumpWithDataSegs,
+                      exceptionPointers ? &info : nullptr,
+                      nullptr,
+                      nullptr);
+    CloseHandle(file);
+    return EXCEPTION_CONTINUE_SEARCH;
+}
 
 SkColor rgb(uint8_t r, uint8_t g, uint8_t b) {
     return SkColorSetRGB(r, g, b);
@@ -75,6 +154,61 @@ struct Rect {
     }
 };
 
+using Microsoft::WRL::ComPtr;
+
+#if defined(SKIATEST_USE_SKIA_D3D) && SKIATEST_USE_SKIA_D3D
+class SimpleD3DAlloc final : public GrD3DAlloc {};
+
+class SimpleD3DMemoryAllocator final : public GrD3DMemoryAllocator {
+public:
+    explicit SimpleD3DMemoryAllocator(ID3D12Device* device) : device_(device) {}
+
+    gr_cp<ID3D12Resource> createResource(D3D12_HEAP_TYPE heapType,
+                                         const D3D12_RESOURCE_DESC* desc,
+                                         D3D12_RESOURCE_STATES initialResourceState,
+                                         sk_sp<GrD3DAlloc>* allocation,
+                                         const D3D12_CLEAR_VALUE* clearValue) override {
+        if (!device_ || !desc) {
+            return nullptr;
+        }
+
+        D3D12_HEAP_PROPERTIES heapProps{};
+        heapProps.Type = heapType;
+        heapProps.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+        heapProps.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+        heapProps.CreationNodeMask = 1;
+        heapProps.VisibleNodeMask = 1;
+
+        ID3D12Resource* resource = nullptr;
+        const HRESULT hr = device_->CreateCommittedResource(&heapProps,
+                                                            D3D12_HEAP_FLAG_NONE,
+                                                            desc,
+                                                            initialResourceState,
+                                                            clearValue,
+                                                            IID_PPV_ARGS(&resource));
+        if (FAILED(hr)) {
+            return nullptr;
+        }
+
+        if (allocation) {
+            *allocation = sk_make_sp<SimpleD3DAlloc>();
+        }
+        return gr_cp<ID3D12Resource>(resource);
+    }
+
+    gr_cp<ID3D12Resource> createAliasingResource(sk_sp<GrD3DAlloc>&,
+                                                uint64_t,
+                                                const D3D12_RESOURCE_DESC*,
+                                                D3D12_RESOURCE_STATES,
+                                                const D3D12_CLEAR_VALUE*) override {
+        return nullptr;
+    }
+
+private:
+    ComPtr<ID3D12Device> device_;
+};
+#endif
+
 class Renderer {
 public:
     Renderer() {
@@ -102,6 +236,7 @@ private:
     sk_sp<SkFontMgr> fontMgr_;
     sk_sp<SkTypeface> regular_;
     sk_sp<SkTypeface> medium_;
+    mutable std::unordered_map<std::string, sk_sp<SkSVGDOM>> svgCache_;
 
     sk_sp<SkTypeface> pickTypeface(bool bold) {
         const SkFontStyle style = bold ? SkFontStyle::Bold() : SkFontStyle::Normal();
@@ -121,7 +256,8 @@ private:
 
     SkFont font(float size, bool bold = false) const {
         SkFont f(bold ? medium_ : regular_, size);
-        f.setEdging(SkFont::Edging::kAntiAlias);
+        f.setEdging(SkFont::Edging::kSubpixelAntiAlias);
+        f.setHinting(SkFontHinting::kNormal);
         f.setSubpixel(true);
         return f;
     }
@@ -209,16 +345,20 @@ private:
     }
 
     void drawSvgIcon(SkCanvas& c, const std::string& svg, float cx, float cy, float size) const {
-        SkMemoryStream stream(svg.data(), svg.size(), false);
-        sk_sp<SkSVGDOM> dom = SkSVGDOM::MakeFromStream(stream);
-        if (!dom) {
-            return;
+        auto icon = svgCache_.find(svg);
+        if (icon == svgCache_.end()) {
+            SkMemoryStream stream(svg.data(), svg.size(), false);
+            sk_sp<SkSVGDOM> dom = SkSVGDOM::MakeFromStream(stream);
+            if (!dom) {
+                return;
+            }
+            dom->setContainerSize(SkSize::Make(24.0f, 24.0f));
+            icon = svgCache_.emplace(svg, std::move(dom)).first;
         }
-        dom->setContainerSize(SkSize::Make(24.0f, 24.0f));
         c.save();
         c.translate(cx - size * 0.5f, cy - size * 0.5f);
         c.scale(size / 24.0f, size / 24.0f);
-        dom->render(&c);
+        icon->second->render(&c);
         c.restore();
     }
 
@@ -363,7 +503,7 @@ private:
         const SkColor color = active ? rgb(48, 234, 220) : rgba(222, 230, 242, 210);
         switch (icon) {
         case 0:
-            drawLayerStack(c, cx, iconY, 44.0f, color, active);
+            drawLayerStack(c, cx, iconY, 44.0f, color, false);
             break;
         case 1:
             drawEditIcon(c, cx, iconY, color);
@@ -384,8 +524,8 @@ private:
             drawGearIcon(c, cx, iconY, color);
             break;
         }
-        const float w = textWidth(label, 17.0f, true);
-        text(c, label, cx - w * 0.5f, iconY + 47.0f, 17.0f, color, true);
+        const float w = textWidth(label, 17.0f, false);
+        text(c, label, cx - w * 0.5f, iconY + 47.0f, 17.0f, color, false);
     }
 
     void drawLayerPanel(SkCanvas& c) {
@@ -410,7 +550,18 @@ private:
                     stroke(rgba(222, 244, 252, 38), 1.0f));
 
         drawLayerStack(c, 183.0f, 62.0f, 44.0f, rgba(221, 252, 255, 240), false);
-        text(c, "图层 / 图层管理", 215.0f, 72.0f, 27.0f, rgba(239, 247, 253, 245), true);
+        constexpr float titleSize = 27.0f;
+        constexpr float subtitleSize = 20.5f;
+        const float titleX = 215.0f;
+        const float titleBaseline = 72.0f;
+        text(c, "图层", titleX, titleBaseline, titleSize, rgba(239, 247, 253, 245), true);
+        text(c,
+             " / 图层管理",
+             titleX + textWidth("图层", titleSize, true) + 7.0f,
+             titleBaseline - 1.0f,
+             subtitleSize,
+             rgba(239, 247, 253, 232),
+             false);
 
         drawActionButton(c, {160.0f, 110.0f, 253.0f, 47.0f}, "导入SHP", true);
         drawActionButton(c, {431.0f, 110.0f, 266.0f, 47.0f}, "新建图层", false);
@@ -439,15 +590,15 @@ private:
         c.drawRRect(rr(r, 7.0f), fill(rgba(11, 22, 32, 130)));
         c.drawRRect(rr(r, 7.0f), stroke(rgba(132, 164, 190, 130), 1.15f));
         drawSearchIcon(c, r.x + 26.0f, r.y + r.h * 0.5f, 9.0f, rgba(213, 224, 236, 220), 2.7f);
-        text(c, "搜索图层...", r.x + 55.0f, r.y + 29.0f, 17.5f, rgba(180, 195, 207, 132), true);
+        text(c, "搜索图层...", r.x + 55.0f, r.y + 29.0f, 17.5f, rgba(180, 195, 207, 132), false);
     }
 
     void drawTable(SkCanvas& c) {
-        text(c, "名称", 224.0f, 264.0f, 16.5f, rgba(229, 239, 247, 230), true);
-        text(c, "可见", 356.0f, 264.0f, 16.5f, rgba(229, 239, 247, 230), true);
-        text(c, "要素数", 423.0f, 264.0f, 16.5f, rgba(229, 239, 247, 230), true);
-        text(c, "类型", 508.0f, 264.0f, 16.5f, rgba(229, 239, 247, 230), true);
-        text(c, "坐标系", 596.0f, 264.0f, 16.5f, rgba(229, 239, 247, 230), true);
+        text(c, "名称", 224.0f, 264.0f, 16.5f, rgba(229, 239, 247, 230), false);
+        text(c, "可见", 356.0f, 264.0f, 16.5f, rgba(229, 239, 247, 230), false);
+        text(c, "要素数", 423.0f, 264.0f, 16.5f, rgba(229, 239, 247, 230), false);
+        text(c, "类型", 508.0f, 264.0f, 16.5f, rgba(229, 239, 247, 230), false);
+        text(c, "坐标系", 596.0f, 264.0f, 16.5f, rgba(229, 239, 247, 230), false);
 
         drawLayerRow(c, 280.0f, true, 0, "地块边界", "6,523", "Polygon");
         drawLayerRow(c, 334.0f, false, 1, "道路中心线", "2,431", "LineString");
@@ -476,7 +627,7 @@ private:
 
         drawDragDots(c, row.x + 19.0f, y + 27.0f, rgba(220, 232, 241, selected ? 215 : 165));
         drawGeometryIcon(c, icon, row.x + 59.0f, y + 27.0f, selected ? rgb(63, 237, 225) : rgba(216, 226, 238, 220));
-        text(c, name, row.x + 84.0f, y + 34.0f, 16.5f, rgba(239, 246, 251, 238), true);
+        text(c, name, row.x + 84.0f, y + 34.0f, 16.5f, rgba(239, 246, 251, 238), false);
         drawEyeIcon(c, row.x + 221.0f, y + 27.0f, rgb(48, 234, 220));
         text(c, count, row.x + 274.0f, y + 34.0f, 15.8f, rgba(235, 244, 249, 232), false);
         text(c, type, row.x + 356.0f, y + 34.0f, 15.0f, rgba(235, 244, 249, 232), false);
@@ -659,10 +810,10 @@ private:
 
     void drawEditIcon(SkCanvas& c, float cx, float cy, SkColor color) {
         const std::string body =
-            "<path d=\"M5.1 5.5h10.3v3.1\"/>"
-            "<path d=\"M5.1 5.5v13.4h13.4v-6\"/>"
-            "<path d=\"M8.8 15.3 17 7.1l2.5 2.5-8.2 8.2-3.4.9.9-3.4Z\"/>";
-        drawSvgIcon(c, svgWrap(body, svgStrokeAttrs(color, 1.85f)), cx, cy, 42.0f);
+            "<path d=\"M12 3.6H5.7c-1.2 0-2.1.9-2.1 2.1v12.6c0 1.2.9 2.1 2.1 2.1h12.6c1.2 0 2.1-.9 2.1-2.1V12\"/>"
+            "<path d=\"M16.8 3.9c.8-.8 2.1-.8 2.9 0s.8 2.1 0 2.9l-8.9 8.9-4 1 1-4 9-8.8Z\"/>"
+            "<path d=\"M15.5 5.2l3.3 3.3\"/>";
+        drawSvgIcon(c, svgWrap(body, svgStrokeAttrs(color, 2.05f)), cx, cy, 42.0f);
     }
 
     void drawPencilIcon(SkCanvas& c, float cx, float cy, SkColor color) {
@@ -701,50 +852,67 @@ private:
     }
 
     void drawGearIcon(SkCanvas& c, float cx, float cy, SkColor color) {
-        std::string body;
-        body += "<path fill-rule=\"evenodd\" d=\"M12 2.7 14 3.6l.45 2.15 1.75 1.02 2.1-.65 1.25 1.9-1.05 1.96.35 2.02 1.6 1.48-.78 2.15-2.25.28-1.42 1.42-.28 2.25-2.15.78L12 18.95l-1.56 1.43-2.15-.78-.28-2.25-1.42-1.42-2.25-.28-.78-2.15 1.6-1.48.35-2.02-1.05-1.96 1.25-1.9 2.1.65 1.75-1.02L10 3.6 12 2.7Zm0 6.2a3.1 3.1 0 1 0 0 6.2 3.1 3.1 0 0 0 0-6.2Z\" ";
-        body += svgFillAttrs(color);
-        body += "/>";
-        drawSvgIcon(c, svgWrap(body, svgStrokeAttrs(color, 0.0f)), cx, cy, 43.0f);
+        const std::string body =
+            "<path d=\"M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.09a2 2 0 0 1 1 1.74v.5a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.38a2 2 0 0 0-.73-2.73l-.15-.09a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2Z\"/>"
+            "<circle cx=\"12\" cy=\"12\" r=\"3\"/>";
+        drawSvgIcon(c, svgWrap(body, svgStrokeAttrs(color, 2.0f)), cx, cy, 43.0f);
     }
 };
 
 class AppWindow {
 public:
+    ~AppWindow() {
+        resetD3D();
+        if (backgroundBrush_) {
+            DeleteObject(backgroundBrush_);
+            backgroundBrush_ = nullptr;
+        }
+    }
+
     int run(HINSTANCE instance, int showCmd) {
         SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE);
         dpi_ = getSystemDpi();
         const float dpiScale = dpiScaleForDpi(dpi_);
+        backgroundBrush_ = CreateSolidBrush(kWin32Background);
 
         WNDCLASSEXW wc{};
         wc.cbSize = sizeof(wc);
+        wc.style = CS_HREDRAW | CS_VREDRAW;
         wc.hInstance = instance;
         wc.lpfnWndProc = &AppWindow::WndProc;
         wc.lpszClassName = L"SkiaLayerDeskWindow";
         wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-        wc.hbrBackground = reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
+        wc.hbrBackground = backgroundBrush_;
         RegisterClassExW(&wc);
 
         RECT workArea{};
         SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0);
         const int workWidth = workArea.right - workArea.left;
         const int workHeight = workArea.bottom - workArea.top;
-        int clientWidth = static_cast<int>(std::round(kBaseWidth * dpiScale));
-        int clientHeight = static_cast<int>(std::round(kBaseHeight * dpiScale));
-        const float fit = std::min(1.0f, std::min((workWidth - 40.0f) / clientWidth, (workHeight - 40.0f) / clientHeight));
-        clientWidth = static_cast<int>(std::round(clientWidth * std::max(0.70f, fit)));
-        clientHeight = static_cast<int>(std::round(clientHeight * std::max(0.70f, fit)));
-        const int x = workArea.left + (workWidth - clientWidth) / 2;
-        const int y = workArea.top + (workHeight - clientHeight) / 2;
+        const int desiredClientWidth = static_cast<int>(std::round(kBaseWidth * dpiScale));
+        const int desiredClientHeight = static_cast<int>(std::round(kBaseHeight * dpiScale));
+        RECT desired{0, 0, desiredClientWidth, desiredClientHeight};
+        adjustWindowRectForDpi(desired, dpi_);
+        const int frameWidth = desired.right - desired.left;
+        const int frameHeight = desired.bottom - desired.top;
+        const float scale = std::min(1.0f, std::min((workWidth - 80.0f) / frameWidth, (workHeight - 80.0f) / frameHeight));
+        const int width = static_cast<int>(desiredClientWidth * std::max(0.72f, scale));
+        const int height = static_cast<int>(desiredClientHeight * std::max(0.72f, scale));
+        RECT initialRect{0, 0, width, height};
+        adjustWindowRectForDpi(initialRect, dpi_);
+        const int windowWidth = initialRect.right - initialRect.left;
+        const int windowHeight = initialRect.bottom - initialRect.top;
+        const int x = workArea.left + (workWidth - windowWidth) / 2;
+        const int y = workArea.top + (workHeight - windowHeight) / 2;
 
-        HWND hwnd = CreateWindowExW(WS_EX_APPWINDOW,
+        HWND hwnd = CreateWindowExW(0,
                                     wc.lpszClassName,
                                     L"SkiaLayerDesk",
-                                    WS_POPUP,
+                                    WS_OVERLAPPEDWINDOW,
                                     x,
                                     y,
-                                    clientWidth,
-                                    clientHeight,
+                                    windowWidth,
+                                    windowHeight,
                                     nullptr,
                                     nullptr,
                                     instance,
@@ -755,7 +923,7 @@ public:
 
         BOOL dark = TRUE;
         DwmSetWindowAttribute(hwnd, 20, &dark, sizeof(dark));
-        ShowWindow(hwnd, showCmd == SW_HIDE ? SW_SHOWNORMAL : showCmd);
+        ShowWindow(hwnd, showCmd);
         UpdateWindow(hwnd);
 
         MSG msg{};
@@ -769,9 +937,33 @@ public:
 private:
     Renderer renderer_;
     std::vector<uint32_t> pixels_;
-    int surfaceWidth_ = 0;
-    int surfaceHeight_ = 0;
+    int cpuSurfaceWidth_ = 0;
+    int cpuSurfaceHeight_ = 0;
     UINT dpi_ = static_cast<UINT>(kDefaultDpi);
+    bool d3dTried_ = false;
+    bool d3dReady_ = false;
+    int swapWidth_ = 0;
+    int swapHeight_ = 0;
+    ComPtr<IDXGIFactory4> dxgiFactory_;
+    ComPtr<IDXGIAdapter1> dxgiAdapter_;
+    ComPtr<ID3D12Device> d3dDevice_;
+    ComPtr<ID3D12CommandQueue> d3dQueue_;
+    ComPtr<IDXGISwapChain3> swapChain_;
+    ComPtr<ID3D12CommandAllocator> commandAllocator_;
+    ComPtr<ID3D12GraphicsCommandList> commandList_;
+    ComPtr<ID3D12Fence> fence_;
+    ComPtr<ID3D12Resource> uploadBuffer_;
+    UINT uploadRowPitch_ = 0;
+    uint64_t uploadBufferSize_ = 0;
+    uint8_t* uploadMapped_ = nullptr;
+    UINT64 fenceValue_ = 0;
+    HANDLE fenceEvent_ = nullptr;
+    HBRUSH backgroundBrush_ = nullptr;
+    bool paintActive_ = false;
+#if defined(SKIATEST_USE_SKIA_D3D) && SKIATEST_USE_SKIA_D3D
+    sk_sp<GrD3DMemoryAllocator> d3dAllocator_;
+    sk_sp<GrDirectContext> grContext_;
+#endif
 
     static float dpiScaleForDpi(UINT dpi) {
         return static_cast<float>(std::max<UINT>(dpi, 1)) / kDefaultDpi;
@@ -787,8 +979,32 @@ private:
         return dpi != 0 ? dpi : getSystemDpi();
     }
 
+    static void adjustWindowRectForDpi(RECT& rect, UINT dpi) {
+        if (!AdjustWindowRectExForDpi(&rect, WS_OVERLAPPEDWINDOW, FALSE, 0, dpi)) {
+            AdjustWindowRectEx(&rect, WS_OVERLAPPEDWINDOW, FALSE, 0);
+        }
+    }
+
     static AppWindow* get(HWND hwnd) {
         return reinterpret_cast<AppWindow*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    }
+
+    void requestRepaint(HWND hwnd, bool immediate) {
+        const UINT flags = RDW_INVALIDATE | RDW_NOCHILDREN |
+                           (immediate ? (RDW_ERASE | RDW_UPDATENOW) : 0);
+        RedrawWindow(hwnd, nullptr, nullptr, flags);
+    }
+
+    void eraseBackground(HWND hwnd, HDC hdc) {
+        RECT client{};
+        GetClientRect(hwnd, &client);
+        if (backgroundBrush_) {
+            FillRect(hdc, &client, backgroundBrush_);
+            return;
+        }
+
+        SetDCBrushColor(hdc, kWin32Background);
+        FillRect(hdc, &client, reinterpret_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
     }
 
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
@@ -803,9 +1019,21 @@ private:
         }
 
         switch (message) {
+        case WM_WINDOWPOSCHANGING: {
+            auto* pos = reinterpret_cast<WINDOWPOS*>(lParam);
+            if (pos && !(pos->flags & SWP_NOSIZE)) {
+                pos->flags |= SWP_NOCOPYBITS;
+            }
+            break;
+        }
         case WM_SIZE:
-            app->resize(LOWORD(lParam), HIWORD(lParam));
-            InvalidateRect(hwnd, nullptr, FALSE);
+            if (wParam == SIZE_MINIMIZED) {
+                return 0;
+            }
+            app->requestRepaint(hwnd, true);
+            return 0;
+        case WM_EXITSIZEMOVE:
+            app->requestRepaint(hwnd, true);
             return 0;
         case WM_DPICHANGED: {
             app->dpi_ = HIWORD(wParam);
@@ -817,13 +1045,9 @@ private:
                          suggested->right - suggested->left,
                          suggested->bottom - suggested->top,
                          SWP_NOZORDER | SWP_NOACTIVATE);
-            InvalidateRect(hwnd, nullptr, FALSE);
+            app->requestRepaint(hwnd, true);
             return 0;
         }
-        case WM_LBUTTONDOWN:
-            ReleaseCapture();
-            SendMessageW(hwnd, WM_NCLBUTTONDOWN, HTCAPTION, 0);
-            return 0;
         case WM_KEYDOWN:
             if (wParam == VK_ESCAPE) {
                 DestroyWindow(hwnd);
@@ -834,6 +1058,7 @@ private:
             app->paint(hwnd);
             return 0;
         case WM_ERASEBKGND:
+            app->eraseBackground(hwnd, reinterpret_cast<HDC>(wParam));
             return 1;
         case WM_DESTROY:
             PostQuitMessage(0);
@@ -844,13 +1069,564 @@ private:
         return DefWindowProcW(hwnd, message, wParam, lParam);
     }
 
-    void resize(int width, int height) {
-        surfaceWidth_ = std::max(1, width);
-        surfaceHeight_ = std::max(1, height);
-        pixels_.assign(static_cast<size_t>(surfaceWidth_) * static_cast<size_t>(surfaceHeight_), 0xFF070C12u);
+    bool initD3D(HWND hwnd, int width, int height) {
+        d3dTried_ = true;
+        width = std::max(1, width);
+        height = std::max(1, height);
+
+        UINT factoryFlags = 0;
+        if (FAILED(CreateDXGIFactory2(factoryFlags, IID_PPV_ARGS(&dxgiFactory_)))) {
+            resetD3D();
+            return false;
+        }
+
+        for (UINT adapterIndex = 0;; ++adapterIndex) {
+            ComPtr<IDXGIAdapter1> adapter;
+            if (dxgiFactory_->EnumAdapters1(adapterIndex, &adapter) == DXGI_ERROR_NOT_FOUND) {
+                break;
+            }
+
+            DXGI_ADAPTER_DESC1 desc{};
+            adapter->GetDesc1(&desc);
+            if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) {
+                continue;
+            }
+
+            if (SUCCEEDED(D3D12CreateDevice(adapter.Get(),
+                                            D3D_FEATURE_LEVEL_11_0,
+                                            __uuidof(ID3D12Device),
+                                            nullptr))) {
+                dxgiAdapter_ = adapter;
+                break;
+            }
+        }
+
+        if (!dxgiAdapter_ ||
+            FAILED(D3D12CreateDevice(dxgiAdapter_.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&d3dDevice_)))) {
+            resetD3D();
+            return false;
+        }
+
+        D3D12_COMMAND_QUEUE_DESC queueDesc{};
+        queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+        queueDesc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
+        if (FAILED(d3dDevice_->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&d3dQueue_)))) {
+            resetD3D();
+            return false;
+        }
+
+        if (FAILED(d3dDevice_->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
+                                                      IID_PPV_ARGS(&commandAllocator_)))) {
+            resetD3D();
+            return false;
+        }
+
+        if (FAILED(d3dDevice_->CreateCommandList(0,
+                                                 D3D12_COMMAND_LIST_TYPE_DIRECT,
+                                                 commandAllocator_.Get(),
+                                                 nullptr,
+                                                 IID_PPV_ARGS(&commandList_)))) {
+            resetD3D();
+            return false;
+        }
+        commandList_->Close();
+
+        if (FAILED(d3dDevice_->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence_)))) {
+            resetD3D();
+            return false;
+        }
+
+        fenceEvent_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+        if (!fenceEvent_) {
+            resetD3D();
+            return false;
+        }
+
+#if defined(SKIATEST_USE_SKIA_D3D) && SKIATEST_USE_SKIA_D3D
+        d3dAllocator_ = sk_make_sp<SimpleD3DMemoryAllocator>(d3dDevice_.Get());
+
+        GrD3DBackendContext backendContext{};
+        backendContext.fAdapter.retain(dxgiAdapter_.Get());
+        backendContext.fDevice.retain(d3dDevice_.Get());
+        backendContext.fQueue.retain(d3dQueue_.Get());
+        backendContext.fMemoryAllocator = d3dAllocator_;
+        grContext_ = GrDirectContexts::MakeD3D(backendContext);
+        if (!grContext_) {
+            d3dAllocator_.reset();
+        }
+#endif
+
+        if (!createSwapChain(hwnd, width, height)) {
+            resetD3D();
+            return false;
+        }
+#if defined(SKIATEST_USE_SKIA_D3D) && SKIATEST_USE_SKIA_D3D
+        if (!grContext_ && !createUploadBuffer(width, height)) {
+            resetD3D();
+            return false;
+        }
+#else
+        if (!createUploadBuffer(width, height)) {
+            resetD3D();
+            return false;
+        }
+#endif
+
+        d3dReady_ = true;
+        return true;
+    }
+
+    void resetD3D() {
+#if defined(SKIATEST_USE_SKIA_D3D) && SKIATEST_USE_SKIA_D3D
+        if (grContext_) {
+            grContext_->flushAndSubmit(GrSyncCpu::kNo);
+        }
+#endif
+        waitForGpu();
+        releaseUploadBuffer();
+#if defined(SKIATEST_USE_SKIA_D3D) && SKIATEST_USE_SKIA_D3D
+        if (grContext_) {
+            grContext_->releaseResourcesAndAbandonContext();
+        }
+        grContext_.reset();
+        d3dAllocator_.reset();
+#endif
+        swapChain_.Reset();
+        commandList_.Reset();
+        commandAllocator_.Reset();
+        fence_.Reset();
+        d3dQueue_.Reset();
+        d3dDevice_.Reset();
+        dxgiAdapter_.Reset();
+        dxgiFactory_.Reset();
+        if (fenceEvent_) {
+            CloseHandle(fenceEvent_);
+            fenceEvent_ = nullptr;
+        }
+        fenceValue_ = 0;
+        swapWidth_ = 0;
+        swapHeight_ = 0;
+        d3dReady_ = false;
+    }
+
+    bool waitForGpu() {
+        if (!d3dQueue_ || !fence_ || !fenceEvent_) {
+            return true;
+        }
+
+        const UINT64 value = ++fenceValue_;
+        if (FAILED(d3dQueue_->Signal(fence_.Get(), value))) {
+            return false;
+        }
+        if (fence_->GetCompletedValue() >= value) {
+            return true;
+        }
+        if (FAILED(fence_->SetEventOnCompletion(value, fenceEvent_))) {
+            return false;
+        }
+        WaitForSingleObject(fenceEvent_, INFINITE);
+        return true;
+    }
+
+    void releaseUploadBuffer() {
+        if (uploadBuffer_ && uploadMapped_) {
+            uploadBuffer_->Unmap(0, nullptr);
+        }
+        uploadMapped_ = nullptr;
+        uploadBuffer_.Reset();
+        uploadRowPitch_ = 0;
+        uploadBufferSize_ = 0;
+    }
+
+    bool createUploadBuffer(int width, int height) {
+        width = std::max(1, width);
+        height = std::max(1, height);
+        const UINT rowPitch = alignTo(static_cast<UINT>(width) * sizeof(uint32_t),
+                                      D3D12_TEXTURE_DATA_PITCH_ALIGNMENT);
+        const uint64_t uploadSize = static_cast<uint64_t>(rowPitch) * static_cast<uint64_t>(height);
+        if (uploadBuffer_ && uploadMapped_ && uploadRowPitch_ == rowPitch && uploadBufferSize_ >= uploadSize) {
+            return true;
+        }
+
+        releaseUploadBuffer();
+
+        D3D12_HEAP_PROPERTIES heapProps{};
+        heapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
+        heapProps.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+        heapProps.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+        heapProps.CreationNodeMask = 1;
+        heapProps.VisibleNodeMask = 1;
+
+        D3D12_RESOURCE_DESC desc{};
+        desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        desc.Alignment = 0;
+        desc.Width = uploadSize;
+        desc.Height = 1;
+        desc.DepthOrArraySize = 1;
+        desc.MipLevels = 1;
+        desc.Format = DXGI_FORMAT_UNKNOWN;
+        desc.SampleDesc.Count = 1;
+        desc.SampleDesc.Quality = 0;
+        desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        desc.Flags = D3D12_RESOURCE_FLAG_NONE;
+
+        if (FAILED(d3dDevice_->CreateCommittedResource(&heapProps,
+                                                       D3D12_HEAP_FLAG_NONE,
+                                                       &desc,
+                                                       D3D12_RESOURCE_STATE_GENERIC_READ,
+                                                       nullptr,
+                                                       IID_PPV_ARGS(&uploadBuffer_)))) {
+            return false;
+        }
+
+        D3D12_RANGE noRead{0, 0};
+        void* mapped = nullptr;
+        if (FAILED(uploadBuffer_->Map(0, &noRead, &mapped))) {
+            releaseUploadBuffer();
+            return false;
+        }
+
+        uploadMapped_ = static_cast<uint8_t*>(mapped);
+        uploadRowPitch_ = rowPitch;
+        uploadBufferSize_ = uploadSize;
+        return true;
+    }
+
+    bool createSwapChain(HWND hwnd, int width, int height) {
+        if (!dxgiFactory_ || !d3dQueue_) {
+            return false;
+        }
+
+        DXGI_SWAP_CHAIN_DESC1 desc{};
+        desc.Width = static_cast<UINT>(std::max(1, width));
+        desc.Height = static_cast<UINT>(std::max(1, height));
+        desc.Format = kSwapFormat;
+        desc.Stereo = FALSE;
+        desc.SampleDesc.Count = 1;
+        desc.SampleDesc.Quality = 0;
+        desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+        desc.BufferCount = kSwapBufferCount;
+        desc.Scaling = DXGI_SCALING_NONE;
+        desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+        desc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
+        desc.Flags = 0;
+
+        ComPtr<IDXGISwapChain1> swapChain1;
+        const HRESULT hr = dxgiFactory_->CreateSwapChainForHwnd(d3dQueue_.Get(),
+                                                                hwnd,
+                                                                &desc,
+                                                                nullptr,
+                                                                nullptr,
+                                                                &swapChain1);
+        if (FAILED(hr) || FAILED(swapChain1.As(&swapChain_))) {
+            return false;
+        }
+
+        dxgiFactory_->MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER);
+        const DXGI_RGBA background{
+            GetRValue(kWin32Background) / 255.0f,
+            GetGValue(kWin32Background) / 255.0f,
+            GetBValue(kWin32Background) / 255.0f,
+            1.0f,
+        };
+        swapChain_->SetBackgroundColor(&background);
+        swapWidth_ = std::max(1, width);
+        swapHeight_ = std::max(1, height);
+        return true;
+    }
+
+    bool resizeSwapChain(int width, int height) {
+        width = std::max(1, width);
+        height = std::max(1, height);
+        if (!swapChain_) {
+            return false;
+        }
+        if (width == swapWidth_ && height == swapHeight_) {
+            return true;
+        }
+
+#if defined(SKIATEST_USE_SKIA_D3D) && SKIATEST_USE_SKIA_D3D
+        if (grContext_) {
+            grContext_->flushAndSubmit(GrSyncCpu::kYes);
+            grContext_->freeGpuResources();
+        }
+#endif
+        waitForGpu();
+        releaseUploadBuffer();
+
+        const HRESULT hr = swapChain_->ResizeBuffers(kSwapBufferCount,
+                                                     static_cast<UINT>(width),
+                                                     static_cast<UINT>(height),
+                                                     kSwapFormat,
+                                                     0);
+        if (FAILED(hr)) {
+            resetD3D();
+            return false;
+        }
+
+        swapWidth_ = width;
+        swapHeight_ = height;
+        return true;
+    }
+
+    bool presentSwapChain() {
+        if (!swapChain_) {
+            return false;
+        }
+
+        DXGI_PRESENT_PARAMETERS params{};
+        return SUCCEEDED(swapChain_->Present1(0, 0, &params));
+    }
+
+#if defined(SKIATEST_USE_SKIA_D3D) && SKIATEST_USE_SKIA_D3D
+    bool transitionToPresent(ID3D12Resource* resource) {
+        if (!d3dDevice_ || !d3dQueue_ || !resource) {
+            return false;
+        }
+
+        ComPtr<ID3D12CommandAllocator> allocator;
+        if (FAILED(d3dDevice_->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
+                                                      IID_PPV_ARGS(&allocator)))) {
+            return false;
+        }
+
+        ComPtr<ID3D12GraphicsCommandList> list;
+        if (FAILED(d3dDevice_->CreateCommandList(0,
+                                                 D3D12_COMMAND_LIST_TYPE_DIRECT,
+                                                 allocator.Get(),
+                                                 nullptr,
+                                                 IID_PPV_ARGS(&list)))) {
+            return false;
+        }
+
+        D3D12_RESOURCE_BARRIER barrier{};
+        barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+        barrier.Transition.pResource = resource;
+        barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
+        list->ResourceBarrier(1, &barrier);
+
+        if (FAILED(list->Close())) {
+            return false;
+        }
+
+        ID3D12CommandList* lists[] = {list.Get()};
+        d3dQueue_->ExecuteCommandLists(1, lists);
+        return true;
+    }
+
+    bool renderSkiaGaneshD3D(HWND hwnd, int width, int height) {
+        if (!grContext_) {
+            return false;
+        }
+
+        ComPtr<ID3D12Resource> backBuffer;
+        const UINT bufferIndex = swapChain_->GetCurrentBackBufferIndex();
+        if (FAILED(swapChain_->GetBuffer(bufferIndex, IID_PPV_ARGS(&backBuffer)))) {
+            return false;
+        }
+
+        GrD3DTextureResourceInfo textureInfo(backBuffer.Get(),
+                                             nullptr,
+                                             D3D12_RESOURCE_STATE_PRESENT,
+                                             kSwapFormat,
+                                             1,
+                                             1,
+                                             DXGI_STANDARD_MULTISAMPLE_QUALITY_PATTERN);
+        GrBackendRenderTarget backendTarget = GrBackendRenderTargets::MakeD3D(width, height, textureInfo);
+        sk_sp<SkSurface> surface = SkSurfaces::WrapBackendRenderTarget(grContext_.get(),
+                                                                       backendTarget,
+                                                                       kTopLeft_GrSurfaceOrigin,
+                                                                       kBGRA_8888_SkColorType,
+                                                                       nullptr,
+                                                                       nullptr);
+        if (!surface) {
+            return false;
+        }
+
+        renderer_.draw(*surface->getCanvas(), width, height, dpiScaleForDpi(dpi_));
+        grContext_->flushAndSubmit(surface.get());
+        surface.reset();
+
+        if (!transitionToPresent(backBuffer.Get())) {
+            return false;
+        }
+        GrBackendRenderTargets::SetD3DResourceState(&backendTarget, D3D12_RESOURCE_STATE_PRESENT);
+        return presentSwapChain();
+    }
+#endif
+
+    bool renderCpuSurface(int width, int height) {
+        width = std::max(1, width);
+        height = std::max(1, height);
+        if (width != cpuSurfaceWidth_ || height != cpuSurfaceHeight_ || pixels_.empty()) {
+            cpuSurfaceWidth_ = width;
+            cpuSurfaceHeight_ = height;
+            pixels_.resize(static_cast<size_t>(cpuSurfaceWidth_) * static_cast<size_t>(cpuSurfaceHeight_));
+        }
+
+        const SkImageInfo info = SkImageInfo::Make(cpuSurfaceWidth_,
+                                                   cpuSurfaceHeight_,
+                                                   kBGRA_8888_SkColorType,
+                                                   kPremul_SkAlphaType);
+        sk_sp<SkSurface> surface =
+            SkSurfaces::WrapPixels(info, pixels_.data(), static_cast<size_t>(cpuSurfaceWidth_) * sizeof(uint32_t));
+        if (!surface) {
+            return false;
+        }
+
+        renderer_.draw(*surface->getCanvas(), cpuSurfaceWidth_, cpuSurfaceHeight_, dpiScaleForDpi(dpi_));
+        return true;
+    }
+
+    bool copyCpuSurfaceToUpload(int width, int height) {
+        if (!uploadMapped_ || pixels_.empty() || width != cpuSurfaceWidth_ || height != cpuSurfaceHeight_) {
+            return false;
+        }
+
+        const size_t srcRowBytes = static_cast<size_t>(width) * sizeof(uint32_t);
+        const auto* src = reinterpret_cast<const uint8_t*>(pixels_.data());
+        for (int y = 0; y < height; ++y) {
+            std::memcpy(uploadMapped_ + static_cast<size_t>(y) * uploadRowPitch_,
+                        src + static_cast<size_t>(y) * srcRowBytes,
+                        srcRowBytes);
+        }
+        return true;
+    }
+
+    bool renderD3D(HWND hwnd, int width, int height) {
+        if (width <= 0 || height <= 0) {
+            return false;
+        }
+
+        if (!d3dReady_) {
+            if (d3dTried_ || !initD3D(hwnd, width, height)) {
+                return false;
+            }
+        }
+
+        if (!resizeSwapChain(width, height)) {
+            return false;
+        }
+
+#if defined(SKIATEST_USE_SKIA_D3D) && SKIATEST_USE_SKIA_D3D
+        if (renderSkiaGaneshD3D(hwnd, width, height)) {
+            return true;
+        }
+#endif
+
+        if (!createUploadBuffer(width, height) ||
+            !renderCpuSurface(width, height) ||
+            !copyCpuSurfaceToUpload(width, height)) {
+            return false;
+        }
+
+        ComPtr<ID3D12Resource> backBuffer;
+        const UINT bufferIndex = swapChain_->GetCurrentBackBufferIndex();
+        if (FAILED(swapChain_->GetBuffer(bufferIndex, IID_PPV_ARGS(&backBuffer)))) {
+            return false;
+        }
+
+        if (FAILED(commandAllocator_->Reset()) ||
+            FAILED(commandList_->Reset(commandAllocator_.Get(), nullptr))) {
+            return false;
+        }
+
+        D3D12_RESOURCE_BARRIER toCopy{};
+        toCopy.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        toCopy.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+        toCopy.Transition.pResource = backBuffer.Get();
+        toCopy.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        toCopy.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+        toCopy.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+        commandList_->ResourceBarrier(1, &toCopy);
+
+        D3D12_TEXTURE_COPY_LOCATION dst{};
+        dst.pResource = backBuffer.Get();
+        dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+        dst.SubresourceIndex = 0;
+
+        D3D12_TEXTURE_COPY_LOCATION src{};
+        src.pResource = uploadBuffer_.Get();
+        src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+        src.PlacedFootprint.Offset = 0;
+        src.PlacedFootprint.Footprint.Format = kSwapFormat;
+        src.PlacedFootprint.Footprint.Width = static_cast<UINT>(width);
+        src.PlacedFootprint.Footprint.Height = static_cast<UINT>(height);
+        src.PlacedFootprint.Footprint.Depth = 1;
+        src.PlacedFootprint.Footprint.RowPitch = uploadRowPitch_;
+        commandList_->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+
+        D3D12_RESOURCE_BARRIER toPresent = toCopy;
+        toPresent.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+        toPresent.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
+        commandList_->ResourceBarrier(1, &toPresent);
+
+        if (FAILED(commandList_->Close())) {
+            return false;
+        }
+
+        ID3D12CommandList* lists[] = {commandList_.Get()};
+        d3dQueue_->ExecuteCommandLists(1, lists);
+        if (!waitForGpu()) {
+            resetD3D();
+            return false;
+        }
+
+        if (!presentSwapChain()) {
+            resetD3D();
+            return false;
+        }
+        return true;
+    }
+
+    void renderCpuFallback(HDC hdc, const PAINTSTRUCT& ps, int width, int height) {
+        width = std::max(1, width);
+        height = std::max(1, height);
+        if (!renderCpuSurface(width, height)) {
+            return;
+        }
+
+        BITMAPINFO bmi{};
+        bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        bmi.bmiHeader.biWidth = cpuSurfaceWidth_;
+        bmi.bmiHeader.biHeight = -cpuSurfaceHeight_;
+        bmi.bmiHeader.biPlanes = 1;
+        bmi.bmiHeader.biBitCount = 32;
+        bmi.bmiHeader.biCompression = BI_RGB;
+
+        const int paintX = std::max<LONG>(0, ps.rcPaint.left);
+        const int paintY = std::max<LONG>(0, ps.rcPaint.top);
+        const int paintRight = std::min<LONG>(cpuSurfaceWidth_, ps.rcPaint.right);
+        const int paintBottom = std::min<LONG>(cpuSurfaceHeight_, ps.rcPaint.bottom);
+        const int paintWidth = paintRight - paintX;
+        const int paintHeight = paintBottom - paintY;
+        if (paintWidth > 0 && paintHeight > 0) {
+            StretchDIBits(hdc,
+                          paintX,
+                          paintY,
+                          paintWidth,
+                          paintHeight,
+                          paintX,
+                          paintY,
+                          paintWidth,
+                          paintHeight,
+                          pixels_.data(),
+                          &bmi,
+                          DIB_RGB_COLORS,
+                          SRCCOPY);
+        }
     }
 
     void paint(HWND hwnd) {
+        if (paintActive_) {
+            ValidateRect(hwnd, nullptr);
+            return;
+        }
+        paintActive_ = true;
+
         PAINTSTRUCT ps{};
         HDC hdc = BeginPaint(hwnd, &ps);
 
@@ -858,46 +1634,21 @@ private:
         GetClientRect(hwnd, &client);
         const int width = std::max<LONG>(1, client.right - client.left);
         const int height = std::max<LONG>(1, client.bottom - client.top);
-        if (width != surfaceWidth_ || height != surfaceHeight_ || pixels_.empty()) {
-            resize(width, height);
-        }
         dpi_ = getWindowDpi(hwnd);
 
-        const SkImageInfo info = SkImageInfo::MakeN32Premul(surfaceWidth_, surfaceHeight_);
-        sk_sp<SkSurface> surface =
-            SkSurfaces::WrapPixels(info, pixels_.data(), static_cast<size_t>(surfaceWidth_) * sizeof(uint32_t));
-        if (surface) {
-            renderer_.draw(*surface->getCanvas(), surfaceWidth_, surfaceHeight_, dpiScaleForDpi(dpi_));
+        if (!renderD3D(hwnd, width, height)) {
+            renderCpuFallback(hdc, ps, width, height);
         }
 
-        BITMAPINFO bmi{};
-        bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-        bmi.bmiHeader.biWidth = surfaceWidth_;
-        bmi.bmiHeader.biHeight = -surfaceHeight_;
-        bmi.bmiHeader.biPlanes = 1;
-        bmi.bmiHeader.biBitCount = 32;
-        bmi.bmiHeader.biCompression = BI_RGB;
-
-        StretchDIBits(hdc,
-                      0,
-                      0,
-                      surfaceWidth_,
-                      surfaceHeight_,
-                      0,
-                      0,
-                      surfaceWidth_,
-                      surfaceHeight_,
-                      pixels_.data(),
-                      &bmi,
-                      DIB_RGB_COLORS,
-                      SRCCOPY);
         EndPaint(hwnd, &ps);
+        paintActive_ = false;
     }
 };
 
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCmd) {
+    SetUnhandledExceptionFilter(writeMiniDump);
     AppWindow app;
     return app.run(instance, showCmd);
 }
