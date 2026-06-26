@@ -6,13 +6,11 @@
 #endif
 
 #include <windows.h>
-#include <d3d12.h>
 #include <dbghelp.h>
 #include <dwmapi.h>
-#include <dxgi1_4.h>
 #include <shellscalingapi.h>
-#include <wrl/client.h>
 
+#include "d3d_presenter.h"
 #include "include/core/SkCanvas.h"
 #include "include/core/SkColor.h"
 #include "include/core/SkColorType.h"
@@ -34,14 +32,6 @@
 #include "include/core/SkSurface.h"
 #include "include/core/SkTypeface.h"
 #include "include/effects/SkGradient.h"
-#if defined(SKIATEST_USE_SKIA_D3D) && SKIATEST_USE_SKIA_D3D
-#include "include/gpu/ganesh/GrBackendSurface.h"
-#include "include/gpu/ganesh/GrDirectContext.h"
-#include "include/gpu/ganesh/SkSurfaceGanesh.h"
-#include "include/gpu/ganesh/d3d/GrD3DBackendContext.h"
-#include "include/gpu/ganesh/d3d/GrD3DBackendSurface.h"
-#include "include/gpu/ganesh/d3d/GrD3DDirectContext.h"
-#endif
 #include "include/ports/SkTypeface_win.h"
 #include "modules/svg/include/SkSVGDOM.h"
 
@@ -50,7 +40,6 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdint>
-#include <cstring>
 #include <cwchar>
 #include <memory>
 #include <string>
@@ -65,13 +54,7 @@ constexpr int kBaseWidth = 1672;
 constexpr int kBaseHeight = 941;
 constexpr float kDefaultDpi = 96.0f;
 constexpr float kPi = 3.14159265358979323846f;
-constexpr int kSwapBufferCount = 2;
-constexpr DXGI_FORMAT kSwapFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
 constexpr COLORREF kWin32Background = RGB(7, 12, 18);
-
-constexpr UINT alignTo(UINT value, UINT alignment) {
-    return (value + alignment - 1u) & ~(alignment - 1u);
-}
 
 LONG WINAPI writeMiniDump(EXCEPTION_POINTERS* exceptionPointers) {
     wchar_t exePath[MAX_PATH]{};
@@ -153,61 +136,6 @@ struct Rect {
         return SkRect::MakeXYWH(x, y, w, h);
     }
 };
-
-using Microsoft::WRL::ComPtr;
-
-#if defined(SKIATEST_USE_SKIA_D3D) && SKIATEST_USE_SKIA_D3D
-class SimpleD3DAlloc final : public GrD3DAlloc {};
-
-class SimpleD3DMemoryAllocator final : public GrD3DMemoryAllocator {
-public:
-    explicit SimpleD3DMemoryAllocator(ID3D12Device* device) : device_(device) {}
-
-    gr_cp<ID3D12Resource> createResource(D3D12_HEAP_TYPE heapType,
-                                         const D3D12_RESOURCE_DESC* desc,
-                                         D3D12_RESOURCE_STATES initialResourceState,
-                                         sk_sp<GrD3DAlloc>* allocation,
-                                         const D3D12_CLEAR_VALUE* clearValue) override {
-        if (!device_ || !desc) {
-            return nullptr;
-        }
-
-        D3D12_HEAP_PROPERTIES heapProps{};
-        heapProps.Type = heapType;
-        heapProps.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
-        heapProps.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
-        heapProps.CreationNodeMask = 1;
-        heapProps.VisibleNodeMask = 1;
-
-        ID3D12Resource* resource = nullptr;
-        const HRESULT hr = device_->CreateCommittedResource(&heapProps,
-                                                            D3D12_HEAP_FLAG_NONE,
-                                                            desc,
-                                                            initialResourceState,
-                                                            clearValue,
-                                                            IID_PPV_ARGS(&resource));
-        if (FAILED(hr)) {
-            return nullptr;
-        }
-
-        if (allocation) {
-            *allocation = sk_make_sp<SimpleD3DAlloc>();
-        }
-        return gr_cp<ID3D12Resource>(resource);
-    }
-
-    gr_cp<ID3D12Resource> createAliasingResource(sk_sp<GrD3DAlloc>&,
-                                                uint64_t,
-                                                const D3D12_RESOURCE_DESC*,
-                                                D3D12_RESOURCE_STATES,
-                                                const D3D12_CLEAR_VALUE*) override {
-        return nullptr;
-    }
-
-private:
-    ComPtr<ID3D12Device> device_;
-};
-#endif
 
 class Renderer {
 public:
@@ -862,7 +790,6 @@ private:
 class AppWindow {
 public:
     ~AppWindow() {
-        resetD3D();
         if (backgroundBrush_) {
             DeleteObject(backgroundBrush_);
             backgroundBrush_ = nullptr;
@@ -936,34 +863,13 @@ public:
 
 private:
     Renderer renderer_;
+    D3DPresenter d3d_{kWin32Background};
     std::vector<uint32_t> pixels_;
     int cpuSurfaceWidth_ = 0;
     int cpuSurfaceHeight_ = 0;
     UINT dpi_ = static_cast<UINT>(kDefaultDpi);
-    bool d3dTried_ = false;
-    bool d3dReady_ = false;
-    int swapWidth_ = 0;
-    int swapHeight_ = 0;
-    ComPtr<IDXGIFactory4> dxgiFactory_;
-    ComPtr<IDXGIAdapter1> dxgiAdapter_;
-    ComPtr<ID3D12Device> d3dDevice_;
-    ComPtr<ID3D12CommandQueue> d3dQueue_;
-    ComPtr<IDXGISwapChain3> swapChain_;
-    ComPtr<ID3D12CommandAllocator> commandAllocator_;
-    ComPtr<ID3D12GraphicsCommandList> commandList_;
-    ComPtr<ID3D12Fence> fence_;
-    ComPtr<ID3D12Resource> uploadBuffer_;
-    UINT uploadRowPitch_ = 0;
-    uint64_t uploadBufferSize_ = 0;
-    uint8_t* uploadMapped_ = nullptr;
-    UINT64 fenceValue_ = 0;
-    HANDLE fenceEvent_ = nullptr;
     HBRUSH backgroundBrush_ = nullptr;
     bool paintActive_ = false;
-#if defined(SKIATEST_USE_SKIA_D3D) && SKIATEST_USE_SKIA_D3D
-    sk_sp<GrD3DMemoryAllocator> d3dAllocator_;
-    sk_sp<GrDirectContext> grContext_;
-#endif
 
     static float dpiScaleForDpi(UINT dpi) {
         return static_cast<float>(std::max<UINT>(dpi, 1)) / kDefaultDpi;
@@ -1069,394 +975,38 @@ private:
         return DefWindowProcW(hwnd, message, wParam, lParam);
     }
 
-    bool initD3D(HWND hwnd, int width, int height) {
-        d3dTried_ = true;
+    bool renderD3D(HWND hwnd, int width, int height) {
+        return d3d_.render(
+            hwnd,
+            width,
+            height,
+            [this](SkCanvas& canvas, int drawWidth, int drawHeight) {
+                renderer_.draw(canvas, drawWidth, drawHeight, dpiScaleForDpi(dpi_));
+            },
+            [this](uint32_t* pixels, int drawWidth, int drawHeight, size_t rowBytes) {
+                return renderCpuSurface(pixels, drawWidth, drawHeight, rowBytes);
+            });
+    }
+
+    bool renderCpuSurface(uint32_t* pixels, int width, int height, size_t rowBytes) {
         width = std::max(1, width);
         height = std::max(1, height);
-
-        UINT factoryFlags = 0;
-        if (FAILED(CreateDXGIFactory2(factoryFlags, IID_PPV_ARGS(&dxgiFactory_)))) {
-            resetD3D();
+        if (!pixels || rowBytes < static_cast<size_t>(width) * sizeof(uint32_t)) {
             return false;
         }
 
-        for (UINT adapterIndex = 0;; ++adapterIndex) {
-            ComPtr<IDXGIAdapter1> adapter;
-            if (dxgiFactory_->EnumAdapters1(adapterIndex, &adapter) == DXGI_ERROR_NOT_FOUND) {
-                break;
-            }
-
-            DXGI_ADAPTER_DESC1 desc{};
-            adapter->GetDesc1(&desc);
-            if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) {
-                continue;
-            }
-
-            if (SUCCEEDED(D3D12CreateDevice(adapter.Get(),
-                                            D3D_FEATURE_LEVEL_11_0,
-                                            __uuidof(ID3D12Device),
-                                            nullptr))) {
-                dxgiAdapter_ = adapter;
-                break;
-            }
-        }
-
-        if (!dxgiAdapter_ ||
-            FAILED(D3D12CreateDevice(dxgiAdapter_.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&d3dDevice_)))) {
-            resetD3D();
-            return false;
-        }
-
-        D3D12_COMMAND_QUEUE_DESC queueDesc{};
-        queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
-        queueDesc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
-        if (FAILED(d3dDevice_->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&d3dQueue_)))) {
-            resetD3D();
-            return false;
-        }
-
-        if (FAILED(d3dDevice_->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
-                                                      IID_PPV_ARGS(&commandAllocator_)))) {
-            resetD3D();
-            return false;
-        }
-
-        if (FAILED(d3dDevice_->CreateCommandList(0,
-                                                 D3D12_COMMAND_LIST_TYPE_DIRECT,
-                                                 commandAllocator_.Get(),
-                                                 nullptr,
-                                                 IID_PPV_ARGS(&commandList_)))) {
-            resetD3D();
-            return false;
-        }
-        commandList_->Close();
-
-        if (FAILED(d3dDevice_->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence_)))) {
-            resetD3D();
-            return false;
-        }
-
-        fenceEvent_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-        if (!fenceEvent_) {
-            resetD3D();
-            return false;
-        }
-
-#if defined(SKIATEST_USE_SKIA_D3D) && SKIATEST_USE_SKIA_D3D
-        d3dAllocator_ = sk_make_sp<SimpleD3DMemoryAllocator>(d3dDevice_.Get());
-
-        GrD3DBackendContext backendContext{};
-        backendContext.fAdapter.retain(dxgiAdapter_.Get());
-        backendContext.fDevice.retain(d3dDevice_.Get());
-        backendContext.fQueue.retain(d3dQueue_.Get());
-        backendContext.fMemoryAllocator = d3dAllocator_;
-        grContext_ = GrDirectContexts::MakeD3D(backendContext);
-        if (!grContext_) {
-            d3dAllocator_.reset();
-        }
-#endif
-
-        if (!createSwapChain(hwnd, width, height)) {
-            resetD3D();
-            return false;
-        }
-#if defined(SKIATEST_USE_SKIA_D3D) && SKIATEST_USE_SKIA_D3D
-        if (!grContext_ && !createUploadBuffer(width, height)) {
-            resetD3D();
-            return false;
-        }
-#else
-        if (!createUploadBuffer(width, height)) {
-            resetD3D();
-            return false;
-        }
-#endif
-
-        d3dReady_ = true;
-        return true;
-    }
-
-    void resetD3D() {
-#if defined(SKIATEST_USE_SKIA_D3D) && SKIATEST_USE_SKIA_D3D
-        if (grContext_) {
-            grContext_->flushAndSubmit(GrSyncCpu::kNo);
-        }
-#endif
-        waitForGpu();
-        releaseUploadBuffer();
-#if defined(SKIATEST_USE_SKIA_D3D) && SKIATEST_USE_SKIA_D3D
-        if (grContext_) {
-            grContext_->releaseResourcesAndAbandonContext();
-        }
-        grContext_.reset();
-        d3dAllocator_.reset();
-#endif
-        swapChain_.Reset();
-        commandList_.Reset();
-        commandAllocator_.Reset();
-        fence_.Reset();
-        d3dQueue_.Reset();
-        d3dDevice_.Reset();
-        dxgiAdapter_.Reset();
-        dxgiFactory_.Reset();
-        if (fenceEvent_) {
-            CloseHandle(fenceEvent_);
-            fenceEvent_ = nullptr;
-        }
-        fenceValue_ = 0;
-        swapWidth_ = 0;
-        swapHeight_ = 0;
-        d3dReady_ = false;
-    }
-
-    bool waitForGpu() {
-        if (!d3dQueue_ || !fence_ || !fenceEvent_) {
-            return true;
-        }
-
-        const UINT64 value = ++fenceValue_;
-        if (FAILED(d3dQueue_->Signal(fence_.Get(), value))) {
-            return false;
-        }
-        if (fence_->GetCompletedValue() >= value) {
-            return true;
-        }
-        if (FAILED(fence_->SetEventOnCompletion(value, fenceEvent_))) {
-            return false;
-        }
-        WaitForSingleObject(fenceEvent_, INFINITE);
-        return true;
-    }
-
-    void releaseUploadBuffer() {
-        if (uploadBuffer_ && uploadMapped_) {
-            uploadBuffer_->Unmap(0, nullptr);
-        }
-        uploadMapped_ = nullptr;
-        uploadBuffer_.Reset();
-        uploadRowPitch_ = 0;
-        uploadBufferSize_ = 0;
-    }
-
-    bool createUploadBuffer(int width, int height) {
-        width = std::max(1, width);
-        height = std::max(1, height);
-        const UINT rowPitch = alignTo(static_cast<UINT>(width) * sizeof(uint32_t),
-                                      D3D12_TEXTURE_DATA_PITCH_ALIGNMENT);
-        const uint64_t uploadSize = static_cast<uint64_t>(rowPitch) * static_cast<uint64_t>(height);
-        if (uploadBuffer_ && uploadMapped_ && uploadRowPitch_ == rowPitch && uploadBufferSize_ >= uploadSize) {
-            return true;
-        }
-
-        releaseUploadBuffer();
-
-        D3D12_HEAP_PROPERTIES heapProps{};
-        heapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
-        heapProps.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
-        heapProps.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
-        heapProps.CreationNodeMask = 1;
-        heapProps.VisibleNodeMask = 1;
-
-        D3D12_RESOURCE_DESC desc{};
-        desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-        desc.Alignment = 0;
-        desc.Width = uploadSize;
-        desc.Height = 1;
-        desc.DepthOrArraySize = 1;
-        desc.MipLevels = 1;
-        desc.Format = DXGI_FORMAT_UNKNOWN;
-        desc.SampleDesc.Count = 1;
-        desc.SampleDesc.Quality = 0;
-        desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-        desc.Flags = D3D12_RESOURCE_FLAG_NONE;
-
-        if (FAILED(d3dDevice_->CreateCommittedResource(&heapProps,
-                                                       D3D12_HEAP_FLAG_NONE,
-                                                       &desc,
-                                                       D3D12_RESOURCE_STATE_GENERIC_READ,
-                                                       nullptr,
-                                                       IID_PPV_ARGS(&uploadBuffer_)))) {
-            return false;
-        }
-
-        D3D12_RANGE noRead{0, 0};
-        void* mapped = nullptr;
-        if (FAILED(uploadBuffer_->Map(0, &noRead, &mapped))) {
-            releaseUploadBuffer();
-            return false;
-        }
-
-        uploadMapped_ = static_cast<uint8_t*>(mapped);
-        uploadRowPitch_ = rowPitch;
-        uploadBufferSize_ = uploadSize;
-        return true;
-    }
-
-    bool createSwapChain(HWND hwnd, int width, int height) {
-        if (!dxgiFactory_ || !d3dQueue_) {
-            return false;
-        }
-
-        DXGI_SWAP_CHAIN_DESC1 desc{};
-        desc.Width = static_cast<UINT>(std::max(1, width));
-        desc.Height = static_cast<UINT>(std::max(1, height));
-        desc.Format = kSwapFormat;
-        desc.Stereo = FALSE;
-        desc.SampleDesc.Count = 1;
-        desc.SampleDesc.Quality = 0;
-        desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-        desc.BufferCount = kSwapBufferCount;
-        desc.Scaling = DXGI_SCALING_NONE;
-        desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
-        desc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
-        desc.Flags = 0;
-
-        ComPtr<IDXGISwapChain1> swapChain1;
-        const HRESULT hr = dxgiFactory_->CreateSwapChainForHwnd(d3dQueue_.Get(),
-                                                                hwnd,
-                                                                &desc,
-                                                                nullptr,
-                                                                nullptr,
-                                                                &swapChain1);
-        if (FAILED(hr) || FAILED(swapChain1.As(&swapChain_))) {
-            return false;
-        }
-
-        dxgiFactory_->MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER);
-        const DXGI_RGBA background{
-            GetRValue(kWin32Background) / 255.0f,
-            GetGValue(kWin32Background) / 255.0f,
-            GetBValue(kWin32Background) / 255.0f,
-            1.0f,
-        };
-        swapChain_->SetBackgroundColor(&background);
-        swapWidth_ = std::max(1, width);
-        swapHeight_ = std::max(1, height);
-        return true;
-    }
-
-    bool resizeSwapChain(int width, int height) {
-        width = std::max(1, width);
-        height = std::max(1, height);
-        if (!swapChain_) {
-            return false;
-        }
-        if (width == swapWidth_ && height == swapHeight_) {
-            return true;
-        }
-
-#if defined(SKIATEST_USE_SKIA_D3D) && SKIATEST_USE_SKIA_D3D
-        if (grContext_) {
-            grContext_->flushAndSubmit(GrSyncCpu::kYes);
-            grContext_->freeGpuResources();
-        }
-#endif
-        waitForGpu();
-        releaseUploadBuffer();
-
-        const HRESULT hr = swapChain_->ResizeBuffers(kSwapBufferCount,
-                                                     static_cast<UINT>(width),
-                                                     static_cast<UINT>(height),
-                                                     kSwapFormat,
-                                                     0);
-        if (FAILED(hr)) {
-            resetD3D();
-            return false;
-        }
-
-        swapWidth_ = width;
-        swapHeight_ = height;
-        return true;
-    }
-
-    bool presentSwapChain() {
-        if (!swapChain_) {
-            return false;
-        }
-
-        DXGI_PRESENT_PARAMETERS params{};
-        return SUCCEEDED(swapChain_->Present1(0, 0, &params));
-    }
-
-#if defined(SKIATEST_USE_SKIA_D3D) && SKIATEST_USE_SKIA_D3D
-    bool transitionToPresent(ID3D12Resource* resource) {
-        if (!d3dDevice_ || !d3dQueue_ || !resource) {
-            return false;
-        }
-
-        ComPtr<ID3D12CommandAllocator> allocator;
-        if (FAILED(d3dDevice_->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
-                                                      IID_PPV_ARGS(&allocator)))) {
-            return false;
-        }
-
-        ComPtr<ID3D12GraphicsCommandList> list;
-        if (FAILED(d3dDevice_->CreateCommandList(0,
-                                                 D3D12_COMMAND_LIST_TYPE_DIRECT,
-                                                 allocator.Get(),
-                                                 nullptr,
-                                                 IID_PPV_ARGS(&list)))) {
-            return false;
-        }
-
-        D3D12_RESOURCE_BARRIER barrier{};
-        barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-        barrier.Transition.pResource = resource;
-        barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
-        barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
-        list->ResourceBarrier(1, &barrier);
-
-        if (FAILED(list->Close())) {
-            return false;
-        }
-
-        ID3D12CommandList* lists[] = {list.Get()};
-        d3dQueue_->ExecuteCommandLists(1, lists);
-        return true;
-    }
-
-    bool renderSkiaGaneshD3D(HWND hwnd, int width, int height) {
-        if (!grContext_) {
-            return false;
-        }
-
-        ComPtr<ID3D12Resource> backBuffer;
-        const UINT bufferIndex = swapChain_->GetCurrentBackBufferIndex();
-        if (FAILED(swapChain_->GetBuffer(bufferIndex, IID_PPV_ARGS(&backBuffer)))) {
-            return false;
-        }
-
-        GrD3DTextureResourceInfo textureInfo(backBuffer.Get(),
-                                             nullptr,
-                                             D3D12_RESOURCE_STATE_PRESENT,
-                                             kSwapFormat,
-                                             1,
-                                             1,
-                                             DXGI_STANDARD_MULTISAMPLE_QUALITY_PATTERN);
-        GrBackendRenderTarget backendTarget = GrBackendRenderTargets::MakeD3D(width, height, textureInfo);
-        sk_sp<SkSurface> surface = SkSurfaces::WrapBackendRenderTarget(grContext_.get(),
-                                                                       backendTarget,
-                                                                       kTopLeft_GrSurfaceOrigin,
-                                                                       kBGRA_8888_SkColorType,
-                                                                       nullptr,
-                                                                       nullptr);
+        const SkImageInfo info = SkImageInfo::Make(width,
+                                                   height,
+                                                   kBGRA_8888_SkColorType,
+                                                   kPremul_SkAlphaType);
+        sk_sp<SkSurface> surface = SkSurfaces::WrapPixels(info, pixels, rowBytes);
         if (!surface) {
             return false;
         }
 
         renderer_.draw(*surface->getCanvas(), width, height, dpiScaleForDpi(dpi_));
-        grContext_->flushAndSubmit(surface.get());
-        surface.reset();
-
-        if (!transitionToPresent(backBuffer.Get())) {
-            return false;
-        }
-        GrBackendRenderTargets::SetD3DResourceState(&backendTarget, D3D12_RESOURCE_STATE_PRESENT);
-        return presentSwapChain();
+        return true;
     }
-#endif
 
     bool renderCpuSurface(int width, int height) {
         width = std::max(1, width);
@@ -1467,119 +1017,10 @@ private:
             pixels_.resize(static_cast<size_t>(cpuSurfaceWidth_) * static_cast<size_t>(cpuSurfaceHeight_));
         }
 
-        const SkImageInfo info = SkImageInfo::Make(cpuSurfaceWidth_,
-                                                   cpuSurfaceHeight_,
-                                                   kBGRA_8888_SkColorType,
-                                                   kPremul_SkAlphaType);
-        sk_sp<SkSurface> surface =
-            SkSurfaces::WrapPixels(info, pixels_.data(), static_cast<size_t>(cpuSurfaceWidth_) * sizeof(uint32_t));
-        if (!surface) {
-            return false;
-        }
-
-        renderer_.draw(*surface->getCanvas(), cpuSurfaceWidth_, cpuSurfaceHeight_, dpiScaleForDpi(dpi_));
-        return true;
-    }
-
-    bool copyCpuSurfaceToUpload(int width, int height) {
-        if (!uploadMapped_ || pixels_.empty() || width != cpuSurfaceWidth_ || height != cpuSurfaceHeight_) {
-            return false;
-        }
-
-        const size_t srcRowBytes = static_cast<size_t>(width) * sizeof(uint32_t);
-        const auto* src = reinterpret_cast<const uint8_t*>(pixels_.data());
-        for (int y = 0; y < height; ++y) {
-            std::memcpy(uploadMapped_ + static_cast<size_t>(y) * uploadRowPitch_,
-                        src + static_cast<size_t>(y) * srcRowBytes,
-                        srcRowBytes);
-        }
-        return true;
-    }
-
-    bool renderD3D(HWND hwnd, int width, int height) {
-        if (width <= 0 || height <= 0) {
-            return false;
-        }
-
-        if (!d3dReady_) {
-            if (d3dTried_ || !initD3D(hwnd, width, height)) {
-                return false;
-            }
-        }
-
-        if (!resizeSwapChain(width, height)) {
-            return false;
-        }
-
-#if defined(SKIATEST_USE_SKIA_D3D) && SKIATEST_USE_SKIA_D3D
-        if (renderSkiaGaneshD3D(hwnd, width, height)) {
-            return true;
-        }
-#endif
-
-        if (!createUploadBuffer(width, height) ||
-            !renderCpuSurface(width, height) ||
-            !copyCpuSurfaceToUpload(width, height)) {
-            return false;
-        }
-
-        ComPtr<ID3D12Resource> backBuffer;
-        const UINT bufferIndex = swapChain_->GetCurrentBackBufferIndex();
-        if (FAILED(swapChain_->GetBuffer(bufferIndex, IID_PPV_ARGS(&backBuffer)))) {
-            return false;
-        }
-
-        if (FAILED(commandAllocator_->Reset()) ||
-            FAILED(commandList_->Reset(commandAllocator_.Get(), nullptr))) {
-            return false;
-        }
-
-        D3D12_RESOURCE_BARRIER toCopy{};
-        toCopy.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        toCopy.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-        toCopy.Transition.pResource = backBuffer.Get();
-        toCopy.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        toCopy.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
-        toCopy.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
-        commandList_->ResourceBarrier(1, &toCopy);
-
-        D3D12_TEXTURE_COPY_LOCATION dst{};
-        dst.pResource = backBuffer.Get();
-        dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-        dst.SubresourceIndex = 0;
-
-        D3D12_TEXTURE_COPY_LOCATION src{};
-        src.pResource = uploadBuffer_.Get();
-        src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-        src.PlacedFootprint.Offset = 0;
-        src.PlacedFootprint.Footprint.Format = kSwapFormat;
-        src.PlacedFootprint.Footprint.Width = static_cast<UINT>(width);
-        src.PlacedFootprint.Footprint.Height = static_cast<UINT>(height);
-        src.PlacedFootprint.Footprint.Depth = 1;
-        src.PlacedFootprint.Footprint.RowPitch = uploadRowPitch_;
-        commandList_->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
-
-        D3D12_RESOURCE_BARRIER toPresent = toCopy;
-        toPresent.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-        toPresent.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
-        commandList_->ResourceBarrier(1, &toPresent);
-
-        if (FAILED(commandList_->Close())) {
-            return false;
-        }
-
-        ID3D12CommandList* lists[] = {commandList_.Get()};
-        d3dQueue_->ExecuteCommandLists(1, lists);
-        if (!waitForGpu()) {
-            resetD3D();
-            return false;
-        }
-
-        if (!presentSwapChain()) {
-            resetD3D();
-            return false;
-        }
-        return true;
+        return renderCpuSurface(pixels_.data(),
+                                cpuSurfaceWidth_,
+                                cpuSurfaceHeight_,
+                                static_cast<size_t>(cpuSurfaceWidth_) * sizeof(uint32_t));
     }
 
     void renderCpuFallback(HDC hdc, const PAINTSTRUCT& ps, int width, int height) {

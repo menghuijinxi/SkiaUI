@@ -7,10 +7,9 @@
 
 #include <windows.h>
 #include <dwmapi.h>
-#include <objidl.h>
-#include <gdiplus.h>
 #include <shellapi.h>
 #include <shellscalingapi.h>
+#include <wincodec.h>
 
 #include <RmlUi/Core.h>
 #include <RmlUi/Core/CallbackTexture.h>
@@ -26,6 +25,7 @@
 #include <RmlUi/Core/StringUtilities.h>
 #include <RmlUi/Core/SystemInterface.h>
 
+#include "d3d_presenter.h"
 #include "include/core/SkBlendMode.h"
 #include "include/core/SkBlurTypes.h"
 #include "include/core/SkCanvas.h"
@@ -42,7 +42,6 @@
 #include "include/core/SkPaint.h"
 #include "include/core/SkPath.h"
 #include "include/core/SkPathBuilder.h"
-#include "include/core/SkPixmap.h"
 #include "include/core/SkPoint.h"
 #include "include/core/SkRRect.h"
 #include "include/core/SkRect.h"
@@ -54,6 +53,10 @@
 #include "include/core/SkTypeface.h"
 #include "include/core/SkVertices.h"
 #include "include/effects/SkGradient.h"
+#if defined(SKIATEST_USE_SKIA_D3D) && SKIATEST_USE_SKIA_D3D
+#include "include/gpu/ganesh/GrRecordingContext.h"
+#include "include/gpu/ganesh/SkImageGanesh.h"
+#endif
 #include "include/ports/SkTypeface_win.h"
 #include "modules/svg/include/SkSVGDOM.h"
 
@@ -65,6 +68,7 @@
 #include <cstdio>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <initializer_list>
@@ -85,6 +89,7 @@ constexpr int kBaseHeight = 941;
 constexpr int kRmlSupersample = 2;
 constexpr float kDefaultDpi = 96.0f;
 constexpr float kPi = 3.14159265358979323846f;
+constexpr COLORREF kWin32Background = RGB(7, 12, 18);
 float gRmlTextureScale = 1.0f;
 
 struct BrowserLinearGradient {
@@ -111,6 +116,28 @@ struct BrowserPaintStyle {
 
 using BrowserPaintStyleMap = std::map<std::string, BrowserPaintStyle>;
 
+struct RmlBenchCounters {
+    int generatedStrings = 0;
+    int compiledGeometries = 0;
+    int renderedGeometries = 0;
+    int generatedTextures = 0;
+    uint64_t generatedTextureBytes = 0;
+    uint64_t renderedVertices = 0;
+    uint64_t renderedIndices = 0;
+};
+
+struct RmlDrawTiming {
+    double prepareMs = 0.0;
+    double chromeMs = 0.0;
+    double chromeBackgroundMs = 0.0;
+    double chromeSidebarMs = 0.0;
+    double chromePanelMs = 0.0;
+    double chromeCompassMs = 0.0;
+    double chromeStatusMs = 0.0;
+    double chromeFrameMs = 0.0;
+    double rmlMs = 0.0;
+};
+
 struct Rect {
     float x = 0.0f;
     float y = 0.0f;
@@ -128,10 +155,6 @@ SkColor rgb(uint8_t r, uint8_t g, uint8_t b) {
 
 SkColor rgba(uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
     return SkColorSetARGB(a, r, g, b);
-}
-
-Gdiplus::Color argb(uint8_t a, uint8_t r, uint8_t g, uint8_t b) {
-    return Gdiplus::Color(a, r, g, b);
 }
 
 uint8_t clampByte(float value) {
@@ -624,29 +647,6 @@ std::wstring utf8ToWide(std::string_view value) {
     return wide;
 }
 
-bool getEncoderClsid(const WCHAR* mimeType, CLSID& clsid) {
-    UINT count = 0;
-    UINT bytes = 0;
-    Gdiplus::GetImageEncodersSize(&count, &bytes);
-    if (count == 0 || bytes == 0) {
-        return false;
-    }
-
-    std::vector<uint8_t> buffer(bytes);
-    auto* encoders = reinterpret_cast<Gdiplus::ImageCodecInfo*>(buffer.data());
-    if (Gdiplus::GetImageEncoders(count, bytes, encoders) != Gdiplus::Ok) {
-        return false;
-    }
-
-    for (UINT i = 0; i < count; ++i) {
-        if (wcscmp(encoders[i].MimeType, mimeType) == 0) {
-            clsid = encoders[i].Clsid;
-            return true;
-        }
-    }
-    return false;
-}
-
 class RmlSystem final : public Rml::SystemInterface {
 public:
     double GetElapsedTime() override {
@@ -1047,6 +1047,9 @@ public:
         if (text.empty() || width <= 0) {
             return std::max(0, width);
         }
+        if (counters_) {
+            ++counters_->generatedStrings;
+        }
 
         const float textureScale = textureScale_;
         const float texturePadding = 4.0f;
@@ -1110,15 +1113,23 @@ public:
     }
 
     void beginFrame(float textureScale) {
-        textureScale_ = std::max(1.0f, textureScale);
-        ++version_;
-        releaseTextTextures();
+        const float clampedScale = std::max(1.0f, textureScale);
+        if (std::abs(textureScale_ - clampedScale) > 0.001f) {
+            textureScale_ = clampedScale;
+            ++version_;
+            releaseTextTextures();
+        }
+    }
+
+    void setCounters(RmlBenchCounters* counters) {
+        counters_ = counters;
     }
 
 private:
     sk_sp<SkFontMgr> fontMgr_;
     float textureScale_ = 1.0f;
     int version_ = 1;
+    RmlBenchCounters* counters_ = nullptr;
 
     static Face& face(Rml::FontFaceHandle handle) {
         return *reinterpret_cast<Face*>(handle);
@@ -1216,90 +1227,155 @@ private:
 class SkiaRenderInterface final : public Rml::RenderInterface {
 public:
     struct Geometry {
-        std::vector<Rml::Vertex> vertices;
-        std::vector<int> indices;
+        std::vector<SkPoint> positions;
+        std::vector<SkColor> colors;
+        std::vector<SkPoint> normalizedTexCoords;
+        std::vector<uint16_t> indices;
+        mutable sk_sp<SkVertices> cachedVertices;
+        mutable int cachedTextureWidth = 0;
+        mutable int cachedTextureHeight = 0;
+
+        sk_sp<SkVertices> verticesForTexture(int textureWidth, int textureHeight) const {
+            if (cachedVertices && cachedTextureWidth == textureWidth && cachedTextureHeight == textureHeight) {
+                return cachedVertices;
+            }
+
+            std::vector<SkPoint> texCoords;
+            texCoords.reserve(normalizedTexCoords.size());
+            for (const SkPoint& texCoord : normalizedTexCoords) {
+                texCoords.push_back(SkPoint::Make(texCoord.x() * static_cast<float>(textureWidth),
+                                                  texCoord.y() * static_cast<float>(textureHeight)));
+            }
+
+            cachedVertices = SkVertices::MakeCopy(SkVertices::kTriangles_VertexMode,
+                                                  static_cast<int>(positions.size()),
+                                                  positions.data(),
+                                                  texCoords.empty() ? nullptr : texCoords.data(),
+                                                  colors.data(),
+                                                  static_cast<int>(indices.size()),
+                                                  indices.data());
+            cachedTextureWidth = textureWidth;
+            cachedTextureHeight = textureHeight;
+            return cachedVertices;
+        }
     };
 
     struct Texture {
         int width = 0;
         int height = 0;
         sk_sp<SkImage> image;
+#if defined(SKIATEST_USE_SKIA_D3D) && SKIATEST_USE_SKIA_D3D
+        mutable GrDirectContext* gpuContext = nullptr;
+        mutable sk_sp<SkImage> gpuImage;
+#endif
+
+        sk_sp<SkImage> imageForCanvas(SkCanvas* canvas) const {
+#if defined(SKIATEST_USE_SKIA_D3D) && SKIATEST_USE_SKIA_D3D
+            if (canvas && image) {
+                GrDirectContext* directContext = GrAsDirectContext(canvas->recordingContext());
+                if (directContext) {
+                    if (gpuImage && gpuContext != directContext) {
+                        gpuImage.reset();
+                        gpuContext = nullptr;
+                    }
+                    if (!gpuImage) {
+                        gpuImage = SkImages::TextureFromImage(directContext,
+                                                              image.get(),
+                                                              skgpu::Mipmapped::kNo,
+                                                              skgpu::Budgeted::kYes);
+                        gpuContext = gpuImage ? directContext : nullptr;
+                    }
+                    if (gpuImage) {
+                        return gpuImage;
+                    }
+                }
+            }
+#else
+            (void)canvas;
+#endif
+            return image;
+        }
     };
 
     void begin(uint32_t* pixels, int width, int height, float scale) {
-        width_ = width;
-        height_ = height;
-        scale_ = std::max(0.1f, scale);
-        scissorEnabled_ = false;
-        scissor_ = Rml::Rectanglei::FromPositionSize({0, 0}, {width, height});
-
         const SkImageInfo info = SkImageInfo::Make(width,
                                                    height,
                                                    kBGRA_8888_SkColorType,
                                                    kPremul_SkAlphaType);
         surface_ = SkSurfaces::WrapPixels(info, pixels, static_cast<size_t>(width) * sizeof(uint32_t));
-        canvas_ = surface_ ? surface_->getCanvas() : nullptr;
+        beginCanvas(surface_ ? surface_->getCanvas() : nullptr, width, height, scale, true);
+    }
+
+    void begin(SkCanvas& canvas, int width, int height, float scale) {
+        beginCanvas(&canvas, width, height, scale, false);
+    }
+
+    void end() {
         if (canvas_) {
-            canvas_->clear(SK_ColorTRANSPARENT);
-            canvas_->scale(scale_, scale_);
+            if (scissorSaveCount_ != 0) {
+                canvas_->restoreToCount(scissorSaveCount_);
+                scissorSaveCount_ = 0;
+            }
+            if (canvasSaveCount_ != 0) {
+                canvas_->restoreToCount(canvasSaveCount_);
+                canvasSaveCount_ = 0;
+            }
         }
+        canvas_ = nullptr;
+        surface_.reset();
     }
 
     Rml::CompiledGeometryHandle CompileGeometry(Rml::Span<const Rml::Vertex> vertices,
                                                 Rml::Span<const int> indices) override {
+        if (counters_) {
+            ++counters_->compiledGeometries;
+        }
+        if (vertices.size() > static_cast<size_t>(std::numeric_limits<uint16_t>::max()) ||
+            indices.size() > static_cast<size_t>(std::numeric_limits<int>::max())) {
+            return 0;
+        }
+
         auto* geometry = new Geometry;
-        geometry->vertices.assign(vertices.begin(), vertices.end());
-        geometry->indices.assign(indices.begin(), indices.end());
+        geometry->positions.reserve(vertices.size());
+        geometry->colors.reserve(vertices.size());
+        geometry->normalizedTexCoords.reserve(vertices.size());
+        for (const Rml::Vertex& vertex : vertices) {
+            geometry->positions.push_back(SkPoint::Make(vertex.position.x, vertex.position.y));
+            geometry->colors.push_back(toSkColor(vertex.colour));
+            geometry->normalizedTexCoords.push_back(SkPoint::Make(vertex.tex_coord.x, vertex.tex_coord.y));
+        }
+
+        geometry->indices.reserve(indices.size());
+        for (int index : indices) {
+            if (index < 0 ||
+                index >= static_cast<int>(vertices.size()) ||
+                index > static_cast<int>(std::numeric_limits<uint16_t>::max())) {
+                delete geometry;
+                return 0;
+            }
+            geometry->indices.push_back(static_cast<uint16_t>(index));
+        }
         return reinterpret_cast<Rml::CompiledGeometryHandle>(geometry);
     }
 
     void RenderGeometry(Rml::CompiledGeometryHandle handle, Rml::Vector2f translation, Rml::TextureHandle textureHandle) override {
         const auto* geometry = reinterpret_cast<const Geometry*>(handle);
         const auto* texture = reinterpret_cast<const Texture*>(textureHandle);
-        if (!geometry || !canvas_ || geometry->vertices.empty() || geometry->indices.empty()) {
+        if (!geometry || !canvas_ || geometry->positions.empty() || geometry->indices.empty()) {
             return;
         }
 
-        const bool hasTexture = texture && texture->image;
-        if (!hasTexture) {
+        sk_sp<SkImage> image = texture ? texture->imageForCanvas(canvas_) : nullptr;
+        if (!image) {
             return;
         }
-
-        if (geometry->vertices.size() > static_cast<size_t>(std::numeric_limits<uint16_t>::max()) ||
-            geometry->indices.size() > static_cast<size_t>(std::numeric_limits<int>::max())) {
-            return;
+        if (counters_) {
+            ++counters_->renderedGeometries;
+            counters_->renderedVertices += geometry->positions.size();
+            counters_->renderedIndices += geometry->indices.size();
         }
 
-        std::vector<SkPoint> positions;
-        std::vector<SkColor> colors;
-        std::vector<SkPoint> texCoords;
-        std::vector<uint16_t> indices;
-        positions.reserve(geometry->vertices.size());
-        colors.reserve(geometry->vertices.size());
-        texCoords.reserve(geometry->vertices.size());
-
-        for (const Rml::Vertex& vertex : geometry->vertices) {
-            positions.push_back(SkPoint::Make(vertex.position.x + translation.x, vertex.position.y + translation.y));
-            colors.push_back(toSkColor(vertex.colour));
-            texCoords.push_back(SkPoint::Make(vertex.tex_coord.x * static_cast<float>(texture->width),
-                                              vertex.tex_coord.y * static_cast<float>(texture->height)));
-        }
-
-        indices.reserve(geometry->indices.size());
-        for (int index : geometry->indices) {
-            if (index < 0 || index > std::numeric_limits<uint16_t>::max()) {
-                return;
-            }
-            indices.push_back(static_cast<uint16_t>(index));
-        }
-
-        sk_sp<SkVertices> vertices = SkVertices::MakeCopy(SkVertices::kTriangles_VertexMode,
-                                                          static_cast<int>(positions.size()),
-                                                          positions.data(),
-                                                          texCoords.empty() ? nullptr : texCoords.data(),
-                                                          colors.data(),
-                                                          static_cast<int>(indices.size()),
-                                                          indices.data());
+        sk_sp<SkVertices> vertices = geometry->verticesForTexture(texture->width, texture->height);
         if (!vertices) {
             return;
         }
@@ -1308,10 +1384,13 @@ public:
         paint.setAntiAlias(false);
         paint.setColor(SK_ColorWHITE);
         paint.setBlendMode(SkBlendMode::kSrcOver);
-        paint.setShader(texture->image->makeShader(SkTileMode::kClamp,
-                                                   SkTileMode::kClamp,
-                                                   SkSamplingOptions(SkFilterMode::kLinear)));
+        paint.setShader(image->makeShader(SkTileMode::kClamp,
+                                          SkTileMode::kClamp,
+                                          SkSamplingOptions(SkFilterMode::kLinear)));
+        const int saveCount = canvas_->save();
+        canvas_->translate(translation.x, translation.y);
         canvas_->drawVertices(vertices, SkBlendMode::kModulate, paint);
+        canvas_->restoreToCount(saveCount);
     }
 
     void ReleaseGeometry(Rml::CompiledGeometryHandle handle) override {
@@ -1326,6 +1405,10 @@ public:
     Rml::TextureHandle GenerateTexture(Rml::Span<const Rml::byte> source, Rml::Vector2i sourceDimensions) override {
         if (sourceDimensions.x <= 0 || sourceDimensions.y <= 0 || source.empty()) {
             return 0;
+        }
+        if (counters_) {
+            ++counters_->generatedTextures;
+            counters_->generatedTextureBytes += source.size();
         }
         auto* texture = new Texture;
         texture->width = sourceDimensions.x;
@@ -1362,15 +1445,39 @@ public:
         }
     }
 
+    void setCounters(RmlBenchCounters* counters) {
+        counters_ = counters;
+    }
+
 private:
     sk_sp<SkSurface> surface_;
     SkCanvas* canvas_ = nullptr;
     int width_ = 0;
     int height_ = 0;
     float scale_ = 1.0f;
+    int canvasSaveCount_ = 0;
     bool scissorEnabled_ = false;
     int scissorSaveCount_ = 0;
     Rml::Rectanglei scissor_ = Rml::Rectanglei::FromPositionSize({0, 0}, {0, 0});
+    RmlBenchCounters* counters_ = nullptr;
+
+    void beginCanvas(SkCanvas* canvas, int width, int height, float scale, bool clear) {
+        end();
+        width_ = width;
+        height_ = height;
+        scale_ = std::max(0.1f, scale);
+        canvas_ = canvas;
+        scissorEnabled_ = false;
+        scissor_ = Rml::Rectanglei::FromPositionSize({0, 0}, {width, height});
+        if (canvas_) {
+            if (clear) {
+                canvas_->clear(SK_ColorTRANSPARENT);
+            }
+            canvasSaveCount_ = canvas_->save();
+            canvas_->scale(scale_, scale_);
+        }
+    }
+
     static SkColor toSkColor(Rml::ColourbPremultiplied color) {
         if (color.alpha == 0) {
             return SK_ColorTRANSPARENT;
@@ -1410,22 +1517,37 @@ public:
                  Rml::ElementDocument* document,
                  float width,
                  float height,
-                 const BrowserPaintStyleMap& paintStyles) const {
+                 const BrowserPaintStyleMap& paintStyles,
+                 RmlDrawTiming* timing = nullptr) const {
+        const auto backgroundStart = std::chrono::steady_clock::now();
         drawBackground(c, width, height);
+        const auto sidebarStart = std::chrono::steady_clock::now();
         if (document) {
             drawSidebar(c, document, height);
+            const auto panelStart = std::chrono::steady_clock::now();
             drawLayerPanel(c, document, paintStyles);
+            const auto compassStart = std::chrono::steady_clock::now();
             drawCompass(c, document, width - 94.0f, height - 162.0f);
+            const auto statusStart = std::chrono::steady_clock::now();
             drawStatusBar(c, document, width, height);
+            const auto frameStart = std::chrono::steady_clock::now();
             drawFrame(c, document, width, height);
+            const auto stop = std::chrono::steady_clock::now();
+            addTiming(timing, backgroundStart, sidebarStart, panelStart, compassStart, statusStart, frameStart, stop);
             return;
         }
 
         drawSidebar(c, nullptr, height);
+        const auto panelStart = std::chrono::steady_clock::now();
         drawLayerPanel(c, nullptr, paintStyles);
+        const auto compassStart = std::chrono::steady_clock::now();
         drawCompass(c, nullptr, width - 94.0f, height - 162.0f);
+        const auto statusStart = std::chrono::steady_clock::now();
         drawStatusBar(c, nullptr, width, height);
+        const auto frameStart = std::chrono::steady_clock::now();
         drawFrame(c, nullptr, width, height);
+        const auto stop = std::chrono::steady_clock::now();
+        addTiming(timing, backgroundStart, sidebarStart, panelStart, compassStart, statusStart, frameStart, stop);
     }
 
 private:
@@ -1720,6 +1842,25 @@ private:
         return it == paintStyles.end() ? nullptr : &it->second;
     }
 
+    static void addTiming(RmlDrawTiming* timing,
+                          std::chrono::steady_clock::time_point backgroundStart,
+                          std::chrono::steady_clock::time_point sidebarStart,
+                          std::chrono::steady_clock::time_point panelStart,
+                          std::chrono::steady_clock::time_point compassStart,
+                          std::chrono::steady_clock::time_point statusStart,
+                          std::chrono::steady_clock::time_point frameStart,
+                          std::chrono::steady_clock::time_point stop) {
+        if (!timing) {
+            return;
+        }
+        timing->chromeBackgroundMs += std::chrono::duration<double, std::milli>(sidebarStart - backgroundStart).count();
+        timing->chromeSidebarMs += std::chrono::duration<double, std::milli>(panelStart - sidebarStart).count();
+        timing->chromePanelMs += std::chrono::duration<double, std::milli>(compassStart - panelStart).count();
+        timing->chromeCompassMs += std::chrono::duration<double, std::milli>(statusStart - compassStart).count();
+        timing->chromeStatusMs += std::chrono::duration<double, std::milli>(frameStart - statusStart).count();
+        timing->chromeFrameMs += std::chrono::duration<double, std::milli>(stop - frameStart).count();
+    }
+
     void drawBoxShadow(SkCanvas& c, const ChromeBox& box, const BrowserBoxShadow& shadow) const {
         if (shadow.inset || SkColorGetA(shadow.color) == 0) {
             return;
@@ -1922,9 +2063,6 @@ private:
 class RmlLayerRenderer {
 public:
     RmlLayerRenderer() {
-        Gdiplus::GdiplusStartupInput gdiplusStartupInput;
-        Gdiplus::GdiplusStartup(&gdiplusToken_, &gdiplusStartupInput, nullptr);
-
         Rml::SetSystemInterface(&system_);
         Rml::SetRenderInterface(&render_);
         Rml::SetFontEngineInterface(&font_);
@@ -1942,9 +2080,6 @@ public:
             Rml::RemoveContext("rml_layer_desk");
             Rml::Shutdown();
         }
-        if (gdiplusToken_ != 0) {
-            Gdiplus::GdiplusShutdown(gdiplusToken_);
-        }
     }
 
     void draw(uint32_t* pixels, int width, int height, float dpiScale = 1.0f) {
@@ -1952,14 +2087,12 @@ public:
             return;
         }
 
-        const float scale = std::max(0.1f, dpiScale);
-        const int logicalWidth = std::max(1, static_cast<int>(std::round(static_cast<float>(width) / scale)));
-        const int logicalHeight = std::max(1, static_cast<int>(std::round(static_cast<float>(height) / scale)));
-        Rml::ElementDocument* document = context_ ? context_->GetDocument(0) : nullptr;
-        if (context_) {
-            context_->SetDimensions({logicalWidth, logicalHeight});
-            context_->Update();
-            document = context_->GetDocument(0);
+        if (copyCachedFrame(pixels, width, height, dpiScale)) {
+            return;
+        }
+        if (ensureCachedFrame(width, height, dpiScale) &&
+            copyCachedFrame(pixels, width, height, dpiScale)) {
+            return;
         }
 
         const SkImageInfo chromeInfo = SkImageInfo::Make(width,
@@ -1970,68 +2103,52 @@ public:
                                                                 pixels,
                                                                 static_cast<size_t>(width) * sizeof(uint32_t));
         if (chromeSurface) {
-            SkCanvas* canvas = chromeSurface->getCanvas();
-            canvas->clear(rgb(7, 12, 18));
-            canvas->save();
-            canvas->scale(scale, scale);
-            chrome_.drawApp(*canvas,
-                            document,
-                            static_cast<float>(logicalWidth),
-                            static_cast<float>(logicalHeight),
-                            browserPaintStyles_);
-            canvas->restore();
+            draw(*chromeSurface->getCanvas(), width, height, dpiScale);
+            updateCachedFrame(pixels, width, height, dpiScale);
+        }
+    }
+
+    void draw(SkCanvas& canvas,
+              int width,
+              int height,
+              float dpiScale = 1.0f,
+              RmlDrawTiming* timing = nullptr) {
+        if (width <= 0 || height <= 0) {
+            return;
+        }
+        if (!timing && drawCachedFrame(canvas, width, height, dpiScale)) {
+            return;
+        }
+        if (!timing &&
+            ensureCachedFrame(width, height, dpiScale) &&
+            drawCachedFrame(canvas, width, height, dpiScale)) {
+            return;
         }
 
-        if (context_) {
-            const int rmlWidth = width * kRmlSupersample;
-            const int rmlHeight = height * kRmlSupersample;
-            const float rmlRenderScale = scale * static_cast<float>(kRmlSupersample);
-            std::vector<uint32_t> rmlPixels(static_cast<size_t>(rmlWidth) * static_cast<size_t>(rmlHeight), 0x00000000u);
-            gRmlTextureScale = rmlRenderScale;
-            font_.beginFrame(rmlRenderScale);
-            render_.begin(rmlPixels.data(), rmlWidth, rmlHeight, rmlRenderScale);
-            context_->Render();
+        drawUncached(canvas, width, height, dpiScale, timing);
+    }
 
-            for (int y = 0; y < height; ++y) {
-                for (int x = 0; x < width; ++x) {
-                    float srcR = 0.0f;
-                    float srcG = 0.0f;
-                    float srcB = 0.0f;
-                    float srcA = 0.0f;
-                    for (int sy = 0; sy < kRmlSupersample; ++sy) {
-                        for (int sx = 0; sx < kRmlSupersample; ++sx) {
-                            const uint32_t sample = rmlPixels[(static_cast<size_t>(y * kRmlSupersample + sy) *
-                                                               static_cast<size_t>(rmlWidth)) +
-                                                              static_cast<size_t>(x * kRmlSupersample + sx)];
-                            srcA += static_cast<float>((sample >> 24) & 0xff);
-                            srcR += static_cast<float>((sample >> 16) & 0xff);
-                            srcG += static_cast<float>((sample >> 8) & 0xff);
-                            srcB += static_cast<float>(sample & 0xff);
-                        }
-                    }
-
-                    constexpr float invSampleCount =
-                        1.0f / static_cast<float>(kRmlSupersample * kRmlSupersample);
-                    srcA *= invSampleCount;
-                    if (srcA <= 0.0f) {
-                        continue;
-                    }
-                    srcR *= invSampleCount;
-                    srcG *= invSampleCount;
-                    srcB *= invSampleCount;
-
-                    uint32_t& dst = pixels[static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x)];
-                    const float invA = 1.0f - std::clamp(srcA, 0.0f, 255.0f) / 255.0f;
-                    const float dstR = static_cast<float>((dst >> 16) & 0xff);
-                    const float dstG = static_cast<float>((dst >> 8) & 0xff);
-                    const float dstB = static_cast<float>(dst & 0xff);
-                    dst = 0xff000000u | (static_cast<uint32_t>(clampByte(srcR + dstR * invA)) << 16) |
-                          (static_cast<uint32_t>(clampByte(srcG + dstG * invA)) << 8) |
-                          static_cast<uint32_t>(clampByte(srcB + dstB * invA));
-                }
-            }
+    void drawUncached(SkCanvas& canvas, int width, int height, float dpiScale, RmlDrawTiming* timing) {
+        if (width <= 0 || height <= 0) {
+            return;
         }
 
+        Rml::ElementDocument* document = nullptr;
+        const float scale = std::max(0.1f, dpiScale);
+        const int logicalWidth = std::max(1, static_cast<int>(std::round(static_cast<float>(width) / scale)));
+        const int logicalHeight = std::max(1, static_cast<int>(std::round(static_cast<float>(height) / scale)));
+        const auto prepareStart = std::chrono::steady_clock::now();
+        prepareFrame(logicalWidth, logicalHeight, document);
+        const auto chromeStart = std::chrono::steady_clock::now();
+        drawChrome(canvas, document, logicalWidth, logicalHeight, scale, timing);
+        const auto rmlStart = std::chrono::steady_clock::now();
+        renderRmlOverlay(canvas, width, height, scale);
+        const auto stop = std::chrono::steady_clock::now();
+        if (timing) {
+            timing->prepareMs += std::chrono::duration<double, std::milli>(chromeStart - prepareStart).count();
+            timing->chromeMs += std::chrono::duration<double, std::milli>(rmlStart - chromeStart).count();
+            timing->rmlMs += std::chrono::duration<double, std::milli>(stop - rmlStart).count();
+        }
     }
 
     bool savePng(const wchar_t* path, int width = kBaseWidth, int height = kBaseHeight, float dpiScale = 1.0f) {
@@ -2041,14 +2158,143 @@ public:
 
         std::vector<uint32_t> pixels(static_cast<size_t>(width) * static_cast<size_t>(height), 0xff070c12u);
         draw(pixels.data(), width, height, dpiScale);
+        for (uint32_t& pixel : pixels) {
+            const uint8_t a = static_cast<uint8_t>((pixel >> 24u) & 0xffu);
+            if (a == 0 || a == 255) {
+                continue;
+            }
+            const uint8_t b = static_cast<uint8_t>(pixel & 0xffu);
+            const uint8_t g = static_cast<uint8_t>((pixel >> 8u) & 0xffu);
+            const uint8_t r = static_cast<uint8_t>((pixel >> 16u) & 0xffu);
+            const auto unpremul = [a](uint8_t value) {
+                return static_cast<uint8_t>(std::min(255u, (static_cast<unsigned>(value) * 255u + a / 2u) / a));
+            };
+            pixel = (static_cast<uint32_t>(a) << 24u) |
+                    (static_cast<uint32_t>(unpremul(r)) << 16u) |
+                    (static_cast<uint32_t>(unpremul(g)) << 8u) |
+                    static_cast<uint32_t>(unpremul(b));
+        }
 
-        Gdiplus::Bitmap bitmap(width, height, width * 4, PixelFormat32bppPARGB, reinterpret_cast<BYTE*>(pixels.data()));
-        CLSID pngClsid{};
-        return getEncoderClsid(L"image/png", pngClsid) && bitmap.Save(path, &pngClsid, nullptr) == Gdiplus::Ok;
+        IWICImagingFactory* factory = nullptr;
+        IWICStream* stream = nullptr;
+        IWICBitmapEncoder* encoder = nullptr;
+        IWICBitmapFrameEncode* frame = nullptr;
+        IPropertyBag2* properties = nullptr;
+
+        bool ok = false;
+        const HRESULT initResult = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+        const bool comReady = SUCCEEDED(initResult) || initResult == RPC_E_CHANGED_MODE;
+        const bool shouldUninitializeCom = SUCCEEDED(initResult);
+        if (comReady) {
+            const HRESULT factoryResult = CoCreateInstance(CLSID_WICImagingFactory,
+                                                           nullptr,
+                                                           CLSCTX_INPROC_SERVER,
+                                                           IID_PPV_ARGS(&factory));
+            if (SUCCEEDED(factoryResult) &&
+                SUCCEEDED(factory->CreateStream(&stream)) &&
+                SUCCEEDED(stream->InitializeFromFilename(path, GENERIC_WRITE)) &&
+                SUCCEEDED(factory->CreateEncoder(GUID_ContainerFormatPng, nullptr, &encoder)) &&
+                SUCCEEDED(encoder->Initialize(stream, WICBitmapEncoderNoCache)) &&
+                SUCCEEDED(encoder->CreateNewFrame(&frame, &properties)) &&
+                SUCCEEDED(frame->Initialize(properties)) &&
+                SUCCEEDED(frame->SetSize(static_cast<UINT>(width), static_cast<UINT>(height)))) {
+                WICPixelFormatGUID format = GUID_WICPixelFormat32bppBGRA;
+                if (SUCCEEDED(frame->SetPixelFormat(&format)) &&
+                    IsEqualGUID(format, GUID_WICPixelFormat32bppBGRA) &&
+                    SUCCEEDED(frame->WritePixels(static_cast<UINT>(height),
+                                                 static_cast<UINT>(width * sizeof(uint32_t)),
+                                                 static_cast<UINT>(pixels.size() * sizeof(uint32_t)),
+                                                 reinterpret_cast<BYTE*>(pixels.data()))) &&
+                    SUCCEEDED(frame->Commit()) &&
+                    SUCCEEDED(encoder->Commit())) {
+                    ok = true;
+                }
+            }
+        }
+
+        if (properties) {
+            properties->Release();
+        }
+        if (frame) {
+            frame->Release();
+        }
+        if (encoder) {
+            encoder->Release();
+        }
+        if (stream) {
+            stream->Release();
+        }
+        if (factory) {
+            factory->Release();
+        }
+        if (shouldUninitializeCom) {
+            CoUninitialize();
+        }
+        return ok;
+    }
+
+    double benchDraw(int width,
+                     int height,
+                     float dpiScale,
+                     int frames,
+                     RmlDrawTiming* timing,
+                     RmlBenchCounters* counters) {
+        width = std::max(1, width);
+        height = std::max(1, height);
+        frames = std::max(1, frames);
+        std::vector<uint32_t> pixels(static_cast<size_t>(width) * static_cast<size_t>(height), 0xff070c12u);
+
+        draw(pixels.data(), width, height, dpiScale);
+        render_.setCounters(counters);
+        font_.setCounters(counters);
+        const auto start = std::chrono::steady_clock::now();
+        for (int i = 0; i < frames; ++i) {
+            const SkImageInfo info = SkImageInfo::Make(width,
+                                                       height,
+                                                       kBGRA_8888_SkColorType,
+                                                       kPremul_SkAlphaType);
+            sk_sp<SkSurface> surface = SkSurfaces::WrapPixels(info,
+                                                               pixels.data(),
+                                                               static_cast<size_t>(width) * sizeof(uint32_t));
+            if (surface) {
+                draw(*surface->getCanvas(), width, height, dpiScale, timing);
+            }
+        }
+        const auto stop = std::chrono::steady_clock::now();
+        render_.setCounters(nullptr);
+        font_.setCounters(nullptr);
+        const auto elapsed = std::chrono::duration<double, std::milli>(stop - start).count();
+        return elapsed / static_cast<double>(frames);
+    }
+
+    double benchCachedDraw(int width, int height, float dpiScale, int frames) {
+        width = std::max(1, width);
+        height = std::max(1, height);
+        frames = std::max(1, frames);
+        std::vector<uint32_t> pixels(static_cast<size_t>(width) * static_cast<size_t>(height), 0xff070c12u);
+
+        draw(pixels.data(), width, height, dpiScale);
+        const SkImageInfo info = SkImageInfo::Make(width,
+                                                   height,
+                                                   kBGRA_8888_SkColorType,
+                                                   kPremul_SkAlphaType);
+        sk_sp<SkSurface> surface = SkSurfaces::WrapPixels(info,
+                                                          pixels.data(),
+                                                          static_cast<size_t>(width) * sizeof(uint32_t));
+        if (!surface) {
+            return 0.0;
+        }
+
+        const auto start = std::chrono::steady_clock::now();
+        for (int i = 0; i < frames; ++i) {
+            draw(*surface->getCanvas(), width, height, dpiScale);
+        }
+        const auto stop = std::chrono::steady_clock::now();
+        const auto elapsed = std::chrono::duration<double, std::milli>(stop - start).count();
+        return elapsed / static_cast<double>(frames);
     }
 
 private:
-    ULONG_PTR gdiplusToken_ = 0;
     RmlSystem system_;
     SkiaFontEngine font_;
     SkiaRenderInterface render_;
@@ -2058,13 +2304,159 @@ private:
     BrowserPaintStyleMap browserPaintStyles_;
     bool rmlReady_ = false;
     Rml::Context* context_ = nullptr;
+    int logicalWidth_ = 0;
+    int logicalHeight_ = 0;
+    std::vector<uint32_t> cachedFramePixels_;
+    sk_sp<SkImage> cachedFrameImage_;
+#if defined(SKIATEST_USE_SKIA_D3D) && SKIATEST_USE_SKIA_D3D
+    mutable GrDirectContext* cachedFrameGpuContext_ = nullptr;
+    mutable sk_sp<SkImage> cachedFrameGpuImage_;
+#endif
+    int cachedFrameWidth_ = 0;
+    int cachedFrameHeight_ = 0;
+    float cachedFrameDpiScale_ = 0.0f;
+    bool buildingCachedFrame_ = false;
 
-    static void setupGraphics(Gdiplus::Graphics& g) {
-        g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
-        g.SetTextRenderingHint(Gdiplus::TextRenderingHintAntiAliasGridFit);
-        g.SetCompositingMode(Gdiplus::CompositingModeSourceOver);
-        g.SetCompositingQuality(Gdiplus::CompositingQualityHighQuality);
+    bool cacheMatches(int width, int height, float dpiScale) const {
+        return width == cachedFrameWidth_ &&
+               height == cachedFrameHeight_ &&
+               std::abs(dpiScale - cachedFrameDpiScale_) <= 0.001f &&
+               !cachedFramePixels_.empty();
     }
+
+    bool copyCachedFrame(uint32_t* pixels, int width, int height, float dpiScale) const {
+        if (!pixels || !cacheMatches(width, height, dpiScale)) {
+            return false;
+        }
+        std::memcpy(pixels,
+                    cachedFramePixels_.data(),
+                    cachedFramePixels_.size() * sizeof(uint32_t));
+        return true;
+    }
+
+    bool drawCachedFrame(SkCanvas& canvas, int width, int height, float dpiScale) const {
+        if (!cachedFrameImage_ || !cacheMatches(width, height, dpiScale)) {
+            return false;
+        }
+        sk_sp<SkImage> image = cachedFrameImage_;
+#if defined(SKIATEST_USE_SKIA_D3D) && SKIATEST_USE_SKIA_D3D
+        GrDirectContext* directContext = GrAsDirectContext(canvas.recordingContext());
+        if (directContext) {
+            if (cachedFrameGpuImage_ && cachedFrameGpuContext_ != directContext) {
+                cachedFrameGpuImage_.reset();
+                cachedFrameGpuContext_ = nullptr;
+            }
+            if (!cachedFrameGpuImage_) {
+                cachedFrameGpuImage_ = SkImages::TextureFromImage(directContext,
+                                                                  cachedFrameImage_.get(),
+                                                                  skgpu::Mipmapped::kNo,
+                                                                  skgpu::Budgeted::kYes);
+                cachedFrameGpuContext_ = cachedFrameGpuImage_ ? directContext : nullptr;
+            }
+            if (cachedFrameGpuImage_) {
+                image = cachedFrameGpuImage_;
+            }
+        }
+#endif
+        canvas.drawImage(image, 0.0f, 0.0f);
+        return true;
+    }
+
+    bool ensureCachedFrame(int width, int height, float dpiScale) {
+        if (cacheMatches(width, height, dpiScale)) {
+            return true;
+        }
+        if (buildingCachedFrame_) {
+            return false;
+        }
+
+        buildingCachedFrame_ = true;
+        std::vector<uint32_t> pixels(static_cast<size_t>(width) * static_cast<size_t>(height), 0xff070c12u);
+        const SkImageInfo info = SkImageInfo::Make(width,
+                                                   height,
+                                                   kBGRA_8888_SkColorType,
+                                                   kPremul_SkAlphaType);
+        sk_sp<SkSurface> surface = SkSurfaces::WrapPixels(info,
+                                                          pixels.data(),
+                                                          static_cast<size_t>(width) * sizeof(uint32_t));
+        if (surface) {
+            drawUncached(*surface->getCanvas(), width, height, dpiScale, nullptr);
+            updateCachedFrame(pixels.data(), width, height, dpiScale);
+        }
+        buildingCachedFrame_ = false;
+        return cacheMatches(width, height, dpiScale);
+    }
+
+    void updateCachedFrame(const uint32_t* pixels, int width, int height, float dpiScale) {
+        if (!pixels || width <= 0 || height <= 0) {
+            return;
+        }
+
+        cachedFrameWidth_ = width;
+        cachedFrameHeight_ = height;
+        cachedFrameDpiScale_ = dpiScale;
+        cachedFramePixels_.assign(pixels, pixels + static_cast<size_t>(width) * static_cast<size_t>(height));
+
+        const SkImageInfo info = SkImageInfo::Make(width,
+                                                   height,
+                                                   kBGRA_8888_SkColorType,
+                                                   kPremul_SkAlphaType);
+        cachedFrameImage_ = SkImages::RasterFromData(
+            info,
+            SkData::MakeWithCopy(cachedFramePixels_.data(),
+                                 cachedFramePixels_.size() * sizeof(uint32_t)),
+            static_cast<size_t>(width) * sizeof(uint32_t));
+#if defined(SKIATEST_USE_SKIA_D3D) && SKIATEST_USE_SKIA_D3D
+        cachedFrameGpuImage_.reset();
+        cachedFrameGpuContext_ = nullptr;
+#endif
+    }
+
+    void prepareFrame(int logicalWidth, int logicalHeight, Rml::ElementDocument*& document) {
+        document = context_ ? context_->GetDocument(0) : nullptr;
+        if (!context_) {
+            return;
+        }
+
+        if (logicalWidth != logicalWidth_ || logicalHeight != logicalHeight_) {
+            logicalWidth_ = logicalWidth;
+            logicalHeight_ = logicalHeight;
+            context_->SetDimensions({logicalWidth, logicalHeight});
+            context_->Update();
+        }
+        document = context_->GetDocument(0);
+    }
+
+    void drawChrome(SkCanvas& canvas,
+                    Rml::ElementDocument* document,
+                    int logicalWidth,
+                    int logicalHeight,
+                    float scale,
+                    RmlDrawTiming* timing) {
+        canvas.clear(rgb(7, 12, 18));
+        canvas.save();
+        canvas.scale(scale, scale);
+        chrome_.drawApp(canvas,
+                        document,
+                        static_cast<float>(logicalWidth),
+                        static_cast<float>(logicalHeight),
+                        browserPaintStyles_,
+                        timing);
+        canvas.restore();
+    }
+
+    void renderRmlOverlay(SkCanvas& canvas, int width, int height, float scale) {
+        if (!context_) {
+            return;
+        }
+
+        gRmlTextureScale = scale;
+        font_.beginFrame(scale);
+        render_.begin(canvas, width, height, scale);
+        context_->Render();
+        render_.end();
+    }
+
 
     static std::filesystem::path executableDirectory() {
         std::wstring buffer(MAX_PATH, L'\0');
@@ -2147,433 +2539,31 @@ body { margin: 0; background-color: transparent; }
         }
     }
 
-    void drawBackground(Gdiplus::Graphics& g, int width, int height) {
-        Gdiplus::RectF rect(0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height));
-        Gdiplus::LinearGradientBrush base(rect, argb(255, 7, 13, 20), argb(255, 21, 34, 49), 22.0f);
-        g.FillRectangle(&base, rect);
-
-        Gdiplus::GraphicsPath glowPath;
-        glowPath.AddEllipse(200.0f, -430.0f, 760.0f, 760.0f);
-        Gdiplus::PathGradientBrush glow(&glowPath);
-        glow.SetCenterColor(argb(95, 86, 122, 151));
-        std::array<Gdiplus::Color, 1> surround = {argb(0, 7, 13, 20)};
-        int count = static_cast<int>(surround.size());
-        glow.SetSurroundColors(surround.data(), &count);
-        g.FillPath(&glow, &glowPath);
-
-        Gdiplus::GraphicsPath sideGlowPath;
-        sideGlowPath.AddEllipse(width * 0.46f, -210.0f, 1120.0f, 830.0f);
-        Gdiplus::PathGradientBrush sideGlow(&sideGlowPath);
-        sideGlow.SetCenterColor(argb(46, 53, 91, 121));
-        count = static_cast<int>(surround.size());
-        sideGlow.SetSurroundColors(surround.data(), &count);
-        g.FillPath(&sideGlow, &sideGlowPath);
-    }
-
-    void drawOverlay(Gdiplus::Graphics& g, int width, int height) {
-        Gdiplus::Pen frame(argb(105, 125, 155, 173), 1.0f);
-        drawRoundRect(g, {2.0f, 2.0f, static_cast<float>(width) - 4.0f, static_cast<float>(height) - 4.0f}, 10.0f, nullptr, &frame);
-    }
-
-    void drawText(Gdiplus::Graphics& g,
-                  std::string_view value,
-                  float x,
-                  float y,
-                  float size,
-                  Gdiplus::Color color,
-                  bool bold = false) {
-        if (suppressOverlayText_) {
-            return;
-        }
-        std::wstring wide = utf8ToWide(value);
-        Gdiplus::FontFamily family(L"Microsoft YaHei UI");
-        Gdiplus::Font font(&family, size, bold ? Gdiplus::FontStyleBold : Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
-        Gdiplus::SolidBrush brush(color);
-        Gdiplus::StringFormat format(Gdiplus::StringFormat::GenericTypographic());
-        format.SetFormatFlags(format.GetFormatFlags() | Gdiplus::StringFormatFlagsNoClip);
-        g.DrawString(wide.c_str(), static_cast<int>(wide.size()), &font, Gdiplus::PointF(x, y), &format, &brush);
-    }
-
-    bool suppressOverlayText_ = true;
-
-    void drawRoundRect(Gdiplus::Graphics& g, const Rect& r, float radius, Gdiplus::Brush* brush, Gdiplus::Pen* pen) {
-        Gdiplus::GraphicsPath path;
-        const float d = radius * 2.0f;
-        path.AddArc(r.x, r.y, d, d, 180.0f, 90.0f);
-        path.AddArc(r.x + r.w - d, r.y, d, d, 270.0f, 90.0f);
-        path.AddArc(r.x + r.w - d, r.y + r.h - d, d, d, 0.0f, 90.0f);
-        path.AddArc(r.x, r.y + r.h - d, d, d, 90.0f, 90.0f);
-        path.CloseFigure();
-        if (brush) {
-            g.FillPath(brush, &path);
-        }
-        if (pen) {
-            g.DrawPath(pen, &path);
-        }
-    }
-
-    void line(Gdiplus::Graphics& g, float x1, float y1, float x2, float y2, Gdiplus::Color color, float width = 1.0f) {
-        Gdiplus::Pen pen(color, width);
-        pen.SetStartCap(Gdiplus::LineCapRound);
-        pen.SetEndCap(Gdiplus::LineCapRound);
-        g.DrawLine(&pen, x1, y1, x2, y2);
-    }
-
-    void drawSidebarOverlay(Gdiplus::Graphics& g) {
-        for (int i = 0; i < 3; ++i) {
-            line(g, 47.0f, 41.0f + i * 12.0f, 77.0f, 41.0f + i * 12.0f, argb(220, 213, 224, 234), 3.2f);
-        }
-
-        drawLayerStack(g, 64.0f, 128.0f, 42.0f, argb(255, 48, 234, 220), true);
-        drawText(g, "图层", 47.0f, 157.0f, 17.0f, argb(255, 48, 234, 220), true);
-
-        drawEditIcon(g, 64.0f, 230.0f, argb(215, 222, 230, 242));
-        drawText(g, "编辑", 47.0f, 260.0f, 17.0f, argb(215, 222, 230, 242), true);
-        drawPencilIcon(g, 64.0f, 333.0f, argb(215, 222, 230, 242));
-        drawText(g, "绘制", 47.0f, 363.0f, 17.0f, argb(215, 222, 230, 242), true);
-        drawTargetIcon(g, 64.0f, 436.0f, argb(215, 222, 230, 242));
-        drawText(g, "高亮", 47.0f, 466.0f, 17.0f, argb(215, 222, 230, 242), true);
-        drawDocIcon(g, 64.0f, 540.0f, argb(215, 222, 230, 242));
-        drawText(g, "属性", 47.0f, 570.0f, 17.0f, argb(215, 222, 230, 242), true);
-        drawSwitchIcon(g, 64.0f, 645.0f, argb(215, 222, 230, 242));
-        drawText(g, "变更", 47.0f, 675.0f, 17.0f, argb(215, 222, 230, 242), true);
-        drawGearIcon(g, 64.0f, 752.0f, argb(215, 222, 230, 242));
-        drawText(g, "设置", 47.0f, 782.0f, 17.0f, argb(215, 222, 230, 242), true);
-    }
-
-    void drawPanelOverlay(Gdiplus::Graphics& g) {
-        drawLayerStack(g, 183.0f, 62.0f, 42.0f, argb(240, 221, 252, 255), false);
-        drawText(g, "图层 / 图层管理", 215.0f, 47.0f, 27.0f, argb(245, 239, 247, 253), true);
-
-        drawUploadIcon(g, 241.0f, 133.0f, argb(235, 242, 252, 255));
-        drawText(g, "导入SHP", 260.0f, 122.0f, 20.5f, argb(238, 240, 247, 252), true);
-        drawPlusIcon(g, 517.0f, 133.0f, argb(230, 241, 247, 254));
-        drawText(g, "新建图层", 538.0f, 122.0f, 20.5f, argb(238, 240, 247, 252), true);
-
-        drawSearchIcon(g, 187.0f, 203.0f, argb(220, 213, 224, 236));
-        drawText(g, "搜索图层...", 216.0f, 190.0f, 17.5f, argb(132, 180, 195, 207), true);
-
-        drawText(g, "名称", 224.0f, 247.0f, 16.5f, argb(230, 229, 239, 247), true);
-        drawText(g, "可见", 356.0f, 247.0f, 16.5f, argb(230, 229, 239, 247), true);
-        drawText(g, "要素数", 423.0f, 247.0f, 16.5f, argb(230, 229, 239, 247), true);
-        drawText(g, "类型", 508.0f, 247.0f, 16.5f, argb(230, 229, 239, 247), true);
-        drawText(g, "坐标系", 596.0f, 247.0f, 16.5f, argb(230, 229, 239, 247), true);
-
-        drawLayerRow(g, 280.0f, true, 0, "地块边界", "6,523", "Polygon");
-        drawLayerRow(g, 334.0f, false, 1, "道路中心线", "2,431", "LineString");
-        drawLayerRow(g, 388.0f, false, 2, "控制点", "1,842", "Point");
-        drawLayerRow(g, 442.0f, false, 3, "河流", "312", "LineString");
-        drawLayerRow(g, 496.0f, false, 4, "建筑物", "164", "Polygon");
-
-        drawGeometryIcon(g, 0, 185.0f, 600.0f, argb(255, 64, 236, 225), 28.0f);
-        drawText(g, "地块边界", 214.0f, 586.0f, 24.5f, argb(242, 239, 248, 252), true);
-        drawText(g, "Polygon", 341.0f, 591.0f, 14.0f, argb(255, 68, 236, 224), false);
-
-        drawInfo(g, 169.0f, 650.0f, "图层名称:", "地块边界");
-        drawInfo(g, 169.0f, 686.0f, "数据源:", "parcels.shp");
-        drawInfo(g, 169.0f, 722.0f, "坐标系:", "EPSG:4326");
-        drawInfo(g, 169.0f, 774.0f, "创建时间:", "2024-05-16 14:32:18");
-        drawInfo(g, 451.0f, 650.0f, "要素数量:", "6,523");
-        drawInfo(g, 451.0f, 686.0f, "几何类型:", "Polygon");
-        drawInfo(g, 451.0f, 722.0f, "范围:", "113.2142,22.4987");
-        drawText(g, "-114.9876,23.9145", 510.0f, 748.0f, 16.0f, argb(232, 238, 246, 251));
-        drawInfo(g, 451.0f, 774.0f, "最后编辑:", "2024-05-16 15:47:09");
-    }
-
-    void drawLayerRow(Gdiplus::Graphics& g,
-                      float y,
-                      bool selected,
-                      int icon,
-                      std::string_view name,
-                      std::string_view count,
-                      std::string_view type) {
-        drawDragDots(g, 168.0f, y + 27.0f, argb(selected ? 215 : 165, 220, 232, 241));
-        drawGeometryIcon(g, icon, 208.0f, y + 27.0f, selected ? argb(255, 63, 237, 225) : argb(220, 216, 226, 238), 22.0f);
-        drawText(g, name, 232.0f, y + 17.0f, 16.5f, argb(238, 239, 246, 251), true);
-        drawEyeIcon(g, 370.0f, y + 27.0f, argb(255, 48, 234, 220), 24.0f);
-        drawText(g, count, 423.0f, y + 17.0f, 15.8f, argb(232, 235, 244, 249));
-        drawText(g, type, 505.0f, y + 17.0f, 15.0f, argb(232, 235, 244, 249));
-        drawText(g, "EPSG:4326", 596.0f, y + 17.0f, 15.0f, argb(232, 235, 244, 249));
-        drawMoreIcon(g, 700.0f, y + 27.0f, argb(215, 232, 241, 248));
-    }
-
-    void drawInfo(Gdiplus::Graphics& g, float x, float y, std::string_view label, std::string_view value) {
-        drawText(g, label, x, y, 16.0f, argb(215, 192, 207, 220));
-        drawText(g, value, x + 76.0f, y, 16.0f, argb(232, 238, 246, 251));
-    }
-
-    void drawStatusOverlay(Gdiplus::Graphics& g, int height) {
-        const float y = static_cast<float>(height) - 30.0f;
-        drawLayerStack(g, 63.0f, y, 31.0f, argb(210, 216, 226, 238), false);
-        drawText(g, "图层:5", 89.0f, y - 13.0f, 20.0f, argb(235, 222, 232, 241));
-        drawEyeIcon(g, 293.0f, y, argb(210, 216, 226, 238), 29.0f);
-        drawText(g, "可见:5", 323.0f, y - 13.0f, 20.0f, argb(235, 222, 232, 241));
-        drawChartIcon(g, 524.0f, y, argb(210, 216, 226, 238));
-        drawText(g, "总要素:11,272", 549.0f, y - 13.0f, 20.0f, argb(235, 222, 232, 241));
-    }
-
-    void drawLayerStack(Gdiplus::Graphics& g, float cx, float cy, float size, Gdiplus::Color color, bool glow) {
-        if (glow) {
-            Gdiplus::SolidBrush glowBrush(argb(42, 41, 233, 220));
-            g.FillEllipse(&glowBrush, cx - size * 0.55f, cy - size * 0.50f, size * 1.1f, size * 1.1f);
-        }
-        Gdiplus::Pen pen(color, 2.0f);
-        pen.SetLineJoin(Gdiplus::LineJoinRound);
-        Gdiplus::SolidBrush brush(color);
-        for (int i = 0; i < 3; ++i) {
-            const float yy = cy - size * 0.30f + i * size * 0.25f;
-            std::array<Gdiplus::PointF, 4> points = {
-                Gdiplus::PointF(cx, yy - size * 0.19f),
-                Gdiplus::PointF(cx + size * 0.45f, yy + size * 0.01f),
-                Gdiplus::PointF(cx, yy + size * 0.21f),
-                Gdiplus::PointF(cx - size * 0.45f, yy + size * 0.01f),
-            };
-            if (i == 0) {
-                g.FillPolygon(&brush, points.data(), static_cast<int>(points.size()));
-            } else {
-                g.DrawPolygon(&pen, points.data(), static_cast<int>(points.size()));
-            }
-        }
-    }
-
-    void drawSearchIcon(Gdiplus::Graphics& g, float cx, float cy, Gdiplus::Color color) {
-        Gdiplus::Pen pen(color, 2.5f);
-        g.DrawEllipse(&pen, cx - 9.0f, cy - 9.0f, 18.0f, 18.0f);
-        line(g, cx + 6.0f, cy + 6.0f, cx + 15.0f, cy + 15.0f, color, 2.5f);
-    }
-
-    void drawUploadIcon(Gdiplus::Graphics& g, float cx, float cy, Gdiplus::Color color) {
-        line(g, cx, cy + 12.0f, cx, cy - 8.0f, color, 2.2f);
-        line(g, cx, cy - 8.0f, cx - 7.0f, cy - 1.0f, color, 2.2f);
-        line(g, cx, cy - 8.0f, cx + 7.0f, cy - 1.0f, color, 2.2f);
-        line(g, cx - 11.0f, cy + 12.0f, cx + 11.0f, cy + 12.0f, color, 2.2f);
-        line(g, cx - 11.0f, cy + 12.0f, cx - 11.0f, cy + 5.0f, color, 2.2f);
-        line(g, cx + 11.0f, cy + 12.0f, cx + 11.0f, cy + 5.0f, color, 2.2f);
-    }
-
-    void drawPlusIcon(Gdiplus::Graphics& g, float cx, float cy, Gdiplus::Color color) {
-        line(g, cx - 9.0f, cy, cx + 9.0f, cy, color, 2.0f);
-        line(g, cx, cy - 9.0f, cx, cy + 9.0f, color, 2.0f);
-    }
-
-    void drawDragDots(Gdiplus::Graphics& g, float cx, float cy, Gdiplus::Color color) {
-        Gdiplus::SolidBrush brush(color);
-        for (int row = -1; row <= 1; ++row) {
-            g.FillEllipse(&brush, cx - 5.9f, cy + row * 6.0f - 1.9f, 3.8f, 3.8f);
-            g.FillEllipse(&brush, cx + 2.1f, cy + row * 6.0f - 1.9f, 3.8f, 3.8f);
-        }
-    }
-
-    void drawGeometryIcon(Gdiplus::Graphics& g, int icon, float cx, float cy, Gdiplus::Color color, float size) {
-        Gdiplus::Pen pen(color, 2.1f);
-        pen.SetLineJoin(Gdiplus::LineJoinRound);
-        switch (icon) {
-        case 0: {
-            std::array<Gdiplus::PointF, 5> points = {
-                Gdiplus::PointF(cx, cy - size * 0.55f),
-                Gdiplus::PointF(cx + size * 0.48f, cy - size * 0.20f),
-                Gdiplus::PointF(cx + size * 0.35f, cy + size * 0.52f),
-                Gdiplus::PointF(cx - size * 0.42f, cy + size * 0.48f),
-                Gdiplus::PointF(cx - size * 0.55f, cy - size * 0.12f),
-            };
-            g.DrawPolygon(&pen, points.data(), static_cast<int>(points.size()));
-            break;
-        }
-        case 1:
-            line(g, cx - size * 0.46f, cy - size * 0.32f, cx - size * 0.05f, cy + size * 0.02f, color, 2.2f);
-            line(g, cx - size * 0.05f, cy + size * 0.02f, cx + size * 0.46f, cy + size * 0.42f, color, 2.2f);
-            break;
-        case 2:
-            g.DrawEllipse(&pen, cx - size * 0.31f, cy - size * 0.31f, size * 0.62f, size * 0.62f);
-            break;
-        case 3:
-            drawRiver(g, cx, cy, size, color);
-            break;
-        default:
-            g.DrawRectangle(&pen, cx - size * 0.38f, cy - size * 0.38f, size * 0.76f, size * 0.76f);
-            break;
-        }
-    }
-
-    void drawRiver(Gdiplus::Graphics& g, float cx, float cy, float size, Gdiplus::Color color) {
-        Gdiplus::Pen pen(color, 2.1f);
-        Gdiplus::GraphicsPath p;
-        p.AddBezier(cx - size * 0.50f,
-                    cy - size * 0.12f,
-                    cx - size * 0.22f,
-                    cy + size * 0.12f,
-                    cx - size * 0.08f,
-                    cy + size * 0.12f,
-                    cx + size * 0.18f,
-                    cy - size * 0.08f);
-        p.AddBezier(cx + size * 0.18f,
-                    cy - size * 0.08f,
-                    cx + size * 0.36f,
-                    cy - size * 0.22f,
-                    cx + size * 0.52f,
-                    cy - size * 0.15f,
-                    cx + size * 0.64f,
-                    cy - size * 0.04f);
-        g.DrawPath(&pen, &p);
-        Gdiplus::GraphicsPath q;
-        q.AddBezier(cx - size * 0.54f,
-                    cy + size * 0.20f,
-                    cx - size * 0.26f,
-                    cy + size * 0.44f,
-                    cx - size * 0.06f,
-                    cy + size * 0.44f,
-                    cx + size * 0.22f,
-                    cy + size * 0.22f);
-        q.AddBezier(cx + size * 0.22f,
-                    cy + size * 0.22f,
-                    cx + size * 0.38f,
-                    cy + size * 0.09f,
-                    cx + size * 0.52f,
-                    cy + size * 0.14f,
-                    cx + size * 0.66f,
-                    cy + size * 0.26f);
-        g.DrawPath(&pen, &q);
-    }
-
-    void drawEyeIcon(Gdiplus::Graphics& g, float cx, float cy, Gdiplus::Color color, float size) {
-        Gdiplus::Pen pen(color, 2.0f);
-        Gdiplus::GraphicsPath p;
-        p.AddBezier(cx - size * 0.44f, cy, cx - size * 0.22f, cy - size * 0.30f, cx + size * 0.22f, cy - size * 0.30f, cx + size * 0.44f, cy);
-        p.AddBezier(cx + size * 0.44f, cy, cx + size * 0.22f, cy + size * 0.30f, cx - size * 0.22f, cy + size * 0.30f, cx - size * 0.44f, cy);
-        g.DrawPath(&pen, &p);
-        Gdiplus::SolidBrush brush(color);
-        g.FillEllipse(&brush, cx - size * 0.12f, cy - size * 0.12f, size * 0.24f, size * 0.24f);
-    }
-
-    void drawMoreIcon(Gdiplus::Graphics& g, float cx, float cy, Gdiplus::Color color) {
-        Gdiplus::SolidBrush brush(color);
-        g.FillEllipse(&brush, cx - 2.0f, cy - 11.0f, 4.0f, 4.0f);
-        g.FillEllipse(&brush, cx - 2.0f, cy - 2.0f, 4.0f, 4.0f);
-        g.FillEllipse(&brush, cx - 2.0f, cy + 7.0f, 4.0f, 4.0f);
-    }
-
-    void drawChartIcon(Gdiplus::Graphics& g, float cx, float cy, Gdiplus::Color color) {
-        Gdiplus::Pen pen(color, 2.0f);
-        g.DrawRectangle(&pen, cx - 11.0f, cy - 11.0f, 22.0f, 22.0f);
-        line(g, cx - 5.0f, cy + 6.0f, cx - 5.0f, cy + 1.0f, color, 3.0f);
-        line(g, cx, cy + 6.0f, cx, cy - 5.0f, color, 3.0f);
-        line(g, cx + 5.0f, cy + 6.0f, cx + 5.0f, cy - 1.0f, color, 3.0f);
-    }
-
-    void drawEditIcon(Gdiplus::Graphics& g, float cx, float cy, Gdiplus::Color color) {
-        Gdiplus::Pen pen(color, 2.6f);
-        g.DrawRectangle(&pen, cx - 14.0f, cy - 11.0f, 22.0f, 22.0f);
-        line(g, cx - 3.0f, cy + 7.0f, cx + 15.0f, cy - 11.0f, color, 3.0f);
-        line(g, cx + 10.0f, cy - 16.0f, cx + 17.0f, cy - 9.0f, color, 3.0f);
-    }
-
-    void drawPencilIcon(Gdiplus::Graphics& g, float cx, float cy, Gdiplus::Color color) {
-        line(g, cx - 13.0f, cy + 14.0f, cx + 14.0f, cy - 13.0f, color, 4.0f);
-        line(g, cx + 7.0f, cy - 16.0f, cx + 17.0f, cy - 6.0f, color, 3.2f);
-        line(g, cx - 16.0f, cy + 17.0f, cx - 6.0f, cy + 14.0f, color, 2.0f);
-    }
-
-    void drawTargetIcon(Gdiplus::Graphics& g, float cx, float cy, Gdiplus::Color color) {
-        Gdiplus::Pen pen(color, 2.8f);
-        g.DrawEllipse(&pen, cx - 16.0f, cy - 16.0f, 32.0f, 32.0f);
-        Gdiplus::Pen inner(color, 2.2f);
-        g.DrawEllipse(&inner, cx - 7.0f, cy - 7.0f, 14.0f, 14.0f);
-        Gdiplus::SolidBrush brush(color);
-        g.FillEllipse(&brush, cx - 2.5f, cy - 2.5f, 5.0f, 5.0f);
-    }
-
-    void drawDocIcon(Gdiplus::Graphics& g, float cx, float cy, Gdiplus::Color color) {
-        Gdiplus::Pen pen(color, 2.5f);
-        g.DrawRectangle(&pen, cx - 13.0f, cy - 16.0f, 26.0f, 32.0f);
-        line(g, cx - 6.0f, cy - 6.0f, cx + 7.0f, cy - 6.0f, color, 1.9f);
-        line(g, cx - 6.0f, cy + 1.0f, cx + 7.0f, cy + 1.0f, color, 1.9f);
-        line(g, cx - 6.0f, cy + 8.0f, cx + 7.0f, cy + 8.0f, color, 1.9f);
-    }
-
-    void drawSwitchIcon(Gdiplus::Graphics& g, float cx, float cy, Gdiplus::Color color) {
-        line(g, cx - 15.0f, cy - 8.0f, cx + 13.0f, cy - 8.0f, color, 2.5f);
-        line(g, cx + 8.0f, cy - 14.0f, cx + 15.0f, cy - 8.0f, color, 2.5f);
-        line(g, cx + 8.0f, cy - 2.0f, cx + 15.0f, cy - 8.0f, color, 2.5f);
-        line(g, cx + 15.0f, cy + 8.0f, cx - 13.0f, cy + 8.0f, color, 2.5f);
-        line(g, cx - 8.0f, cy + 2.0f, cx - 15.0f, cy + 8.0f, color, 2.5f);
-        line(g, cx - 8.0f, cy + 14.0f, cx - 15.0f, cy + 8.0f, color, 2.5f);
-    }
-
-    void drawGearIcon(Gdiplus::Graphics& g, float cx, float cy, Gdiplus::Color color) {
-        Gdiplus::SolidBrush brush(color);
-        Gdiplus::GraphicsPath gear;
-        constexpr int teeth = 8;
-        for (int i = 0; i < teeth * 2; ++i) {
-            const float r = (i % 2 == 0) ? 17.0f : 12.5f;
-            const float a = -kPi * 0.5f + i * kPi / teeth;
-            const float x = cx + std::cos(a) * r;
-            const float y = cy + std::sin(a) * r;
-            if (i == 0) {
-                gear.StartFigure();
-            }
-            gear.AddLine(i == 0 ? x : cx + std::cos(-kPi * 0.5f + (i - 1) * kPi / teeth) * ((i - 1) % 2 == 0 ? 17.0f : 12.5f),
-                         i == 0 ? y : cy + std::sin(-kPi * 0.5f + (i - 1) * kPi / teeth) * ((i - 1) % 2 == 0 ? 17.0f : 12.5f),
-                         x,
-                         y);
-        }
-        gear.CloseFigure();
-        g.FillPath(&brush, &gear);
-        Gdiplus::Pen cut(argb(255, 10, 18, 26), 2.0f);
-        g.DrawEllipse(&cut, cx - 6.0f, cy - 6.0f, 12.0f, 12.0f);
-    }
-
-    void drawCompass(Gdiplus::Graphics& g, float cx, float cy) {
-        const float r = 51.0f;
-        Gdiplus::Pen ring(argb(145, 197, 213, 224), 1.1f);
-        g.DrawEllipse(&ring, cx - r, cy - r, r * 2.0f, r * 2.0f);
-        Gdiplus::Pen tick(argb(110, 207, 220, 230), 1.0f);
-        for (int i = 0; i < 24; ++i) {
-            const float angle = -kPi * 0.5f + i * (2.0f * kPi / 24.0f);
-            const float len = (i % 6 == 0) ? 11.0f : 6.0f;
-            g.DrawLine(&tick,
-                       cx + std::cos(angle) * (r - len),
-                       cy + std::sin(angle) * (r - len),
-                       cx + std::cos(angle) * r,
-                       cy + std::sin(angle) * r);
-        }
-        drawText(g, "N", cx - 8.0f, cy - r - 34.0f, 17.0f, argb(235, 237, 245, 251), true);
-        drawText(g, "E", cx + r + 10.0f, cy - 12.0f, 16.0f, argb(220, 237, 245, 251));
-        drawText(g, "S", cx - 7.0f, cy + r + 8.0f, 16.0f, argb(220, 237, 245, 251));
-        drawText(g, "W", cx - r - 28.0f, cy - 12.0f, 16.0f, argb(220, 237, 245, 251));
-
-        Gdiplus::SolidBrush red(argb(255, 227, 74, 82));
-        std::array<Gdiplus::PointF, 4> north = {
-            Gdiplus::PointF(cx, cy - r + 12.0f),
-            Gdiplus::PointF(cx + 9.0f, cy - 1.0f),
-            Gdiplus::PointF(cx, cy - 8.0f),
-            Gdiplus::PointF(cx - 9.0f, cy - 1.0f),
-        };
-        g.FillPolygon(&red, north.data(), static_cast<int>(north.size()));
-        Gdiplus::SolidBrush white(argb(230, 224, 232, 239));
-        std::array<Gdiplus::PointF, 4> south = {
-            Gdiplus::PointF(cx, cy + r - 13.0f),
-            Gdiplus::PointF(cx + 9.0f, cy + 1.0f),
-            Gdiplus::PointF(cx, cy + 8.0f),
-            Gdiplus::PointF(cx - 9.0f, cy + 1.0f),
-        };
-        g.FillPolygon(&white, south.data(), static_cast<int>(south.size()));
-    }
 };
 
 class AppWindow {
 public:
+    ~AppWindow() {
+        if (backgroundBrush_) {
+            DeleteObject(backgroundBrush_);
+            backgroundBrush_ = nullptr;
+        }
+    }
+
     int run(HINSTANCE instance, int showCmd) {
         SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE);
         dpi_ = getSystemDpi();
         const float dpiScale = dpiScaleForDpi(dpi_);
+        backgroundBrush_ = CreateSolidBrush(kWin32Background);
 
         WNDCLASSEXW wc{};
         wc.cbSize = sizeof(wc);
+        wc.style = CS_HREDRAW | CS_VREDRAW;
         wc.hInstance = instance;
         wc.lpfnWndProc = &AppWindow::WndProc;
         wc.lpszClassName = L"RmlLayerDeskWindow";
         wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-        wc.hbrBackground = reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
+        wc.hbrBackground = backgroundBrush_;
         RegisterClassExW(&wc);
 
         RECT workArea{};
@@ -2626,11 +2616,14 @@ public:
     }
 
 private:
+    D3DPresenter d3d_{kWin32Background, true};
     RmlLayerRenderer renderer_;
-    std::vector<uint32_t> pixels_;
-    int surfaceWidth_ = 0;
-    int surfaceHeight_ = 0;
+    std::vector<uint32_t> fallbackPixels_;
+    int fallbackWidth_ = 0;
+    int fallbackHeight_ = 0;
     UINT dpi_ = static_cast<UINT>(kDefaultDpi);
+    HBRUSH backgroundBrush_ = nullptr;
+    bool paintActive_ = false;
 
     static float dpiScaleForDpi(UINT dpi) {
         return static_cast<float>(std::max<UINT>(dpi, 1)) / kDefaultDpi;
@@ -2656,6 +2649,24 @@ private:
         return reinterpret_cast<AppWindow*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
     }
 
+    void requestRepaint(HWND hwnd, bool immediate) {
+        const UINT flags = RDW_INVALIDATE | RDW_NOCHILDREN |
+                           (immediate ? (RDW_ERASE | RDW_UPDATENOW) : 0);
+        RedrawWindow(hwnd, nullptr, nullptr, flags);
+    }
+
+    void eraseBackground(HWND hwnd, HDC hdc) {
+        RECT client{};
+        GetClientRect(hwnd, &client);
+        if (backgroundBrush_) {
+            FillRect(hdc, &client, backgroundBrush_);
+            return;
+        }
+
+        SetDCBrushColor(hdc, kWin32Background);
+        FillRect(hdc, &client, reinterpret_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+    }
+
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
         if (message == WM_NCCREATE) {
             const auto* create = reinterpret_cast<CREATESTRUCTW*>(lParam);
@@ -2668,9 +2679,21 @@ private:
         }
 
         switch (message) {
+        case WM_WINDOWPOSCHANGING: {
+            auto* pos = reinterpret_cast<WINDOWPOS*>(lParam);
+            if (pos && !(pos->flags & SWP_NOSIZE)) {
+                pos->flags |= SWP_NOCOPYBITS;
+            }
+            break;
+        }
         case WM_SIZE:
-            app->resize(LOWORD(lParam), HIWORD(lParam));
-            InvalidateRect(hwnd, nullptr, FALSE);
+            if (wParam == SIZE_MINIMIZED) {
+                return 0;
+            }
+            app->requestRepaint(hwnd, true);
+            return 0;
+        case WM_EXITSIZEMOVE:
+            app->requestRepaint(hwnd, true);
             return 0;
         case WM_DPICHANGED: {
             app->dpi_ = HIWORD(wParam);
@@ -2682,7 +2705,7 @@ private:
                          suggested->right - suggested->left,
                          suggested->bottom - suggested->top,
                          SWP_NOZORDER | SWP_NOACTIVATE);
-            InvalidateRect(hwnd, nullptr, FALSE);
+            app->requestRepaint(hwnd, true);
             return 0;
         }
         case WM_KEYDOWN:
@@ -2695,6 +2718,7 @@ private:
             app->paint(hwnd);
             return 0;
         case WM_ERASEBKGND:
+            app->eraseBackground(hwnd, reinterpret_cast<HDC>(wParam));
             return 1;
         case WM_DESTROY:
             PostQuitMessage(0);
@@ -2705,13 +2729,101 @@ private:
         return DefWindowProcW(hwnd, message, wParam, lParam);
     }
 
-    void resize(int width, int height) {
-        surfaceWidth_ = std::max(1, width);
-        surfaceHeight_ = std::max(1, height);
-        pixels_.assign(static_cast<size_t>(surfaceWidth_) * static_cast<size_t>(surfaceHeight_), 0xff070c12u);
+    bool renderCpuPixels(uint32_t* pixels, int width, int height, size_t rowBytes) {
+        width = std::max(1, width);
+        height = std::max(1, height);
+        if (!pixels || rowBytes < static_cast<size_t>(width) * sizeof(uint32_t)) {
+            return false;
+        }
+
+        const SkImageInfo info = SkImageInfo::Make(width,
+                                                   height,
+                                                   kBGRA_8888_SkColorType,
+                                                   kPremul_SkAlphaType);
+        sk_sp<SkSurface> surface = SkSurfaces::WrapPixels(info, pixels, rowBytes);
+        if (!surface) {
+            return false;
+        }
+
+        renderer_.draw(*surface->getCanvas(), width, height, dpiScaleForDpi(dpi_));
+        return true;
+    }
+
+    bool renderFallbackPixels(int width, int height) {
+        width = std::max(1, width);
+        height = std::max(1, height);
+        if (width != fallbackWidth_ || height != fallbackHeight_ || fallbackPixels_.empty()) {
+            fallbackWidth_ = width;
+            fallbackHeight_ = height;
+            fallbackPixels_.resize(static_cast<size_t>(fallbackWidth_) * static_cast<size_t>(fallbackHeight_));
+        }
+
+        return renderCpuPixels(fallbackPixels_.data(),
+                               fallbackWidth_,
+                               fallbackHeight_,
+                               static_cast<size_t>(fallbackWidth_) * sizeof(uint32_t));
+    }
+
+    bool renderD3D(HWND hwnd, int width, int height) {
+        return d3d_.render(
+            hwnd,
+            width,
+            height,
+            [this](SkCanvas& canvas, int drawWidth, int drawHeight) {
+                // Ganesh already provides a GPU-backed canvas. Rebuilding the raster
+                // cache here makes every new resize step pay the CPU full-frame cost.
+                renderer_.drawUncached(canvas, drawWidth, drawHeight, dpiScaleForDpi(dpi_), nullptr);
+            },
+            [this](uint32_t* pixels, int drawWidth, int drawHeight, size_t rowBytes) {
+                return renderCpuPixels(pixels, drawWidth, drawHeight, rowBytes);
+            });
+    }
+
+    void renderGdiFallback(HDC hdc, const PAINTSTRUCT& ps, int width, int height) {
+        width = std::max(1, width);
+        height = std::max(1, height);
+        if (!renderFallbackPixels(width, height)) {
+            return;
+        }
+
+        BITMAPINFO bmi{};
+        bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        bmi.bmiHeader.biWidth = fallbackWidth_;
+        bmi.bmiHeader.biHeight = -fallbackHeight_;
+        bmi.bmiHeader.biPlanes = 1;
+        bmi.bmiHeader.biBitCount = 32;
+        bmi.bmiHeader.biCompression = BI_RGB;
+
+        const int paintX = std::max<LONG>(0, ps.rcPaint.left);
+        const int paintY = std::max<LONG>(0, ps.rcPaint.top);
+        const int paintRight = std::min<LONG>(fallbackWidth_, ps.rcPaint.right);
+        const int paintBottom = std::min<LONG>(fallbackHeight_, ps.rcPaint.bottom);
+        const int paintWidth = paintRight - paintX;
+        const int paintHeight = paintBottom - paintY;
+        if (paintWidth > 0 && paintHeight > 0) {
+            StretchDIBits(hdc,
+                          paintX,
+                          paintY,
+                          paintWidth,
+                          paintHeight,
+                          paintX,
+                          paintY,
+                          paintWidth,
+                          paintHeight,
+                          fallbackPixels_.data(),
+                          &bmi,
+                          DIB_RGB_COLORS,
+                          SRCCOPY);
+        }
     }
 
     void paint(HWND hwnd) {
+        if (paintActive_) {
+            ValidateRect(hwnd, nullptr);
+            return;
+        }
+        paintActive_ = true;
+
         PAINTSTRUCT ps{};
         HDC hdc = BeginPaint(hwnd, &ps);
 
@@ -2719,34 +2831,13 @@ private:
         GetClientRect(hwnd, &client);
         const int width = std::max<LONG>(1, client.right - client.left);
         const int height = std::max<LONG>(1, client.bottom - client.top);
-        if (width != surfaceWidth_ || height != surfaceHeight_ || pixels_.empty()) {
-            resize(width, height);
-        }
         dpi_ = getWindowDpi(hwnd);
-        renderer_.draw(pixels_.data(), surfaceWidth_, surfaceHeight_, dpiScaleForDpi(dpi_));
+        if (!renderD3D(hwnd, width, height)) {
+            renderGdiFallback(hdc, ps, width, height);
+        }
 
-        BITMAPINFO bmi{};
-        bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-        bmi.bmiHeader.biWidth = surfaceWidth_;
-        bmi.bmiHeader.biHeight = -surfaceHeight_;
-        bmi.bmiHeader.biPlanes = 1;
-        bmi.bmiHeader.biBitCount = 32;
-        bmi.bmiHeader.biCompression = BI_RGB;
-
-        StretchDIBits(hdc,
-                      0,
-                      0,
-                      surfaceWidth_,
-                      surfaceHeight_,
-                      0,
-                      0,
-                      surfaceWidth_,
-                      surfaceHeight_,
-                      pixels_.data(),
-                      &bmi,
-                      DIB_RGB_COLORS,
-                      SRCCOPY);
         EndPaint(hwnd, &ps);
+        paintActive_ = false;
     }
 };
 
@@ -2756,6 +2847,58 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCmd) {
     int argc = 0;
     LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
     if (argv) {
+        for (int i = 1; i + 4 < argc; ++i) {
+            if (wcscmp(argv[i], L"--bench-draw") == 0) {
+                const int width = std::max(1, _wtoi(argv[i + 1]));
+                const int height = std::max(1, _wtoi(argv[i + 2]));
+                const float dpiScale = std::max(0.1f, static_cast<float>(_wtof(argv[i + 3])));
+                const int frames = std::max(1, _wtoi(argv[i + 4]));
+                RmlLayerRenderer renderer;
+                RmlDrawTiming timing;
+                RmlBenchCounters counters;
+                const double averageMs = renderer.benchDraw(width, height, dpiScale, frames, &timing, &counters);
+                const double cachedAverageMs = renderer.benchCachedDraw(width, height, dpiScale, frames);
+                char message[1024]{};
+                std::snprintf(message,
+                              sizeof(message),
+                              "RmlLayerDesk bench-draw: %dx%d dpi=%.2f frames=%d uncached=%.3fms cached=%.3fms "
+                              "prepare=%.3fms chrome=%.3fms rml=%.3fms "
+                              "chrome_bg=%.3fms chrome_sidebar=%.3fms chrome_panel=%.3fms "
+                              "chrome_compass=%.3fms chrome_status=%.3fms chrome_frame=%.3fms "
+                              "strings/frame=%.2f compile/frame=%.2f render/frame=%.2f textures/frame=%.2f texture_kb/frame=%.1f\n",
+                              width,
+                              height,
+                              dpiScale,
+                              frames,
+                              averageMs,
+                              cachedAverageMs,
+                              timing.prepareMs / static_cast<double>(frames),
+                              timing.chromeMs / static_cast<double>(frames),
+                              timing.rmlMs / static_cast<double>(frames),
+                              timing.chromeBackgroundMs / static_cast<double>(frames),
+                              timing.chromeSidebarMs / static_cast<double>(frames),
+                              timing.chromePanelMs / static_cast<double>(frames),
+                              timing.chromeCompassMs / static_cast<double>(frames),
+                              timing.chromeStatusMs / static_cast<double>(frames),
+                              timing.chromeFrameMs / static_cast<double>(frames),
+                              static_cast<double>(counters.generatedStrings) / static_cast<double>(frames),
+                              static_cast<double>(counters.compiledGeometries) / static_cast<double>(frames),
+                              static_cast<double>(counters.renderedGeometries) / static_cast<double>(frames),
+                              static_cast<double>(counters.generatedTextures) / static_cast<double>(frames),
+                              static_cast<double>(counters.generatedTextureBytes) /
+                                  (1024.0 * static_cast<double>(frames)));
+                OutputDebugStringA(message);
+                if (i + 5 < argc) {
+                    FILE* file = nullptr;
+                    if (_wfopen_s(&file, argv[i + 5], L"wb") == 0 && file) {
+                        std::fprintf(file, "%s", message);
+                        std::fclose(file);
+                    }
+                }
+                LocalFree(argv);
+                return EXIT_SUCCESS;
+            }
+        }
         for (int i = 1; i + 4 < argc; ++i) {
             if (wcscmp(argv[i], L"--dump-size") == 0) {
                 const int width = std::max(1, _wtoi(argv[i + 1]));

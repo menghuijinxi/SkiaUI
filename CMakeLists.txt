@@ -18,10 +18,12 @@ add_executable(SkiaRelayDesk WIN32
 
 add_executable(SkiaLayerDesk WIN32
     src/layer_desk.cpp
+    src/d3d_presenter.cpp
 )
 
 add_executable(RmlLayerDesk WIN32
     src/rml_layer_desk.cpp
+    src/d3d_presenter.cpp
 )
 
 foreach(app_target IN ITEMS SkiaRelayDesk SkiaLayerDesk)
@@ -58,10 +60,14 @@ target_link_libraries(RmlLayerDesk PRIVATE
     unofficial::skia::modules::svg
     user32
     gdi32
-    gdiplus
     dwmapi
+    ole32
     shcore
     shell32
+    windowscodecs
+    d3d12
+    dxgi
+    dxguid
 )
 
 target_compile_definitions(RmlLayerDesk PRIVATE
@@ -84,4 +90,5 @@ add_custom_command(TARGET RmlLayerDesk POST_BUILD
 
 if(SKIATEST_USE_SKIA_D3D)
     target_compile_definitions(SkiaLayerDesk PRIVATE SKIATEST_USE_SKIA_D3D=1)
+    target_compile_definitions(RmlLayerDesk PRIVATE SKIATEST_USE_SKIA_D3D=1)
 endif()
