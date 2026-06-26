@@ -27,6 +27,7 @@
 #include <RmlUi/Core/SystemInterface.h>
 
 #include "include/core/SkBlendMode.h"
+#include "include/core/SkBlurTypes.h"
 #include "include/core/SkCanvas.h"
 #include "include/core/SkColor.h"
 #include "include/core/SkData.h"
@@ -37,6 +38,7 @@
 #include "include/core/SkFontTypes.h"
 #include "include/core/SkImage.h"
 #include "include/core/SkImageInfo.h"
+#include "include/core/SkMaskFilter.h"
 #include "include/core/SkPaint.h"
 #include "include/core/SkPath.h"
 #include "include/core/SkPathBuilder.h"
@@ -58,17 +60,22 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstdint>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <initializer_list>
 #include <limits>
 #include <map>
 #include <memory>
 #include <set>
+#include <sstream>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <vector>
 
 namespace {
@@ -79,6 +86,30 @@ constexpr int kRmlSupersample = 2;
 constexpr float kDefaultDpi = 96.0f;
 constexpr float kPi = 3.14159265358979323846f;
 float gRmlTextureScale = 1.0f;
+
+struct BrowserLinearGradient {
+    float angleDeg = 180.0f;
+    std::vector<SkColor> colors;
+    std::vector<SkScalar> positions;
+};
+
+struct BrowserBoxShadow {
+    float offsetX = 0.0f;
+    float offsetY = 0.0f;
+    float blur = 0.0f;
+    float spread = 0.0f;
+    SkColor color = SK_ColorTRANSPARENT;
+    bool inset = false;
+};
+
+struct BrowserPaintStyle {
+    bool hasBackgroundGradient = false;
+    BrowserLinearGradient backgroundGradient;
+    bool hasBoxShadow = false;
+    BrowserBoxShadow boxShadow;
+};
+
+using BrowserPaintStyleMap = std::map<std::string, BrowserPaintStyle>;
 
 struct Rect {
     float x = 0.0f;
@@ -105,6 +136,480 @@ Gdiplus::Color argb(uint8_t a, uint8_t r, uint8_t g, uint8_t b) {
 
 uint8_t clampByte(float value) {
     return static_cast<uint8_t>(std::max(0.0f, std::min(255.0f, value)));
+}
+
+std::string_view trimView(std::string_view value) {
+    while (!value.empty() && std::isspace(static_cast<unsigned char>(value.front()))) {
+        value.remove_prefix(1);
+    }
+    while (!value.empty() && std::isspace(static_cast<unsigned char>(value.back()))) {
+        value.remove_suffix(1);
+    }
+    return value;
+}
+
+std::string trimCopy(std::string_view value) {
+    const std::string_view trimmed = trimView(value);
+    return std::string(trimmed.data(), trimmed.size());
+}
+
+std::string lowerCopy(std::string_view value) {
+    std::string result;
+    result.reserve(value.size());
+    for (char c : value) {
+        result.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+    }
+    return result;
+}
+
+bool endsWith(std::string_view value, std::string_view suffix) {
+    return value.size() >= suffix.size() &&
+           value.substr(value.size() - suffix.size(), suffix.size()) == suffix;
+}
+
+bool parseFloatStrict(std::string_view value, float& result) {
+    const std::string text = trimCopy(value);
+    if (text.empty()) {
+        return false;
+    }
+    char* end = nullptr;
+    const float parsed = std::strtof(text.c_str(), &end);
+    if (end == text.c_str()) {
+        return false;
+    }
+    while (*end != '\0' && std::isspace(static_cast<unsigned char>(*end))) {
+        ++end;
+    }
+    if (*end != '\0') {
+        return false;
+    }
+    result = parsed;
+    return true;
+}
+
+std::vector<std::string> splitTopLevel(std::string_view value, char delimiter) {
+    std::vector<std::string> parts;
+    int functionDepth = 0;
+    size_t start = 0;
+    for (size_t i = 0; i < value.size(); ++i) {
+        if (value[i] == '(') {
+            ++functionDepth;
+        } else if (value[i] == ')' && functionDepth > 0) {
+            --functionDepth;
+        } else if (value[i] == delimiter && functionDepth == 0) {
+            std::string part = trimCopy(value.substr(start, i - start));
+            if (!part.empty()) {
+                parts.push_back(std::move(part));
+            }
+            start = i + 1;
+        }
+    }
+
+    std::string part = trimCopy(value.substr(start));
+    if (!part.empty()) {
+        parts.push_back(std::move(part));
+    }
+    return parts;
+}
+
+std::vector<std::string> splitWhitespace(std::string_view value) {
+    std::vector<std::string> parts;
+    size_t i = 0;
+    while (i < value.size()) {
+        while (i < value.size() && std::isspace(static_cast<unsigned char>(value[i]))) {
+            ++i;
+        }
+        const size_t start = i;
+        while (i < value.size() && !std::isspace(static_cast<unsigned char>(value[i]))) {
+            ++i;
+        }
+        if (i > start) {
+            parts.emplace_back(value.substr(start, i - start));
+        }
+    }
+    return parts;
+}
+
+size_t findTopLevelColon(std::string_view value) {
+    int functionDepth = 0;
+    for (size_t i = 0; i < value.size(); ++i) {
+        if (value[i] == '(') {
+            ++functionDepth;
+        } else if (value[i] == ')' && functionDepth > 0) {
+            --functionDepth;
+        } else if (value[i] == ':' && functionDepth == 0) {
+            return i;
+        }
+    }
+    return std::string_view::npos;
+}
+
+int cssHexNibble(char value) {
+    if (value >= '0' && value <= '9') {
+        return value - '0';
+    }
+    if (value >= 'a' && value <= 'f') {
+        return value - 'a' + 10;
+    }
+    if (value >= 'A' && value <= 'F') {
+        return value - 'A' + 10;
+    }
+    return -1;
+}
+
+bool parseCssHexByte(std::string_view value, size_t offset, uint8_t& byte) {
+    if (offset + 1 >= value.size()) {
+        return false;
+    }
+    const int high = cssHexNibble(value[offset]);
+    const int low = cssHexNibble(value[offset + 1]);
+    if (high < 0 || low < 0) {
+        return false;
+    }
+    byte = static_cast<uint8_t>((high << 4) | low);
+    return true;
+}
+
+bool parseBrowserColor(std::string_view value, SkColor& color) {
+    const std::string text = trimCopy(value);
+    if (text == "transparent") {
+        color = SK_ColorTRANSPARENT;
+        return true;
+    }
+    if (text.empty() || text[0] != '#') {
+        return false;
+    }
+
+    if (text.size() == 4 || text.size() == 5) {
+        const int r = cssHexNibble(text[1]);
+        const int g = cssHexNibble(text[2]);
+        const int b = cssHexNibble(text[3]);
+        const int a = text.size() == 5 ? cssHexNibble(text[4]) : 15;
+        if (r < 0 || g < 0 || b < 0 || a < 0) {
+            return false;
+        }
+        color = SkColorSetARGB(static_cast<uint8_t>(a * 17),
+                               static_cast<uint8_t>(r * 17),
+                               static_cast<uint8_t>(g * 17),
+                               static_cast<uint8_t>(b * 17));
+        return true;
+    }
+
+    if (text.size() != 7 && text.size() != 9) {
+        return false;
+    }
+    uint8_t r = 0;
+    uint8_t g = 0;
+    uint8_t b = 0;
+    uint8_t a = 255;
+    if (!parseCssHexByte(text, 1, r) || !parseCssHexByte(text, 3, g) || !parseCssHexByte(text, 5, b)) {
+        return false;
+    }
+    if (text.size() == 9 && !parseCssHexByte(text, 7, a)) {
+        return false;
+    }
+    color = SkColorSetARGB(a, r, g, b);
+    return true;
+}
+
+bool parseCssLength(std::string_view value, float& length) {
+    std::string text = trimCopy(value);
+    const std::string lower = lowerCopy(text);
+    if (endsWith(lower, "px")) {
+        text.resize(text.size() - 2);
+    }
+    return parseFloatStrict(text, length);
+}
+
+bool parseCssPercent(std::string_view value, float& percent) {
+    std::string text = trimCopy(value);
+    if (!endsWith(lowerCopy(text), "%")) {
+        return false;
+    }
+    text.resize(text.size() - 1);
+    float parsed = 0.0f;
+    if (!parseFloatStrict(text, parsed)) {
+        return false;
+    }
+    percent = std::clamp(parsed / 100.0f, 0.0f, 1.0f);
+    return true;
+}
+
+bool parseCssAngle(std::string_view value, float& angleDeg) {
+    std::string text = trimCopy(value);
+    const std::string lower = lowerCopy(text);
+    if (endsWith(lower, "deg")) {
+        text.resize(text.size() - 3);
+        return parseFloatStrict(text, angleDeg);
+    }
+
+    const std::vector<std::string> words = splitWhitespace(lower);
+    if (words.empty() || words.front() != "to") {
+        return false;
+    }
+
+    const bool top = std::find(words.begin(), words.end(), "top") != words.end();
+    const bool right = std::find(words.begin(), words.end(), "right") != words.end();
+    const bool bottom = std::find(words.begin(), words.end(), "bottom") != words.end();
+    const bool left = std::find(words.begin(), words.end(), "left") != words.end();
+    if (top && right) {
+        angleDeg = 45.0f;
+    } else if (bottom && right) {
+        angleDeg = 135.0f;
+    } else if (bottom && left) {
+        angleDeg = 225.0f;
+    } else if (top && left) {
+        angleDeg = 315.0f;
+    } else if (top) {
+        angleDeg = 0.0f;
+    } else if (right) {
+        angleDeg = 90.0f;
+    } else if (bottom) {
+        angleDeg = 180.0f;
+    } else if (left) {
+        angleDeg = 270.0f;
+    } else {
+        return false;
+    }
+    return true;
+}
+
+bool parseColorStop(std::string_view value, SkColor& color, SkScalar& position, bool& hasPosition) {
+    std::string text = trimCopy(value);
+    if (parseBrowserColor(text, color)) {
+        position = 0.0f;
+        hasPosition = false;
+        return true;
+    }
+
+    const size_t colorEnd = text.find_first_of(" \t\r\n");
+    if (colorEnd == std::string::npos) {
+        return false;
+    }
+    if (!parseBrowserColor(text.substr(0, colorEnd), color)) {
+        return false;
+    }
+
+    position = 0.0f;
+    hasPosition = false;
+    const std::string rest = trimCopy(text.substr(colorEnd + 1));
+    if (!rest.empty() && parseCssPercent(rest, position)) {
+        hasPosition = true;
+    }
+    return true;
+}
+
+bool parseBrowserLinearGradient(std::string_view value, BrowserLinearGradient& gradient) {
+    const std::string text = trimCopy(value);
+    const std::string lower = lowerCopy(text);
+    constexpr std::string_view prefix = "linear-gradient(";
+    if (!lower.starts_with(prefix) || text.size() <= prefix.size() || text.back() != ')') {
+        return false;
+    }
+
+    const std::string_view inner(text.data() + prefix.size(), text.size() - prefix.size() - 1);
+    const std::vector<std::string> parts = splitTopLevel(inner, ',');
+    if (parts.size() < 2) {
+        return false;
+    }
+
+    BrowserLinearGradient parsed;
+    size_t colorStart = 0;
+    if (parseCssAngle(parts[0], parsed.angleDeg)) {
+        colorStart = 1;
+    } else {
+        parsed.angleDeg = 180.0f;
+    }
+    if (parts.size() - colorStart < 2) {
+        return false;
+    }
+
+    std::vector<SkScalar> positions;
+    std::vector<bool> explicitPositions;
+    for (size_t i = colorStart; i < parts.size(); ++i) {
+        SkColor color = SK_ColorTRANSPARENT;
+        SkScalar position = 0.0f;
+        bool hasPosition = false;
+        if (!parseColorStop(parts[i], color, position, hasPosition)) {
+            return false;
+        }
+        parsed.colors.push_back(color);
+        positions.push_back(position);
+        explicitPositions.push_back(hasPosition);
+    }
+
+    const size_t stopCount = parsed.colors.size();
+    parsed.positions.resize(stopCount);
+    for (size_t i = 0; i < stopCount; ++i) {
+        parsed.positions[i] = explicitPositions[i]
+                                  ? positions[i]
+                                  : (stopCount > 1 ? static_cast<SkScalar>(i) / static_cast<SkScalar>(stopCount - 1) : 0.0f);
+    }
+
+    gradient = std::move(parsed);
+    return true;
+}
+
+bool parseBrowserBoxShadow(std::string_view value, BrowserBoxShadow& shadow) {
+    const std::vector<std::string> shadowLayers = splitTopLevel(value, ',');
+    if (shadowLayers.empty() || lowerCopy(shadowLayers.front()) == "none") {
+        return false;
+    }
+
+    BrowserBoxShadow parsed;
+    std::vector<float> lengths;
+    bool hasColor = false;
+    for (const std::string& token : splitWhitespace(shadowLayers.front())) {
+        if (lowerCopy(token) == "inset") {
+            parsed.inset = true;
+            continue;
+        }
+
+        SkColor color = SK_ColorTRANSPARENT;
+        if (parseBrowserColor(token, color)) {
+            parsed.color = color;
+            hasColor = true;
+            continue;
+        }
+
+        float length = 0.0f;
+        if (parseCssLength(token, length)) {
+            lengths.push_back(length);
+            continue;
+        }
+        return false;
+    }
+
+    if (lengths.size() < 2 || lengths.size() > 4) {
+        return false;
+    }
+    parsed.offsetX = lengths[0];
+    parsed.offsetY = lengths[1];
+    parsed.blur = lengths.size() >= 3 ? std::max(0.0f, lengths[2]) : 0.0f;
+    parsed.spread = lengths.size() >= 4 ? lengths[3] : 0.0f;
+    if (!hasColor) {
+        parsed.color = SK_ColorBLACK;
+    }
+
+    shadow = parsed;
+    return true;
+}
+
+std::string extractStyleText(std::string_view rml) {
+    std::string css;
+    size_t search = 0;
+    while (true) {
+        const size_t styleStart = rml.find("<style", search);
+        if (styleStart == std::string_view::npos) {
+            break;
+        }
+        const size_t contentStart = rml.find('>', styleStart);
+        if (contentStart == std::string_view::npos) {
+            break;
+        }
+        const size_t styleEnd = rml.find("</style>", contentStart + 1);
+        if (styleEnd == std::string_view::npos) {
+            break;
+        }
+        css.append(rml.substr(contentStart + 1, styleEnd - contentStart - 1));
+        css.push_back('\n');
+        search = styleEnd + 8;
+    }
+    return css;
+}
+
+std::string removeCssComments(std::string_view css) {
+    std::string result;
+    result.reserve(css.size());
+    for (size_t i = 0; i < css.size();) {
+        if (i + 1 < css.size() && css[i] == '/' && css[i + 1] == '*') {
+            const size_t end = css.find("*/", i + 2);
+            if (end == std::string_view::npos) {
+                break;
+            }
+            i = end + 2;
+            continue;
+        }
+        result.push_back(css[i]);
+        ++i;
+    }
+    return result;
+}
+
+std::vector<std::string> parseIdSelectors(std::string_view selectorText) {
+    std::vector<std::string> ids;
+    for (const std::string& selector : splitTopLevel(selectorText, ',')) {
+        const std::string trimmed = trimCopy(selector);
+        if (trimmed.empty() || trimmed.front() != '#') {
+            continue;
+        }
+        size_t end = 1;
+        while (end < trimmed.size()) {
+            const unsigned char c = static_cast<unsigned char>(trimmed[end]);
+            if (!std::isalnum(c) && trimmed[end] != '_' && trimmed[end] != '-') {
+                break;
+            }
+            ++end;
+        }
+        if (end > 1) {
+            ids.emplace_back(trimmed.substr(1, end - 1));
+        }
+    }
+    return ids;
+}
+
+void parseBrowserDeclarations(std::string_view block, BrowserPaintStyle& style) {
+    for (const std::string& declaration : splitTopLevel(block, ';')) {
+        const size_t colon = findTopLevelColon(declaration);
+        if (colon == std::string_view::npos) {
+            continue;
+        }
+
+        const std::string name = lowerCopy(trimView(std::string_view(declaration).substr(0, colon)));
+        const std::string value = trimCopy(std::string_view(declaration).substr(colon + 1));
+        if (name == "background" || name == "background-image") {
+            BrowserLinearGradient gradient;
+            if (parseBrowserLinearGradient(value, gradient)) {
+                style.backgroundGradient = std::move(gradient);
+                style.hasBackgroundGradient = true;
+            }
+        } else if (name == "box-shadow") {
+            BrowserBoxShadow shadow;
+            if (parseBrowserBoxShadow(value, shadow)) {
+                style.boxShadow = shadow;
+                style.hasBoxShadow = true;
+            }
+        }
+    }
+}
+
+BrowserPaintStyleMap parseBrowserPaintStyles(std::string_view rml) {
+    const std::string css = removeCssComments(extractStyleText(rml));
+    BrowserPaintStyleMap styles;
+    size_t search = 0;
+    while (true) {
+        const size_t blockStart = css.find('{', search);
+        if (blockStart == std::string::npos) {
+            break;
+        }
+        const size_t blockEnd = css.find('}', blockStart + 1);
+        if (blockEnd == std::string::npos) {
+            break;
+        }
+
+        const size_t selectorStart = css.rfind('}', blockStart);
+        const size_t selectorOffset = selectorStart == std::string::npos ? 0 : selectorStart + 1;
+        const std::string selectorText = trimCopy(std::string_view(css).substr(selectorOffset, blockStart - selectorOffset));
+        const std::vector<std::string> ids = parseIdSelectors(selectorText);
+        if (!ids.empty()) {
+            const std::string_view block(css.data() + blockStart + 1, blockEnd - blockStart - 1);
+            for (const std::string& id : ids) {
+                parseBrowserDeclarations(block, styles[id]);
+            }
+        }
+        search = blockEnd + 1;
+    }
+    return styles;
 }
 
 std::wstring utf8ToWide(std::string_view value) {
@@ -901,11 +1406,15 @@ private:
 
 class SkiaChromeRenderer {
 public:
-    void drawApp(SkCanvas& c, Rml::ElementDocument* document, float width, float height) const {
+    void drawApp(SkCanvas& c,
+                 Rml::ElementDocument* document,
+                 float width,
+                 float height,
+                 const BrowserPaintStyleMap& paintStyles) const {
         drawBackground(c, width, height);
         if (document) {
             drawSidebar(c, document, height);
-            drawLayerPanel(c, document);
+            drawLayerPanel(c, document, paintStyles);
             drawCompass(c, document, width - 94.0f, height - 162.0f);
             drawStatusBar(c, document, width, height);
             drawFrame(c, document, width, height);
@@ -913,7 +1422,7 @@ public:
         }
 
         drawSidebar(c, nullptr, height);
-        drawLayerPanel(c, nullptr);
+        drawLayerPanel(c, nullptr, paintStyles);
         drawCompass(c, nullptr, width - 94.0f, height - 162.0f);
         drawStatusBar(c, nullptr, width, height);
         drawFrame(c, nullptr, width, height);
@@ -1116,6 +1625,31 @@ private:
         return p;
     }
 
+    SkPaint linearPaint(const Rect& rect, const BrowserLinearGradient& gradient) const {
+        SkPaint p;
+        p.setAntiAlias(true);
+        p.setStyle(SkPaint::kFill_Style);
+
+        const float angle = (gradient.angleDeg - 90.0f) * kPi / 180.0f;
+        const float dx = std::cos(angle);
+        const float dy = std::sin(angle);
+        const float halfLine = std::abs(dx) * rect.w * 0.5f + std::abs(dy) * rect.h * 0.5f;
+        const float cx = rect.x + rect.w * 0.5f;
+        const float cy = rect.y + rect.h * 0.5f;
+        const SkPoint pts[2] = {
+            SkPoint::Make(cx - dx * halfLine, cy - dy * halfLine),
+            SkPoint::Make(cx + dx * halfLine, cy + dy * halfLine),
+        };
+
+        const std::vector<SkColor4f> gradientColorStops = gradientColors(gradient.colors.data(),
+                                                                         static_cast<int>(gradient.colors.size()));
+        const std::vector<float> gradientPositionStops = gradientPositions(gradient.positions.data(),
+                                                                           static_cast<int>(gradient.positions.size()));
+        const SkGradient skGradient = makeGradient(gradientColorStops, gradientPositionStops);
+        p.setShader(SkShaders::LinearGradient(pts, skGradient));
+        return p;
+    }
+
     SkPaint radialPaint(SkPoint center,
                         float radius,
                         const SkColor* colors,
@@ -1181,7 +1715,35 @@ private:
         c.drawRect(SkRect::MakeXYWH(active.x, active.y, 5.0f, active.h), fill(activeBox.borderColor));
     }
 
-    void drawLayerPanel(SkCanvas& c, Rml::ElementDocument* document) const {
+    static const BrowserPaintStyle* paintStyleForId(const BrowserPaintStyleMap& paintStyles, const char* id) {
+        const auto it = paintStyles.find(id);
+        return it == paintStyles.end() ? nullptr : &it->second;
+    }
+
+    void drawBoxShadow(SkCanvas& c, const ChromeBox& box, const BrowserBoxShadow& shadow) const {
+        if (shadow.inset || SkColorGetA(shadow.color) == 0) {
+            return;
+        }
+
+        Rect shadowRect = box.rect;
+        shadowRect.x += shadow.offsetX - shadow.spread;
+        shadowRect.y += shadow.offsetY - shadow.spread;
+        shadowRect.w += shadow.spread * 2.0f;
+        shadowRect.h += shadow.spread * 2.0f;
+        if (shadowRect.w <= 0.0f || shadowRect.h <= 0.0f) {
+            return;
+        }
+
+        SkPaint shadowPaint = fill(shadow.color);
+        if (shadow.blur > 0.0f) {
+            shadowPaint.setMaskFilter(SkMaskFilter::MakeBlur(kNormal_SkBlurStyle, shadow.blur * 0.5f));
+        }
+        c.drawRRect(rr(shadowRect, std::max(0.0f, box.radius + shadow.spread)), shadowPaint);
+    }
+
+    void drawLayerPanel(SkCanvas& c,
+                        Rml::ElementDocument* document,
+                        const BrowserPaintStyleMap& paintStyles) const {
         const ChromeBox panelBox = boxFromElement(document,
                                                   "chrome-panel",
                                                   {134.0f, 25.0f, 602.0f, 825.0f},
@@ -1190,21 +1752,32 @@ private:
                                                   rgba(146, 179, 199, 160),
                                                   1.25f);
         const Rect panel = panelBox.rect;
-        const SkColor shadowColors[] = {rgba(0, 0, 0, 70), rgba(0, 0, 0, 0)};
-        const SkScalar shadowPos[] = {0.0f, 1.0f};
-        c.drawRoundRect(SkRect::MakeXYWH(panel.x - 8.0f, panel.y - 8.0f, panel.w + 16.0f, panel.h + 16.0f),
-                        panelBox.radius + 5.0f,
-                        panelBox.radius + 5.0f,
-                        radialPaint(SkPoint::Make(panel.x + panel.w * 0.45f, panel.y + panel.h * 0.5f),
-                                    520.0f,
-                                    shadowColors,
-                                    shadowPos,
-                                    2));
+        const BrowserPaintStyle* panelStyle = paintStyleForId(paintStyles, "chrome-panel");
+        if (panelStyle && panelStyle->hasBoxShadow) {
+            drawBoxShadow(c, panelBox, panelStyle->boxShadow);
+        } else {
+            const SkColor shadowColors[] = {rgba(0, 0, 0, 70), rgba(0, 0, 0, 0)};
+            const SkScalar shadowPos[] = {0.0f, 1.0f};
+            c.drawRoundRect(SkRect::MakeXYWH(panel.x - 8.0f, panel.y - 8.0f, panel.w + 16.0f, panel.h + 16.0f),
+                            panelBox.radius + 5.0f,
+                            panelBox.radius + 5.0f,
+                            radialPaint(SkPoint::Make(panel.x + panel.w * 0.45f, panel.y + panel.h * 0.5f),
+                                        520.0f,
+                                        shadowColors,
+                                        shadowPos,
+                                        2));
+        }
 
         const SkColor panelFill[] = {rgba(23, 39, 55, 214), rgba(11, 22, 32, 228), rgba(20, 34, 48, 205)};
         const SkScalar panelPos[] = {0.0f, 0.58f, 1.0f};
         c.drawRRect(rr(panel, panelBox.radius),
-                    linearPaint(SkPoint::Make(panel.x, panel.y), SkPoint::Make(panel.x + panel.w, panel.y + panel.h), panelFill, panelPos, 3));
+                    panelStyle && panelStyle->hasBackgroundGradient
+                        ? linearPaint(panel, panelStyle->backgroundGradient)
+                        : linearPaint(SkPoint::Make(panel.x, panel.y),
+                                      SkPoint::Make(panel.x + panel.w, panel.y + panel.h),
+                                      panelFill,
+                                      panelPos,
+                                      3));
         c.drawRRect(rr(panel, panelBox.radius), stroke(panelBox.borderColor, panelBox.borderWidth));
         c.drawRRect(rr({panel.x + 1.0f, panel.y + 1.0f, panel.w - 2.0f, panel.h - 2.0f}, std::max(0.0f, panelBox.radius - 1.0f)),
                     stroke(rgba(222, 244, 252, 38), 1.0f));
@@ -1401,7 +1974,11 @@ public:
             canvas->clear(rgb(7, 12, 18));
             canvas->save();
             canvas->scale(scale, scale);
-            chrome_.drawApp(*canvas, document, static_cast<float>(logicalWidth), static_cast<float>(logicalHeight));
+            chrome_.drawApp(*canvas,
+                            document,
+                            static_cast<float>(logicalWidth),
+                            static_cast<float>(logicalHeight),
+                            browserPaintStyles_);
             canvas->restore();
         }
 
@@ -1477,6 +2054,8 @@ private:
     SkiaRenderInterface render_;
     SkiaChromeRenderer chrome_;
     Rml::ElementInstancerGeneric<LayerIconElement> iconInstancer_;
+    std::string rmlDocument_;
+    BrowserPaintStyleMap browserPaintStyles_;
     bool rmlReady_ = false;
     Rml::Context* context_ = nullptr;
 
@@ -1487,315 +2066,82 @@ private:
         g.SetCompositingQuality(Gdiplus::CompositingQualityHighQuality);
     }
 
-    static const char* rmlDocument() {
+    static std::filesystem::path executableDirectory() {
+        std::wstring buffer(MAX_PATH, L'\0');
+        DWORD length = 0;
+        while (true) {
+            length = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+            if (length == 0) {
+                return {};
+            }
+            if (length < buffer.size() - 1) {
+                break;
+            }
+            buffer.resize(buffer.size() * 2, L'\0');
+        }
+        buffer.resize(length);
+        return std::filesystem::path(buffer).parent_path();
+    }
+
+    static std::string readTextFile(const std::filesystem::path& path) {
+        std::ifstream file(path, std::ios::binary);
+        if (!file) {
+            return {};
+        }
+        std::ostringstream buffer;
+        buffer << file.rdbuf();
+        return buffer.str();
+    }
+
+    static std::string fallbackRmlDocument() {
         return R"RML(
 <rml>
 <head>
 <style>
-body {
-    display: block;
-    margin: 0;
-    width: 100%;
-    height: 100%;
-    background-color: transparent;
-}
-div { display: block; position: absolute; box-sizing: border-box; }
-icon { display: block; position: absolute; box-sizing: border-box; background-color: transparent; }
-body {
-    font-family: "Microsoft YaHei UI";
-    color: #eff7fd;
-}
-.text {
-    background-color: transparent;
-    color: #edf5fb;
-    font-size: 16px;
-}
-.chrome { display: block; position: absolute; box-sizing: border-box; }
-#chrome-frame {
-    left: 2px; top: 2px; right: 2px; bottom: 2px;
-    border: 1px #7d9bad69;
-    border-radius: 10px;
-}
-#chrome-sidebar {
-    left: 0; top: 0; width: 118px; bottom: 60px;
-    background-color: #050a10ee;
-    border-right: 1px #53768f2e;
-}
-#chrome-nav-active {
-    left: 3px; top: 88px; width: 115px; height: 102px;
-    background-color: #10e0cf26;
-    border-left: 5px #22e0d3;
-}
-#chrome-panel {
-    left: 134px; top: 25px; width: 602px; height: 825px;
-    background-color: #172737d6;
-    border: 1px #92b3c7a0;
-    border-radius: 9px;
-}
-#chrome-button-primary {
-    left: 160px; top: 110px; width: 253px; height: 47px;
-    background-color: #12beb282;
-    border: 1px #26eddaaf;
-    border-radius: 7px;
-}
-#chrome-button-secondary {
-    left: 431px; top: 110px; width: 266px; height: 47px;
-    background-color: #13202d68;
-    border: 1px #8eaac18e;
-    border-radius: 7px;
-}
-#chrome-search {
-    left: 161px; top: 180px; width: 536px; height: 46px;
-    background-color: #0b162082;
-    border: 1px #84a4be82;
-    border-radius: 7px;
-}
-.chrome_row {
-    left: 149px; width: 570px; height: 54px;
-    background-color: #0b17213c;
-    border-bottom: 1px #7895a920;
-    border-radius: 4px;
-}
-#chrome-row-0 {
-    top: 280px;
-    background-color: #00a89696;
-    border: 0px transparent;
-    border-radius: 0px;
-}
-#chrome-row-1 { top: 334px; }
-#chrome-row-2 { top: 388px; }
-#chrome-row-3 { top: 442px; }
-#chrome-row-4 { top: 496px; }
-#chrome-details {
-    left: 149px; top: 566px; width: 568px; height: 262px;
-    background-color: #0b17216c;
-    border: 1px #8eaac187;
-    border-radius: 10px;
-}
-#chrome-pill {
-    left: 327px; top: 585px; width: 82px; height: 29px;
-    background-color: #14d4c66c;
-    border-radius: 15px;
-}
-#chrome-status {
-    left: 0; bottom: 0; width: 100%; height: 60px;
-    background-color: #081018d6;
-    border-top: 1px #6c889e42;
-}
-#chrome-compass {
-    right: 43px; bottom: 109px; width: 102px; height: 102px;
-    border: 1px #c5d5e091;
-    border-radius: 51px;
-}
-.bold { font-weight: bold; }
-.muted { color: #bccfde; }
-.cyan { color: #30eadc; }
-.title {
-    left: 215px; top: 47px; width: 360px; height: 40px;
-    font-size: 27px; font-weight: bold; color: #eff7fd;
-}
-.button_text {
-    top: 122px; height: 28px;
-    font-size: 21px; font-weight: bold; color: #f0f7fc;
-}
-.button_primary_text { left: 260px; width: 140px; }
-.button_secondary_text { left: 538px; width: 150px; }
-.search_text {
-    left: 216px; top: 190px; width: 180px; height: 26px;
-    font-size: 18px; font-weight: bold; color: #88a6b9;
-}
-.header {
-    top: 247px; height: 24px; font-size: 17px; font-weight: bold; color: #e5eff7;
-}
-.h_name { left: 224px; width: 80px; }
-.h_visible { left: 356px; width: 54px; }
-.h_count { left: 423px; width: 70px; }
-.h_type { left: 508px; width: 54px; }
-.h_crs { left: 596px; width: 76px; }
-.row_text {
-    height: 24px; font-size: 15.5px; color: #ebf4f9;
-}
-.row_name { left: 232px; width: 122px; font-weight: bold; }
-.row_count { left: 423px; width: 70px; }
-.row_type { left: 505px; width: 82px; }
-.row_crs { left: 596px; width: 100px; }
-.y0 { top: 297px; } .y1 { top: 351px; } .y2 { top: 405px; } .y3 { top: 459px; } .y4 { top: 513px; }
-.detail_title {
-    left: 214px; top: 586px; width: 145px; height: 36px;
-    font-size: 25px; font-weight: bold; color: #eff8fc;
-}
-.pill_text {
-    left: 341px; top: 591px; width: 70px; height: 22px;
-    font-size: 14px; color: #44ece0;
-}
-.info_label { width: 92px; height: 22px; font-size: 16px; color: #c0cfdd; }
-.info_value { width: 220px; height: 22px; font-size: 16px; color: #edf5fb; }
-.info_l1 { left: 169px; top: 650px; } .info_l2 { left: 169px; top: 686px; }
-.info_l3 { left: 169px; top: 722px; } .info_l4 { left: 169px; top: 774px; }
-.info_v1 { left: 245px; top: 650px; } .info_v2 { left: 245px; top: 686px; }
-.info_v3 { left: 245px; top: 722px; } .info_v4 { left: 245px; top: 774px; width: 250px; }
-.info_r1 { left: 451px; top: 650px; } .info_r2 { left: 451px; top: 686px; }
-.info_r3 { left: 451px; top: 722px; } .info_r4 { left: 451px; top: 774px; }
-.info_rv1 { left: 527px; top: 650px; } .info_rv2 { left: 527px; top: 686px; }
-.info_rv3 { left: 527px; top: 722px; width: 175px; } .info_rv4 { left: 527px; top: 774px; width: 250px; }
-.info_range_2 { left: 510px; top: 748px; width: 190px; height: 22px; font-size: 16px; color: #edf5fb; }
-.status_text { bottom: 14px; height: 28px; font-size: 20px; color: #deecf1; }
-.status_layers { left: 89px; width: 90px; }
-.status_visible { left: 323px; width: 90px; }
-.status_total { left: 549px; width: 180px; }
-.nav_text { left: 47px; width: 55px; height: 24px; font-size: 17px; font-weight: bold; color: #dce6f2; }
-.nav_active { color: #30eadc; }
-.nav_layer { top: 157px; } .nav_edit { top: 260px; } .nav_draw { top: 363px; }
-.nav_highlight { top: 466px; } .nav_attr { top: 570px; } .nav_change { top: 675px; } .nav_setting { top: 782px; }
-.icon_menu { left: 47px; top: 37px; width: 30px; height: 32px; color: #d5e0ea; }
-.icon_nav { left: 43px; width: 42px; height: 42px; color: #dee8f2; }
-.icon_nav_active { color: #30eadc; }
-.icon_nav_layer { top: 107px; } .icon_nav_edit { top: 209px; } .icon_nav_draw { top: 312px; }
-.icon_nav_highlight { top: 415px; } .icon_nav_attr { top: 519px; } .icon_nav_change { top: 624px; } .icon_nav_setting { top: 731px; }
-.icon_title { left: 162px; top: 41px; width: 42px; height: 42px; color: #ddfcff; }
-.icon_button_upload { left: 226px; top: 118px; width: 30px; height: 30px; color: #f2fcff; }
-.icon_button_plus { left: 502px; top: 118px; width: 30px; height: 30px; color: #f1f7fe; }
-.icon_search { left: 175px; top: 191px; width: 28px; height: 28px; color: #d5e0ec; }
-.row_icon { width: 24px; height: 24px; }
-.row_drag { left: 156px; width: 24px; height: 24px; color: #dce8f1; }
-.row_geom { left: 196px; width: 24px; height: 24px; color: #d8e2ee; }
-.row_eye { left: 358px; width: 24px; height: 24px; color: #30eadc; }
-.row_more { left: 688px; width: 24px; height: 24px; color: #e8f1f8; }
-.row_selected_icon { color: #3fede1; }
-.row_i0 { top: 295px; } .row_i1 { top: 349px; } .row_i2 { top: 403px; } .row_i3 { top: 457px; } .row_i4 { top: 511px; }
-.icon_detail { left: 171px; top: 586px; width: 28px; height: 28px; color: #40ece1; }
-.status_icon_layer { left: 48px; bottom: 15px; width: 31px; height: 31px; color: #d8e2ee; }
-.status_icon_eye { left: 279px; bottom: 15px; width: 29px; height: 29px; color: #d8e2ee; }
-.status_icon_chart { left: 512px; bottom: 18px; width: 24px; height: 24px; color: #d8e2ee; }
-.compass_icon { right: 45px; bottom: 115px; width: 102px; height: 102px; color: #c5d5e0; }
-.compass_label {
-    width: 28px; height: 22px;
-    font-size: 16px;
-    color: #edf5fb;
-}
-.compass_n { right: 82px; bottom: 223px; font-weight: bold; font-size: 17px; }
-.compass_e { right: 12px; bottom: 150px; }
-.compass_s { right: 82px; bottom: 78px; }
-.compass_w { right: 153px; bottom: 150px; }
+body { margin: 0; background-color: transparent; }
+.text { font-family: "Microsoft YaHei UI"; color: #eff7fd; font-size: 22px; }
 </style>
 </head>
 <body>
-<div id="chrome-frame" class="chrome" data-border="#7d9bad69"></div>
-<div id="chrome-sidebar" class="chrome" data-fill="#050a10ee" data-border="#53768f2e"></div>
-<div id="chrome-nav-active" class="chrome" data-fill="#10e0cf26" data-border="#22e0d3ff"></div>
-<div id="chrome-panel" class="chrome" data-fill="#172737d6" data-border="#92b3c7a0"></div>
-<div id="chrome-button-primary" class="chrome" data-fill="#12beb282" data-border="#26eddaaf"></div>
-<div id="chrome-button-secondary" class="chrome" data-fill="#13202d68" data-border="#8eaac18e"></div>
-<div id="chrome-search" class="chrome" data-fill="#0b162082" data-border="#84a4be82"></div>
-<div id="chrome-row-0" class="chrome chrome_row" data-fill="#00a89696"></div>
-<div id="chrome-row-1" class="chrome chrome_row" data-fill="#0b17213c" data-border="#7895a920"></div>
-<div id="chrome-row-2" class="chrome chrome_row" data-fill="#0b17213c" data-border="#7895a920"></div>
-<div id="chrome-row-3" class="chrome chrome_row" data-fill="#0b17213c" data-border="#7895a920"></div>
-<div id="chrome-row-4" class="chrome chrome_row" data-fill="#0b17213c" data-border="#7895a920"></div>
-<div id="chrome-details" class="chrome" data-fill="#0b17216c" data-border="#8eaac187"></div>
-<div id="chrome-pill" class="chrome" data-fill="#14d4c66c"></div>
-<div id="chrome-status" class="chrome" data-fill="#081018d6" data-border="#6c889e42"></div>
-<div id="chrome-compass" class="chrome" data-border="#c5d5e091"></div>
-<icon class="icon_menu" name="menu"></icon>
-<icon class="icon_nav icon_nav_active icon_nav_layer" name="layer-active"></icon>
-<icon class="icon_nav icon_nav_edit" name="edit"></icon>
-<icon class="icon_nav icon_nav_draw" name="pencil"></icon>
-<icon class="icon_nav icon_nav_highlight" name="target"></icon>
-<icon class="icon_nav icon_nav_attr" name="doc"></icon>
-<icon class="icon_nav icon_nav_change" name="switch"></icon>
-<icon class="icon_nav icon_nav_setting" name="gear"></icon>
-<icon class="icon_title" name="layer"></icon>
-<icon class="icon_button_upload" name="upload"></icon>
-<icon class="icon_button_plus" name="plus"></icon>
-<icon class="icon_search" name="search"></icon>
-<icon class="row_drag row_i0 row_selected_icon" name="drag"></icon>
-<icon class="row_geom row_i0 row_selected_icon" name="geom-poly"></icon>
-<icon class="row_eye row_i0" name="eye"></icon>
-<icon class="row_more row_i0" name="more"></icon>
-<icon class="row_drag row_i1" name="drag"></icon>
-<icon class="row_geom row_i1" name="geom-line"></icon>
-<icon class="row_eye row_i1" name="eye"></icon>
-<icon class="row_more row_i1" name="more"></icon>
-<icon class="row_drag row_i2" name="drag"></icon>
-<icon class="row_geom row_i2" name="geom-point"></icon>
-<icon class="row_eye row_i2" name="eye"></icon>
-<icon class="row_more row_i2" name="more"></icon>
-<icon class="row_drag row_i3" name="drag"></icon>
-<icon class="row_geom row_i3" name="geom-river"></icon>
-<icon class="row_eye row_i3" name="eye"></icon>
-<icon class="row_more row_i3" name="more"></icon>
-<icon class="row_drag row_i4" name="drag"></icon>
-<icon class="row_geom row_i4" name="geom-box"></icon>
-<icon class="row_eye row_i4" name="eye"></icon>
-<icon class="row_more row_i4" name="more"></icon>
-<icon class="icon_detail" name="geom-poly"></icon>
-<icon class="status_icon_layer" name="layer"></icon>
-<icon class="status_icon_eye" name="eye"></icon>
-<icon class="status_icon_chart" name="chart"></icon>
-<div class="text compass_label compass_n">N</div>
-<div class="text compass_label compass_e">E</div>
-<div class="text compass_label compass_s">S</div>
-<div class="text compass_label compass_w">W</div>
-<div class="text title">图层 / 图层管理</div>
-<div class="text button_text button_primary_text">导入SHP</div>
-<div class="text button_text button_secondary_text">新建图层</div>
-<div class="text search_text">搜索图层...</div>
-<div class="text header h_name">名称</div>
-<div class="text header h_visible">可见</div>
-<div class="text header h_count">要素数</div>
-<div class="text header h_type">类型</div>
-<div class="text header h_crs">坐标系</div>
-<div class="text row_text row_name y0">地块边界</div>
-<div class="text row_text row_count y0">6,523</div>
-<div class="text row_text row_type y0">Polygon</div>
-<div class="text row_text row_crs y0">EPSG:4326</div>
-<div class="text row_text row_name y1">道路中心线</div>
-<div class="text row_text row_count y1">2,431</div>
-<div class="text row_text row_type y1">LineString</div>
-<div class="text row_text row_crs y1">EPSG:4326</div>
-<div class="text row_text row_name y2">控制点</div>
-<div class="text row_text row_count y2">1,842</div>
-<div class="text row_text row_type y2">Point</div>
-<div class="text row_text row_crs y2">EPSG:4326</div>
-<div class="text row_text row_name y3">河流</div>
-<div class="text row_text row_count y3">312</div>
-<div class="text row_text row_type y3">LineString</div>
-<div class="text row_text row_crs y3">EPSG:4326</div>
-<div class="text row_text row_name y4">建筑物</div>
-<div class="text row_text row_count y4">164</div>
-<div class="text row_text row_type y4">Polygon</div>
-<div class="text row_text row_crs y4">EPSG:4326</div>
-<div class="text detail_title">地块边界</div>
-<div class="text pill_text">Polygon</div>
-<div class="text info_label info_l1">图层名称:</div><div class="text info_value info_v1">地块边界</div>
-<div class="text info_label info_l2">数据源:</div><div class="text info_value info_v2">parcels.shp</div>
-<div class="text info_label info_l3">坐标系:</div><div class="text info_value info_v3">EPSG:4326</div>
-<div class="text info_label info_l4">创建时间:</div><div class="text info_value info_v4">2024-05-16 14:32:18</div>
-<div class="text info_label info_r1">要素数量:</div><div class="text info_value info_rv1">6,523</div>
-<div class="text info_label info_r2">几何类型:</div><div class="text info_value info_rv2">Polygon</div>
-<div class="text info_label info_r3">范围:</div><div class="text info_value info_rv3">113.2142,22.4987</div>
-<div class="text info_range_2">-114.9876,23.9145</div>
-<div class="text info_label info_r4">最后编辑:</div><div class="text info_value info_rv4">2024-05-16 15:47:09</div>
-<div class="text status_text status_layers">图层:5</div>
-<div class="text status_text status_visible">可见:5</div>
-<div class="text status_text status_total">总要素:11,272</div>
-<div class="text nav_text nav_active nav_layer">图层</div>
-<div class="text nav_text nav_edit">编辑</div>
-<div class="text nav_text nav_draw">绘制</div>
-<div class="text nav_text nav_highlight">高亮</div>
-<div class="text nav_text nav_attr">属性</div>
-<div class="text nav_text nav_change">变更</div>
-<div class="text nav_text nav_setting">设置</div>
+<div class="text">Missing assets/rml_layer_desk.rml</div>
 </body>
 </rml>
 )RML";
+    }
+
+    static std::string loadRmlDocument() {
+        const std::filesystem::path relative = std::filesystem::path("assets") / "rml_layer_desk.rml";
+        std::vector<std::filesystem::path> candidates;
+        candidates.push_back(relative);
+
+        const std::filesystem::path exeDir = executableDirectory();
+        if (!exeDir.empty()) {
+            candidates.push_back(exeDir.parent_path().parent_path() / relative);
+            candidates.push_back(exeDir / relative);
+            candidates.push_back(exeDir.parent_path() / relative);
+        }
+
+        for (const std::filesystem::path& candidate : candidates) {
+            std::error_code error;
+            if (!std::filesystem::is_regular_file(candidate, error)) {
+                continue;
+            }
+            std::string document = readTextFile(candidate);
+            if (!document.empty()) {
+                return document;
+            }
+        }
+
+        return fallbackRmlDocument();
     }
 
     void loadDocument() {
         if (!context_) {
             return;
         }
-        Rml::ElementDocument* document = context_->LoadDocumentFromMemory(rmlDocument(), "rml_layer_desk.rml");
+        rmlDocument_ = loadRmlDocument();
+        browserPaintStyles_ = parseBrowserPaintStyles(rmlDocument_);
+        Rml::ElementDocument* document = context_->LoadDocumentFromMemory(rmlDocument_.c_str(), "rml_layer_desk.rml");
         if (document) {
             document->Show();
         }
@@ -2234,22 +2580,30 @@ public:
         SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0);
         const int workWidth = workArea.right - workArea.left;
         const int workHeight = workArea.bottom - workArea.top;
-        int clientWidth = static_cast<int>(std::round(kBaseWidth * dpiScale));
-        int clientHeight = static_cast<int>(std::round(kBaseHeight * dpiScale));
-        const float fit = std::min(1.0f, std::min((workWidth - 40.0f) / clientWidth, (workHeight - 40.0f) / clientHeight));
-        clientWidth = static_cast<int>(std::round(clientWidth * std::max(0.70f, fit)));
-        clientHeight = static_cast<int>(std::round(clientHeight * std::max(0.70f, fit)));
-        const int x = workArea.left + (workWidth - clientWidth) / 2;
-        const int y = workArea.top + (workHeight - clientHeight) / 2;
+        const int desiredClientWidth = static_cast<int>(std::round(kBaseWidth * dpiScale));
+        const int desiredClientHeight = static_cast<int>(std::round(kBaseHeight * dpiScale));
+        RECT desired{0, 0, desiredClientWidth, desiredClientHeight};
+        adjustWindowRectForDpi(desired, dpi_);
+        const int frameWidth = desired.right - desired.left;
+        const int frameHeight = desired.bottom - desired.top;
+        const float fit = std::min(1.0f, std::min((workWidth - 40.0f) / frameWidth, (workHeight - 40.0f) / frameHeight));
+        const int clientWidth = static_cast<int>(std::round(desiredClientWidth * std::max(0.70f, fit)));
+        const int clientHeight = static_cast<int>(std::round(desiredClientHeight * std::max(0.70f, fit)));
+        RECT initialRect{0, 0, clientWidth, clientHeight};
+        adjustWindowRectForDpi(initialRect, dpi_);
+        const int windowWidth = initialRect.right - initialRect.left;
+        const int windowHeight = initialRect.bottom - initialRect.top;
+        const int x = workArea.left + (workWidth - windowWidth) / 2;
+        const int y = workArea.top + (workHeight - windowHeight) / 2;
 
-        HWND hwnd = CreateWindowExW(WS_EX_APPWINDOW,
+        HWND hwnd = CreateWindowExW(0,
                                     wc.lpszClassName,
                                     L"RmlLayerDesk",
-                                    WS_POPUP,
+                                    WS_OVERLAPPEDWINDOW,
                                     x,
                                     y,
-                                    clientWidth,
-                                    clientHeight,
+                                    windowWidth,
+                                    windowHeight,
                                     nullptr,
                                     nullptr,
                                     instance,
@@ -2292,6 +2646,12 @@ private:
         return dpi != 0 ? dpi : getSystemDpi();
     }
 
+    static void adjustWindowRectForDpi(RECT& rect, UINT dpi) {
+        if (!AdjustWindowRectExForDpi(&rect, WS_OVERLAPPEDWINDOW, FALSE, 0, dpi)) {
+            AdjustWindowRectEx(&rect, WS_OVERLAPPEDWINDOW, FALSE, 0);
+        }
+    }
+
     static AppWindow* get(HWND hwnd) {
         return reinterpret_cast<AppWindow*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
     }
@@ -2325,10 +2685,6 @@ private:
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
         }
-        case WM_LBUTTONDOWN:
-            ReleaseCapture();
-            SendMessageW(hwnd, WM_NCLBUTTONDOWN, HTCAPTION, 0);
-            return 0;
         case WM_KEYDOWN:
             if (wParam == VK_ESCAPE) {
                 DestroyWindow(hwnd);

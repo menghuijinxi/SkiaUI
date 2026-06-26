@@ -1,0 +1,301 @@
+<rml>
+<head>
+<style>
+body {
+    display: block;
+    margin: 0;
+    width: 100%;
+    height: 100%;
+    background-color: transparent;
+}
+div { display: block; position: absolute; box-sizing: border-box; }
+icon { display: block; position: absolute; box-sizing: border-box; background-color: transparent; }
+body {
+    font-family: "Microsoft YaHei UI";
+    color: #eff7fd;
+}
+.text {
+    background-color: transparent;
+    color: #edf5fb;
+    font-size: 16px;
+}
+.chrome { display: block; position: absolute; box-sizing: border-box; }
+#chrome-frame {
+    left: 2px; top: 2px; right: 2px; bottom: 2px;
+    border: 1px #7d9bad69;
+    border-radius: 10px;
+}
+#chrome-sidebar {
+    left: 0; top: 0; width: 118px; bottom: 60px;
+    background-color: #050a10ee;
+    border-right: 1px #53768f2e;
+}
+#chrome-nav-active {
+    left: 3px; top: 88px; width: 115px; height: 102px;
+    background-color: #10e0cf26;
+    border-left: 5px #22e0d3;
+}
+#chrome-panel {
+    left: 134px; top: 25px; width: 602px; height: 825px;
+    background-color: #172737d6;
+    background: linear-gradient(135deg, #172737d6, #0b1620e4);
+    box-shadow: 0 8px 28px #00000055;
+    border: 1px #92b3c7a0;
+    border-radius: 9px;
+}
+#chrome-button-primary {
+    left: 160px; top: 110px; width: 253px; height: 47px;
+    background-color: #12beb282;
+    border: 1px #26eddaaf;
+    border-radius: 7px;
+}
+#chrome-button-secondary {
+    left: 431px; top: 110px; width: 266px; height: 47px;
+    background-color: #13202d68;
+    border: 1px #8eaac18e;
+    border-radius: 7px;
+}
+#chrome-search {
+    left: 161px; top: 180px; width: 536px; height: 46px;
+    background-color: #0b162082;
+    border: 1px #84a4be82;
+    border-radius: 7px;
+}
+.chrome_row {
+    left: 149px; width: 570px; height: 54px;
+    background-color: #0b17213c;
+    border-bottom: 1px #7895a920;
+    border-radius: 4px;
+}
+#chrome-row-0 {
+    top: 280px;
+    background-color: #00a89696;
+    border: 0px transparent;
+    border-radius: 0px;
+}
+#chrome-row-1 { top: 334px; }
+#chrome-row-2 { top: 388px; }
+#chrome-row-3 { top: 442px; }
+#chrome-row-4 { top: 496px; }
+#chrome-details {
+    left: 149px; top: 566px; width: 568px; height: 262px;
+    background-color: #0b17216c;
+    border: 1px #8eaac187;
+    border-radius: 10px;
+}
+#chrome-pill {
+    left: 327px; top: 585px; width: 82px; height: 29px;
+    background-color: #14d4c66c;
+    border-radius: 15px;
+}
+#chrome-status {
+    left: 0; bottom: 0; width: 100%; height: 60px;
+    background-color: #081018d6;
+    border-top: 1px #6c889e42;
+}
+#chrome-compass {
+    right: 43px; bottom: 109px; width: 102px; height: 102px;
+    border: 1px #c5d5e091;
+    border-radius: 51px;
+}
+.bold { font-weight: bold; }
+.muted { color: #bccfde; }
+.cyan { color: #30eadc; }
+.title {
+    left: 215px; top: 47px; width: 360px; height: 40px;
+    font-size: 27px; font-weight: bold; color: #eff7fd;
+}
+.button_text {
+    top: 122px; height: 28px;
+    font-size: 21px; font-weight: bold; color: #f0f7fc;
+}
+.button_primary_text { left: 260px; width: 140px; }
+.button_secondary_text { left: 538px; width: 150px; }
+.search_text {
+    left: 216px; top: 190px; width: 180px; height: 26px;
+    font-size: 18px; font-weight: bold; color: #88a6b9;
+}
+.header {
+    top: 247px; height: 24px; font-size: 17px; font-weight: bold; color: #e5eff7;
+}
+.h_name { left: 224px; width: 80px; }
+.h_visible { left: 356px; width: 54px; }
+.h_count { left: 423px; width: 70px; }
+.h_type { left: 508px; width: 54px; }
+.h_crs { left: 596px; width: 76px; }
+.row_text {
+    height: 24px; font-size: 15.5px; color: #ebf4f9;
+}
+.row_name { left: 232px; width: 122px; font-weight: bold; }
+.row_count { left: 423px; width: 70px; }
+.row_type { left: 505px; width: 82px; }
+.row_crs { left: 596px; width: 100px; }
+.y0 { top: 297px; } .y1 { top: 351px; } .y2 { top: 405px; } .y3 { top: 459px; } .y4 { top: 513px; }
+.detail_title {
+    left: 214px; top: 586px; width: 145px; height: 36px;
+    font-size: 25px; font-weight: bold; color: #eff8fc;
+}
+.pill_text {
+    left: 341px; top: 591px; width: 70px; height: 22px;
+    font-size: 14px; color: #44ece0;
+}
+.info_label { width: 92px; height: 22px; font-size: 16px; color: #c0cfdd; }
+.info_value { width: 220px; height: 22px; font-size: 16px; color: #edf5fb; }
+.info_l1 { left: 169px; top: 650px; } .info_l2 { left: 169px; top: 686px; }
+.info_l3 { left: 169px; top: 722px; } .info_l4 { left: 169px; top: 774px; }
+.info_v1 { left: 245px; top: 650px; } .info_v2 { left: 245px; top: 686px; }
+.info_v3 { left: 245px; top: 722px; } .info_v4 { left: 245px; top: 774px; width: 250px; }
+.info_r1 { left: 451px; top: 650px; } .info_r2 { left: 451px; top: 686px; }
+.info_r3 { left: 451px; top: 722px; } .info_r4 { left: 451px; top: 774px; }
+.info_rv1 { left: 527px; top: 650px; } .info_rv2 { left: 527px; top: 686px; }
+.info_rv3 { left: 527px; top: 722px; width: 175px; } .info_rv4 { left: 527px; top: 774px; width: 250px; }
+.info_range_2 { left: 510px; top: 748px; width: 190px; height: 22px; font-size: 16px; color: #edf5fb; }
+.status_text { bottom: 14px; height: 28px; font-size: 20px; color: #deecf1; }
+.status_layers { left: 89px; width: 90px; }
+.status_visible { left: 323px; width: 90px; }
+.status_total { left: 549px; width: 180px; }
+.nav_text { left: 47px; width: 55px; height: 24px; font-size: 17px; font-weight: bold; color: #dce6f2; }
+.nav_active { color: #30eadc; }
+.nav_layer { top: 157px; } .nav_edit { top: 260px; } .nav_draw { top: 363px; }
+.nav_highlight { top: 466px; } .nav_attr { top: 570px; } .nav_change { top: 675px; } .nav_setting { top: 782px; }
+.icon_menu { left: 47px; top: 37px; width: 30px; height: 32px; color: #d5e0ea; }
+.icon_nav { left: 43px; width: 42px; height: 42px; color: #dee8f2; }
+.icon_nav_active { color: #30eadc; }
+.icon_nav_layer { top: 107px; } .icon_nav_edit { top: 209px; } .icon_nav_draw { top: 312px; }
+.icon_nav_highlight { top: 415px; } .icon_nav_attr { top: 519px; } .icon_nav_change { top: 624px; } .icon_nav_setting { top: 731px; }
+.icon_title { left: 162px; top: 41px; width: 42px; height: 42px; color: #ddfcff; }
+.icon_button_upload { left: 226px; top: 118px; width: 30px; height: 30px; color: #f2fcff; }
+.icon_button_plus { left: 502px; top: 118px; width: 30px; height: 30px; color: #f1f7fe; }
+.icon_search { left: 175px; top: 191px; width: 28px; height: 28px; color: #d5e0ec; }
+.row_icon { width: 24px; height: 24px; }
+.row_drag { left: 156px; width: 24px; height: 24px; color: #dce8f1; }
+.row_geom { left: 196px; width: 24px; height: 24px; color: #d8e2ee; }
+.row_eye { left: 358px; width: 24px; height: 24px; color: #30eadc; }
+.row_more { left: 688px; width: 24px; height: 24px; color: #e8f1f8; }
+.row_selected_icon { color: #3fede1; }
+.row_i0 { top: 295px; } .row_i1 { top: 349px; } .row_i2 { top: 403px; } .row_i3 { top: 457px; } .row_i4 { top: 511px; }
+.icon_detail { left: 171px; top: 586px; width: 28px; height: 28px; color: #40ece1; }
+.status_icon_layer { left: 48px; bottom: 15px; width: 31px; height: 31px; color: #d8e2ee; }
+.status_icon_eye { left: 279px; bottom: 15px; width: 29px; height: 29px; color: #d8e2ee; }
+.status_icon_chart { left: 512px; bottom: 18px; width: 24px; height: 24px; color: #d8e2ee; }
+.compass_icon { right: 45px; bottom: 115px; width: 102px; height: 102px; color: #c5d5e0; }
+.compass_label {
+    width: 28px; height: 22px;
+    font-size: 16px;
+    color: #edf5fb;
+}
+.compass_n { right: 82px; bottom: 223px; font-weight: bold; font-size: 17px; }
+.compass_e { right: 12px; bottom: 150px; }
+.compass_s { right: 82px; bottom: 78px; }
+.compass_w { right: 153px; bottom: 150px; }
+</style>
+</head>
+<body>
+<div id="chrome-frame" class="chrome" data-border="#7d9bad69"></div>
+<div id="chrome-sidebar" class="chrome" data-fill="#050a10ee" data-border="#53768f2e"></div>
+<div id="chrome-nav-active" class="chrome" data-fill="#10e0cf26" data-border="#22e0d3ff"></div>
+<div id="chrome-panel" class="chrome" data-fill="#172737d6" data-border="#92b3c7a0"></div>
+<div id="chrome-button-primary" class="chrome" data-fill="#12beb282" data-border="#26eddaaf"></div>
+<div id="chrome-button-secondary" class="chrome" data-fill="#13202d68" data-border="#8eaac18e"></div>
+<div id="chrome-search" class="chrome" data-fill="#0b162082" data-border="#84a4be82"></div>
+<div id="chrome-row-0" class="chrome chrome_row" data-fill="#00a89696"></div>
+<div id="chrome-row-1" class="chrome chrome_row" data-fill="#0b17213c" data-border="#7895a920"></div>
+<div id="chrome-row-2" class="chrome chrome_row" data-fill="#0b17213c" data-border="#7895a920"></div>
+<div id="chrome-row-3" class="chrome chrome_row" data-fill="#0b17213c" data-border="#7895a920"></div>
+<div id="chrome-row-4" class="chrome chrome_row" data-fill="#0b17213c" data-border="#7895a920"></div>
+<div id="chrome-details" class="chrome" data-fill="#0b17216c" data-border="#8eaac187"></div>
+<div id="chrome-pill" class="chrome" data-fill="#14d4c66c"></div>
+<div id="chrome-status" class="chrome" data-fill="#081018d6" data-border="#6c889e42"></div>
+<div id="chrome-compass" class="chrome" data-border="#c5d5e091"></div>
+<icon class="icon_menu" name="menu"></icon>
+<icon class="icon_nav icon_nav_active icon_nav_layer" name="layer-active"></icon>
+<icon class="icon_nav icon_nav_edit" name="edit"></icon>
+<icon class="icon_nav icon_nav_draw" name="pencil"></icon>
+<icon class="icon_nav icon_nav_highlight" name="target"></icon>
+<icon class="icon_nav icon_nav_attr" name="doc"></icon>
+<icon class="icon_nav icon_nav_change" name="switch"></icon>
+<icon class="icon_nav icon_nav_setting" name="gear"></icon>
+<icon class="icon_title" name="layer"></icon>
+<icon class="icon_button_upload" name="upload"></icon>
+<icon class="icon_button_plus" name="plus"></icon>
+<icon class="icon_search" name="search"></icon>
+<icon class="row_drag row_i0 row_selected_icon" name="drag"></icon>
+<icon class="row_geom row_i0 row_selected_icon" name="geom-poly"></icon>
+<icon class="row_eye row_i0" name="eye"></icon>
+<icon class="row_more row_i0" name="more"></icon>
+<icon class="row_drag row_i1" name="drag"></icon>
+<icon class="row_geom row_i1" name="geom-line"></icon>
+<icon class="row_eye row_i1" name="eye"></icon>
+<icon class="row_more row_i1" name="more"></icon>
+<icon class="row_drag row_i2" name="drag"></icon>
+<icon class="row_geom row_i2" name="geom-point"></icon>
+<icon class="row_eye row_i2" name="eye"></icon>
+<icon class="row_more row_i2" name="more"></icon>
+<icon class="row_drag row_i3" name="drag"></icon>
+<icon class="row_geom row_i3" name="geom-river"></icon>
+<icon class="row_eye row_i3" name="eye"></icon>
+<icon class="row_more row_i3" name="more"></icon>
+<icon class="row_drag row_i4" name="drag"></icon>
+<icon class="row_geom row_i4" name="geom-box"></icon>
+<icon class="row_eye row_i4" name="eye"></icon>
+<icon class="row_more row_i4" name="more"></icon>
+<icon class="icon_detail" name="geom-poly"></icon>
+<icon class="status_icon_layer" name="layer"></icon>
+<icon class="status_icon_eye" name="eye"></icon>
+<icon class="status_icon_chart" name="chart"></icon>
+<div class="text compass_label compass_n">N</div>
+<div class="text compass_label compass_e">E</div>
+<div class="text compass_label compass_s">S</div>
+<div class="text compass_label compass_w">W</div>
+<div class="text title">图层 / 图层管理</div>
+<div class="text button_text button_primary_text">导入SHP</div>
+<div class="text button_text button_secondary_text">新建图层</div>
+<div class="text search_text">搜索图层...</div>
+<div class="text header h_name">名称</div>
+<div class="text header h_visible">可见</div>
+<div class="text header h_count">要素数</div>
+<div class="text header h_type">类型</div>
+<div class="text header h_crs">坐标系</div>
+<div class="text row_text row_name y0">地块边界</div>
+<div class="text row_text row_count y0">6,523</div>
+<div class="text row_text row_type y0">Polygon</div>
+<div class="text row_text row_crs y0">EPSG:4326</div>
+<div class="text row_text row_name y1">道路中心线</div>
+<div class="text row_text row_count y1">2,431</div>
+<div class="text row_text row_type y1">LineString</div>
+<div class="text row_text row_crs y1">EPSG:4326</div>
+<div class="text row_text row_name y2">控制点</div>
+<div class="text row_text row_count y2">1,842</div>
+<div class="text row_text row_type y2">Point</div>
+<div class="text row_text row_crs y2">EPSG:4326</div>
+<div class="text row_text row_name y3">河流</div>
+<div class="text row_text row_count y3">312</div>
+<div class="text row_text row_type y3">LineString</div>
+<div class="text row_text row_crs y3">EPSG:4326</div>
+<div class="text row_text row_name y4">建筑物</div>
+<div class="text row_text row_count y4">164</div>
+<div class="text row_text row_type y4">Polygon</div>
+<div class="text row_text row_crs y4">EPSG:4326</div>
+<div class="text detail_title">地块边界</div>
+<div class="text pill_text">Polygon</div>
+<div class="text info_label info_l1">图层名称:</div><div class="text info_value info_v1">地块边界</div>
+<div class="text info_label info_l2">数据源:</div><div class="text info_value info_v2">parcels.shp</div>
+<div class="text info_label info_l3">坐标系:</div><div class="text info_value info_v3">EPSG:4326</div>
+<div class="text info_label info_l4">创建时间:</div><div class="text info_value info_v4">2024-05-16 14:32:18</div>
+<div class="text info_label info_r1">要素数量:</div><div class="text info_value info_rv1">6,523</div>
+<div class="text info_label info_r2">几何类型:</div><div class="text info_value info_rv2">Polygon</div>
+<div class="text info_label info_r3">范围:</div><div class="text info_value info_rv3">113.2142,22.4987</div>
+<div class="text info_range_2">-114.9876,23.9145</div>
+<div class="text info_label info_r4">最后编辑:</div><div class="text info_value info_rv4">2024-05-16 15:47:09</div>
+<div class="text status_text status_layers">图层:5</div>
+<div class="text status_text status_visible">可见:5</div>
+<div class="text status_text status_total">总要素:11,272</div>
+<div class="text nav_text nav_active nav_layer">图层</div>
+<div class="text nav_text nav_edit">编辑</div>
+<div class="text nav_text nav_draw">绘制</div>
+<div class="text nav_text nav_highlight">高亮</div>
+<div class="text nav_text nav_attr">属性</div>
+<div class="text nav_text nav_change">变更</div>
+<div class="text nav_text nav_setting">设置</div>
+</body>
+</rml>

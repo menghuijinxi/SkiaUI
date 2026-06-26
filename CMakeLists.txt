@@ -75,6 +75,13 @@ if(MSVC)
     target_compile_options(RmlLayerDesk PRIVATE /utf-8 /permissive- /Zc:__cplusplus)
 endif()
 
+add_custom_command(TARGET RmlLayerDesk POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:RmlLayerDesk>/assets"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/assets/rml_layer_desk.rml"
+            "$<TARGET_FILE_DIR:RmlLayerDesk>/assets/rml_layer_desk.rml"
+)
+
 if(SKIATEST_USE_SKIA_D3D)
     target_compile_definitions(SkiaLayerDesk PRIVATE SKIATEST_USE_SKIA_D3D=1)
 endif()
