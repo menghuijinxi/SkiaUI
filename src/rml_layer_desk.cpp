@@ -901,19 +901,33 @@ private:
 
 class SkiaChromeRenderer {
 public:
-    void drawApp(SkCanvas& c, float width, float height) const {
+    void drawApp(SkCanvas& c, Rml::ElementDocument* document, float width, float height) const {
         drawBackground(c, width, height);
-        drawSidebar(c, height);
-        drawLayerPanel(c);
-        drawCompass(c, width - 94.0f, height - 162.0f);
-        drawStatusBar(c, width, height);
-        c.drawRoundRect(SkRect::MakeXYWH(2.0f, 2.0f, width - 4.0f, height - 4.0f),
-                        10.0f,
-                        10.0f,
-                        stroke(rgba(125, 155, 173, 105), 1.0f));
+        if (document) {
+            drawSidebar(c, document, height);
+            drawLayerPanel(c, document);
+            drawCompass(c, document, width - 94.0f, height - 162.0f);
+            drawStatusBar(c, document, width, height);
+            drawFrame(c, document, width, height);
+            return;
+        }
+
+        drawSidebar(c, nullptr, height);
+        drawLayerPanel(c, nullptr);
+        drawCompass(c, nullptr, width - 94.0f, height - 162.0f);
+        drawStatusBar(c, nullptr, width, height);
+        drawFrame(c, nullptr, width, height);
     }
 
 private:
+    struct ChromeBox {
+        Rect rect;
+        float radius = 0.0f;
+        SkColor fillColor = SK_ColorTRANSPARENT;
+        SkColor borderColor = SK_ColorTRANSPARENT;
+        float borderWidth = 0.0f;
+    };
+
     SkPaint fill(SkColor color) const {
         SkPaint p;
         p.setAntiAlias(true);
@@ -935,6 +949,124 @@ private:
 
     SkRRect rr(const Rect& r, float radius) const {
         return SkRRect::MakeRectXY(r.sk(), radius, radius);
+    }
+
+    static SkColor toSkColor(Rml::Colourb color, float opacity = 1.0f) {
+        const float alpha = static_cast<float>(color.alpha) * std::clamp(opacity, 0.0f, 1.0f);
+        return SkColorSetARGB(clampByte(alpha), color.red, color.green, color.blue);
+    }
+
+    static int hexNibble(char value) {
+        if (value >= '0' && value <= '9') {
+            return value - '0';
+        }
+        if (value >= 'a' && value <= 'f') {
+            return value - 'a' + 10;
+        }
+        if (value >= 'A' && value <= 'F') {
+            return value - 'A' + 10;
+        }
+        return -1;
+    }
+
+    static bool parseHexByte(const Rml::String& value, size_t offset, uint8_t& byte) {
+        if (offset + 1 >= value.size()) {
+            return false;
+        }
+        const int high = hexNibble(value[offset]);
+        const int low = hexNibble(value[offset + 1]);
+        if (high < 0 || low < 0) {
+            return false;
+        }
+        byte = static_cast<uint8_t>((high << 4) | low);
+        return true;
+    }
+
+    static bool parseDomColor(const Rml::String& value, SkColor& color) {
+        if (value.size() != 7 && value.size() != 9) {
+            return false;
+        }
+        if (value[0] != '#') {
+            return false;
+        }
+        uint8_t r = 0;
+        uint8_t g = 0;
+        uint8_t b = 0;
+        uint8_t a = 255;
+        if (!parseHexByte(value, 1, r) || !parseHexByte(value, 3, g) || !parseHexByte(value, 5, b)) {
+            return false;
+        }
+        if (value.size() == 9 && !parseHexByte(value, 7, a)) {
+            return false;
+        }
+        color = SkColorSetARGB(a, r, g, b);
+        return true;
+    }
+
+    ChromeBox boxFromElement(Rml::ElementDocument* document,
+                             const char* id,
+                             const Rect& fallback,
+                             float fallbackRadius,
+                             SkColor fallbackFill,
+                             SkColor fallbackBorder,
+                             float fallbackBorderWidth) const {
+        ChromeBox box{fallback, fallbackRadius, fallbackFill, fallbackBorder, fallbackBorderWidth};
+        if (!document) {
+            return box;
+        }
+
+        Rml::Element* element = document->GetElementById(id);
+        if (!element) {
+            return box;
+        }
+
+        const Rml::Vector2f position = element->GetAbsoluteOffset(Rml::BoxArea::Border);
+        const Rml::Vector2f size = element->GetBox().GetSize(Rml::BoxArea::Border);
+        if (size.x <= 0.0f || size.y <= 0.0f) {
+            return box;
+        }
+
+        const Rml::Style::ComputedValues& values = element->GetComputedValues();
+        box.rect = {position.x, position.y, size.x, size.y};
+        box.radius = std::max({values.border_top_left_radius(),
+                               values.border_top_right_radius(),
+                               values.border_bottom_right_radius(),
+                               values.border_bottom_left_radius()});
+        if (box.radius <= 0.0f) {
+            box.radius = fallbackRadius;
+        }
+        box.fillColor = toSkColor(values.background_color(), values.opacity());
+        if (SkColorGetA(box.fillColor) == 0) {
+            box.fillColor = fallbackFill;
+        }
+        box.borderWidth = std::max({values.border_top_width(),
+                                    values.border_right_width(),
+                                    values.border_bottom_width(),
+                                    values.border_left_width()});
+        if (box.borderWidth <= 0.0f) {
+            box.borderWidth = fallbackBorderWidth;
+        }
+        if (values.border_right_width() == box.borderWidth) {
+            box.borderColor = toSkColor(values.border_right_color(), values.opacity());
+        } else if (values.border_bottom_width() == box.borderWidth) {
+            box.borderColor = toSkColor(values.border_bottom_color(), values.opacity());
+        } else if (values.border_left_width() == box.borderWidth) {
+            box.borderColor = toSkColor(values.border_left_color(), values.opacity());
+        } else {
+            box.borderColor = toSkColor(values.border_top_color(), values.opacity());
+        }
+        if (SkColorGetA(box.borderColor) == 0 ||
+            (box.borderColor == SK_ColorWHITE && fallbackBorder != SK_ColorWHITE)) {
+            box.borderColor = fallbackBorder;
+        }
+        SkColor domColor = SK_ColorTRANSPARENT;
+        if (parseDomColor(element->GetAttribute<Rml::String>("data-fill", Rml::String()), domColor)) {
+            box.fillColor = domColor;
+        }
+        if (parseDomColor(element->GetAttribute<Rml::String>("data-border", Rml::String()), domColor)) {
+            box.borderColor = domColor;
+        }
+        return box;
     }
 
     void line(SkCanvas& c, float x1, float y1, float x2, float y2, SkColor color, float width = 1.0f) const {
@@ -1020,29 +1152,49 @@ private:
                    radialPaint(SkPoint::Make(width * 0.54f, height * 0.44f), width * 0.82f, vignette, vignettePos, 2));
     }
 
-    void drawSidebar(SkCanvas& c, float height) const {
-        constexpr float sidebarW = 118.0f;
-        const Rect sidebar{0.0f, 0.0f, sidebarW, height - 60.0f};
+    void drawSidebar(SkCanvas& c, Rml::ElementDocument* document, float height) const {
+        const ChromeBox sidebarBox = boxFromElement(document,
+                                                    "chrome-sidebar",
+                                                    {0.0f, 0.0f, 118.0f, height - 60.0f},
+                                                    0.0f,
+                                                    rgba(5, 10, 16, 238),
+                                                    rgba(83, 118, 143, 46),
+                                                    1.0f);
+        const Rect sidebar = sidebarBox.rect;
         const SkColor colors[] = {rgba(5, 10, 16, 238), rgba(10, 18, 27, 218)};
         const SkScalar pos[] = {0.0f, 1.0f};
         c.drawRect(sidebar.sk(),
-                   linearPaint(SkPoint::Make(0.0f, 0.0f), SkPoint::Make(sidebarW, 0.0f), colors, pos, 2));
-        line(c, sidebarW - 0.5f, 0.0f, sidebarW - 0.5f, height - 60.0f, rgba(83, 118, 143, 46), 1.0f);
+                   linearPaint(SkPoint::Make(sidebar.x, sidebar.y), SkPoint::Make(sidebar.x + sidebar.w, sidebar.y), colors, pos, 2));
+        line(c, sidebar.x + sidebar.w - 0.5f, sidebar.y, sidebar.x + sidebar.w - 0.5f, sidebar.y + sidebar.h, sidebarBox.borderColor, sidebarBox.borderWidth);
 
-        const Rect active{3.0f, 88.0f, sidebarW - 3.0f, 102.0f};
+        const ChromeBox activeBox = boxFromElement(document,
+                                                   "chrome-nav-active",
+                                                   {3.0f, 88.0f, 115.0f, 102.0f},
+                                                   0.0f,
+                                                   rgba(16, 224, 207, 38),
+                                                   rgb(34, 224, 211),
+                                                   0.0f);
+        const Rect active = activeBox.rect;
         const SkColor activeColors[] = {rgba(16, 224, 207, 38), rgba(81, 178, 203, 16)};
         c.drawRect(active.sk(),
                    linearPaint(SkPoint::Make(active.x, 0.0f), SkPoint::Make(active.x + active.w, 0.0f), activeColors, pos, 2));
-        c.drawRect(SkRect::MakeXYWH(3.0f, 88.0f, 5.0f, 102.0f), fill(rgb(34, 224, 211)));
+        c.drawRect(SkRect::MakeXYWH(active.x, active.y, 5.0f, active.h), fill(activeBox.borderColor));
     }
 
-    void drawLayerPanel(SkCanvas& c) const {
-        const Rect panel{134.0f, 25.0f, 602.0f, 825.0f};
+    void drawLayerPanel(SkCanvas& c, Rml::ElementDocument* document) const {
+        const ChromeBox panelBox = boxFromElement(document,
+                                                  "chrome-panel",
+                                                  {134.0f, 25.0f, 602.0f, 825.0f},
+                                                  9.0f,
+                                                  rgba(23, 39, 55, 214),
+                                                  rgba(146, 179, 199, 160),
+                                                  1.25f);
+        const Rect panel = panelBox.rect;
         const SkColor shadowColors[] = {rgba(0, 0, 0, 70), rgba(0, 0, 0, 0)};
         const SkScalar shadowPos[] = {0.0f, 1.0f};
         c.drawRoundRect(SkRect::MakeXYWH(panel.x - 8.0f, panel.y - 8.0f, panel.w + 16.0f, panel.h + 16.0f),
-                        14.0f,
-                        14.0f,
+                        panelBox.radius + 5.0f,
+                        panelBox.radius + 5.0f,
                         radialPaint(SkPoint::Make(panel.x + panel.w * 0.45f, panel.y + panel.h * 0.5f),
                                     520.0f,
                                     shadowColors,
@@ -1051,83 +1203,103 @@ private:
 
         const SkColor panelFill[] = {rgba(23, 39, 55, 214), rgba(11, 22, 32, 228), rgba(20, 34, 48, 205)};
         const SkScalar panelPos[] = {0.0f, 0.58f, 1.0f};
-        c.drawRRect(rr(panel, 9.0f),
+        c.drawRRect(rr(panel, panelBox.radius),
                     linearPaint(SkPoint::Make(panel.x, panel.y), SkPoint::Make(panel.x + panel.w, panel.y + panel.h), panelFill, panelPos, 3));
-        c.drawRRect(rr(panel, 9.0f), stroke(rgba(146, 179, 199, 160), 1.25f));
-        c.drawRRect(rr({panel.x + 1.0f, panel.y + 1.0f, panel.w - 2.0f, panel.h - 2.0f}, 8.0f),
+        c.drawRRect(rr(panel, panelBox.radius), stroke(panelBox.borderColor, panelBox.borderWidth));
+        c.drawRRect(rr({panel.x + 1.0f, panel.y + 1.0f, panel.w - 2.0f, panel.h - 2.0f}, std::max(0.0f, panelBox.radius - 1.0f)),
                     stroke(rgba(222, 244, 252, 38), 1.0f));
 
-        drawActionButton(c, {160.0f, 110.0f, 253.0f, 47.0f}, true);
-        drawActionButton(c, {431.0f, 110.0f, 266.0f, 47.0f}, false);
-        drawSearchBox(c, {161.0f, 180.0f, 536.0f, 46.0f});
-        drawTableRows(c);
-        drawLayerDetails(c, {149.0f, 566.0f, 568.0f, 262.0f});
+        drawActionButton(c, boxFromElement(document, "chrome-button-primary", {160.0f, 110.0f, 253.0f, 47.0f}, 7.0f, rgba(18, 190, 178, 130), rgba(38, 237, 218, 175), 1.1f), true);
+        drawActionButton(c, boxFromElement(document, "chrome-button-secondary", {431.0f, 110.0f, 266.0f, 47.0f}, 7.0f, rgba(19, 32, 45, 104), rgba(142, 170, 193, 142), 1.1f), false);
+        drawSearchBox(c, boxFromElement(document, "chrome-search", {161.0f, 180.0f, 536.0f, 46.0f}, 7.0f, rgba(11, 22, 32, 130), rgba(132, 164, 190, 130), 1.15f));
+        drawTableRows(c, document);
+        drawLayerDetails(c,
+                         boxFromElement(document, "chrome-details", {149.0f, 566.0f, 568.0f, 262.0f}, 10.0f, rgba(11, 23, 33, 108), rgba(142, 170, 193, 135), 1.1f),
+                         boxFromElement(document, "chrome-pill", {327.0f, 585.0f, 82.0f, 29.0f}, 15.0f, rgba(20, 212, 198, 108), SK_ColorTRANSPARENT, 0.0f));
     }
 
-    void drawActionButton(SkCanvas& c, const Rect& r, bool primary) const {
+    void drawActionButton(SkCanvas& c, const ChromeBox& box, bool primary) const {
+        const Rect& r = box.rect;
         if (primary) {
             const SkColor colors[] = {rgba(18, 190, 178, 130), rgba(8, 95, 102, 150)};
             const SkScalar pos[] = {0.0f, 1.0f};
-            c.drawRRect(rr(r, 7.0f),
+            c.drawRRect(rr(r, box.radius),
                         linearPaint(SkPoint::Make(r.x, r.y), SkPoint::Make(r.x + r.w, r.y + r.h), colors, pos, 2));
-            c.drawRRect(rr(r, 7.0f), stroke(rgba(38, 237, 218, 175), 1.1f));
+            c.drawRRect(rr(r, box.radius), stroke(box.borderColor, box.borderWidth));
         } else {
-            c.drawRRect(rr(r, 7.0f), fill(rgba(19, 32, 45, 104)));
-            c.drawRRect(rr(r, 7.0f), stroke(rgba(142, 170, 193, 142), 1.1f));
+            c.drawRRect(rr(r, box.radius), fill(box.fillColor));
+            c.drawRRect(rr(r, box.radius), stroke(box.borderColor, box.borderWidth));
         }
     }
 
-    void drawSearchBox(SkCanvas& c, const Rect& r) const {
-        c.drawRRect(rr(r, 7.0f), fill(rgba(11, 22, 32, 130)));
-        c.drawRRect(rr(r, 7.0f), stroke(rgba(132, 164, 190, 130), 1.15f));
+    void drawSearchBox(SkCanvas& c, const ChromeBox& box) const {
+        c.drawRRect(rr(box.rect, box.radius), fill(box.fillColor));
+        c.drawRRect(rr(box.rect, box.radius), stroke(box.borderColor, box.borderWidth));
     }
 
-    void drawTableRows(SkCanvas& c) const {
-        drawLayerRow(c, 280.0f, true);
-        drawLayerRow(c, 334.0f, false);
-        drawLayerRow(c, 388.0f, false);
-        drawLayerRow(c, 442.0f, false);
-        drawLayerRow(c, 496.0f, false);
+    void drawTableRows(SkCanvas& c, Rml::ElementDocument* document) const {
+        drawLayerRow(c, boxFromElement(document, "chrome-row-0", {149.0f, 280.0f, 570.0f, 54.0f}, 0.0f, rgba(0, 168, 150, 150), SK_ColorTRANSPARENT, 0.0f), true);
+        drawLayerRow(c, boxFromElement(document, "chrome-row-1", {149.0f, 334.0f, 570.0f, 54.0f}, 4.0f, rgba(11, 23, 33, 60), rgba(120, 149, 169, 32), 1.0f), false);
+        drawLayerRow(c, boxFromElement(document, "chrome-row-2", {149.0f, 388.0f, 570.0f, 54.0f}, 4.0f, rgba(11, 23, 33, 60), rgba(120, 149, 169, 32), 1.0f), false);
+        drawLayerRow(c, boxFromElement(document, "chrome-row-3", {149.0f, 442.0f, 570.0f, 54.0f}, 4.0f, rgba(11, 23, 33, 60), rgba(120, 149, 169, 32), 1.0f), false);
+        drawLayerRow(c, boxFromElement(document, "chrome-row-4", {149.0f, 496.0f, 570.0f, 54.0f}, 4.0f, rgba(11, 23, 33, 60), rgba(120, 149, 169, 32), 1.0f), false);
     }
 
-    void drawLayerRow(SkCanvas& c, float y, bool selected) const {
-        const Rect row{149.0f, y, 570.0f, 54.0f};
+    void drawLayerRow(SkCanvas& c, const ChromeBox& box, bool selected) const {
+        const Rect& row = box.rect;
         if (selected) {
             const SkColor colors[] = {rgba(0, 168, 150, 150), rgba(20, 173, 166, 105)};
             const SkScalar pos[] = {0.0f, 1.0f};
             c.drawRect(row.sk(),
-                       linearPaint(SkPoint::Make(row.x, y), SkPoint::Make(row.x + row.w, y), colors, pos, 2));
+                       linearPaint(SkPoint::Make(row.x, row.y), SkPoint::Make(row.x + row.w, row.y), colors, pos, 2));
             return;
         }
 
-        c.drawRRect(rr({row.x, row.y, row.w, row.h - 1.0f}, 4.0f), fill(rgba(11, 23, 33, 60)));
-        line(c, row.x + 2.0f, y + row.h - 0.5f, row.x + row.w - 2.0f, y + row.h - 0.5f, rgba(120, 149, 169, 32), 1.0f);
+        c.drawRRect(rr({row.x, row.y, row.w, row.h - 1.0f}, box.radius), fill(box.fillColor));
+        line(c, row.x + 2.0f, row.y + row.h - 0.5f, row.x + row.w - 2.0f, row.y + row.h - 0.5f, box.borderColor, box.borderWidth);
     }
 
-    void drawLayerDetails(SkCanvas& c, const Rect& card) const {
-        c.drawRRect(rr(card, 10.0f), fill(rgba(11, 23, 33, 108)));
-        c.drawRRect(rr(card, 10.0f), stroke(rgba(142, 170, 193, 135), 1.1f));
+    void drawLayerDetails(SkCanvas& c, const ChromeBox& cardBox, const ChromeBox& pillBox) const {
+        const Rect& card = cardBox.rect;
+        c.drawRRect(rr(card, cardBox.radius), fill(cardBox.fillColor));
+        c.drawRRect(rr(card, cardBox.radius), stroke(cardBox.borderColor, cardBox.borderWidth));
 
-        const Rect pill{327.0f, 585.0f, 82.0f, 29.0f};
+        const Rect& pill = pillBox.rect;
         const SkColor pillColors[] = {rgba(20, 212, 198, 108), rgba(10, 121, 125, 120)};
         const SkScalar pillPos[] = {0.0f, 1.0f};
-        c.drawRoundRect(pill.sk(), 15.0f, 15.0f,
+        c.drawRoundRect(pill.sk(), pillBox.radius, pillBox.radius,
                         linearPaint(SkPoint::Make(pill.x, pill.y), SkPoint::Make(pill.x + pill.w, pill.y), pillColors, pillPos, 2));
 
         line(c, card.x + 20.0f, card.y + 64.0f, card.x + card.w - 20.0f, card.y + 64.0f, rgba(140, 170, 191, 104), 1.0f);
     }
 
-    void drawStatusBar(SkCanvas& c, float width, float height) const {
-        const Rect bar{0.0f, height - 60.0f, width, 60.0f};
+    void drawStatusBar(SkCanvas& c, Rml::ElementDocument* document, float width, float height) const {
+        const ChromeBox barBox = boxFromElement(document,
+                                                "chrome-status",
+                                                {0.0f, height - 60.0f, width, 60.0f},
+                                                0.0f,
+                                                rgba(8, 16, 24, 214),
+                                                rgba(108, 136, 158, 66),
+                                                1.0f);
+        const Rect& bar = barBox.rect;
         const SkColor colors[] = {rgba(8, 16, 24, 214), rgba(4, 10, 16, 236)};
         const SkScalar pos[] = {0.0f, 1.0f};
         c.drawRect(bar.sk(),
                    linearPaint(SkPoint::Make(0.0f, bar.y), SkPoint::Make(0.0f, height), colors, pos, 2));
-        line(c, 0.0f, bar.y + 0.5f, width, bar.y + 0.5f, rgba(108, 136, 158, 66), 1.0f);
+        line(c, bar.x, bar.y + 0.5f, bar.x + bar.w, bar.y + 0.5f, barBox.borderColor, barBox.borderWidth);
     }
 
-    void drawCompass(SkCanvas& c, float cx, float cy) const {
-        const float r = 51.0f;
+    void drawCompass(SkCanvas& c, Rml::ElementDocument* document, float fallbackCx, float fallbackCy) const {
+        ChromeBox compassBox = boxFromElement(document,
+                                              "chrome-compass",
+                                              {fallbackCx - 51.0f, fallbackCy - 51.0f, 102.0f, 102.0f},
+                                              51.0f,
+                                              SK_ColorTRANSPARENT,
+                                              rgba(197, 213, 224, 145),
+                                              1.1f);
+        const float cx = compassBox.rect.x + compassBox.rect.w * 0.5f;
+        const float cy = compassBox.rect.y + compassBox.rect.h * 0.5f;
+        const float r = std::min(compassBox.rect.w, compassBox.rect.h) * 0.5f;
         c.drawCircle(cx, cy, r, stroke(rgba(197, 213, 224, 145), 1.1f));
         c.drawCircle(cx, cy, r * 0.74f, stroke(rgba(197, 213, 224, 45), 1.0f));
 
@@ -1158,6 +1330,19 @@ private:
         c.drawPath(south.detach(), fill(rgba(224, 232, 239, 230)));
         c.drawCircle(cx, cy, 6.5f, fill(rgba(11, 20, 30, 240)));
         c.drawCircle(cx, cy, 3.0f, fill(rgba(190, 210, 222, 215)));
+    }
+
+    void drawFrame(SkCanvas& c, Rml::ElementDocument* document, float width, float height) const {
+        const ChromeBox frame = boxFromElement(document,
+                                               "chrome-frame",
+                                               {2.0f, 2.0f, width - 4.0f, height - 4.0f},
+                                               10.0f,
+                                               SK_ColorTRANSPARENT,
+                                               rgba(125, 155, 173, 105),
+                                               1.0f);
+        if (frame.borderWidth > 0.0f && SkColorGetA(frame.borderColor) > 0) {
+            c.drawRoundRect(frame.rect.sk(), frame.radius, frame.radius, stroke(frame.borderColor, frame.borderWidth));
+        }
     }
 };
 
@@ -1197,6 +1382,12 @@ public:
         const float scale = std::max(0.1f, dpiScale);
         const int logicalWidth = std::max(1, static_cast<int>(std::round(static_cast<float>(width) / scale)));
         const int logicalHeight = std::max(1, static_cast<int>(std::round(static_cast<float>(height) / scale)));
+        Rml::ElementDocument* document = context_ ? context_->GetDocument(0) : nullptr;
+        if (context_) {
+            context_->SetDimensions({logicalWidth, logicalHeight});
+            context_->Update();
+            document = context_->GetDocument(0);
+        }
 
         const SkImageInfo chromeInfo = SkImageInfo::Make(width,
                                                          height,
@@ -1210,12 +1401,11 @@ public:
             canvas->clear(rgb(7, 12, 18));
             canvas->save();
             canvas->scale(scale, scale);
-            chrome_.drawApp(*canvas, static_cast<float>(logicalWidth), static_cast<float>(logicalHeight));
+            chrome_.drawApp(*canvas, document, static_cast<float>(logicalWidth), static_cast<float>(logicalHeight));
             canvas->restore();
         }
 
         if (context_) {
-            context_->SetDimensions({logicalWidth, logicalHeight});
             const int rmlWidth = width * kRmlSupersample;
             const int rmlHeight = height * kRmlSupersample;
             const float rmlRenderScale = scale * static_cast<float>(kRmlSupersample);
@@ -1223,7 +1413,6 @@ public:
             gRmlTextureScale = rmlRenderScale;
             font_.beginFrame(rmlRenderScale);
             render_.begin(rmlPixels.data(), rmlWidth, rmlHeight, rmlRenderScale);
-            context_->Update();
             context_->Render();
 
             for (int y = 0; y < height; ++y) {
@@ -1321,6 +1510,83 @@ body {
     color: #edf5fb;
     font-size: 16px;
 }
+.chrome { display: block; position: absolute; box-sizing: border-box; }
+#chrome-frame {
+    left: 2px; top: 2px; right: 2px; bottom: 2px;
+    border: 1px #7d9bad69;
+    border-radius: 10px;
+}
+#chrome-sidebar {
+    left: 0; top: 0; width: 118px; bottom: 60px;
+    background-color: #050a10ee;
+    border-right: 1px #53768f2e;
+}
+#chrome-nav-active {
+    left: 3px; top: 88px; width: 115px; height: 102px;
+    background-color: #10e0cf26;
+    border-left: 5px #22e0d3;
+}
+#chrome-panel {
+    left: 134px; top: 25px; width: 602px; height: 825px;
+    background-color: #172737d6;
+    border: 1px #92b3c7a0;
+    border-radius: 9px;
+}
+#chrome-button-primary {
+    left: 160px; top: 110px; width: 253px; height: 47px;
+    background-color: #12beb282;
+    border: 1px #26eddaaf;
+    border-radius: 7px;
+}
+#chrome-button-secondary {
+    left: 431px; top: 110px; width: 266px; height: 47px;
+    background-color: #13202d68;
+    border: 1px #8eaac18e;
+    border-radius: 7px;
+}
+#chrome-search {
+    left: 161px; top: 180px; width: 536px; height: 46px;
+    background-color: #0b162082;
+    border: 1px #84a4be82;
+    border-radius: 7px;
+}
+.chrome_row {
+    left: 149px; width: 570px; height: 54px;
+    background-color: #0b17213c;
+    border-bottom: 1px #7895a920;
+    border-radius: 4px;
+}
+#chrome-row-0 {
+    top: 280px;
+    background-color: #00a89696;
+    border: 0px transparent;
+    border-radius: 0px;
+}
+#chrome-row-1 { top: 334px; }
+#chrome-row-2 { top: 388px; }
+#chrome-row-3 { top: 442px; }
+#chrome-row-4 { top: 496px; }
+#chrome-details {
+    left: 149px; top: 566px; width: 568px; height: 262px;
+    background-color: #0b17216c;
+    border: 1px #8eaac187;
+    border-radius: 10px;
+}
+#chrome-pill {
+    left: 327px; top: 585px; width: 82px; height: 29px;
+    background-color: #14d4c66c;
+    border-radius: 15px;
+}
+#chrome-status {
+    left: 0; bottom: 0; width: 100%; height: 60px;
+    background-color: #081018d6;
+    border-top: 1px #6c889e42;
+}
+#chrome-compass {
+    right: 43px; bottom: 109px; width: 102px; height: 102px;
+    border: 1px #c5d5e091;
+    border-radius: 51px;
+}
 .bold { font-weight: bold; }
 .muted { color: #bccfde; }
 .cyan { color: #30eadc; }
@@ -1414,6 +1680,22 @@ body {
 </style>
 </head>
 <body>
+<div id="chrome-frame" class="chrome" data-border="#7d9bad69"></div>
+<div id="chrome-sidebar" class="chrome" data-fill="#050a10ee" data-border="#53768f2e"></div>
+<div id="chrome-nav-active" class="chrome" data-fill="#10e0cf26" data-border="#22e0d3ff"></div>
+<div id="chrome-panel" class="chrome" data-fill="#172737d6" data-border="#92b3c7a0"></div>
+<div id="chrome-button-primary" class="chrome" data-fill="#12beb282" data-border="#26eddaaf"></div>
+<div id="chrome-button-secondary" class="chrome" data-fill="#13202d68" data-border="#8eaac18e"></div>
+<div id="chrome-search" class="chrome" data-fill="#0b162082" data-border="#84a4be82"></div>
+<div id="chrome-row-0" class="chrome chrome_row" data-fill="#00a89696"></div>
+<div id="chrome-row-1" class="chrome chrome_row" data-fill="#0b17213c" data-border="#7895a920"></div>
+<div id="chrome-row-2" class="chrome chrome_row" data-fill="#0b17213c" data-border="#7895a920"></div>
+<div id="chrome-row-3" class="chrome chrome_row" data-fill="#0b17213c" data-border="#7895a920"></div>
+<div id="chrome-row-4" class="chrome chrome_row" data-fill="#0b17213c" data-border="#7895a920"></div>
+<div id="chrome-details" class="chrome" data-fill="#0b17216c" data-border="#8eaac187"></div>
+<div id="chrome-pill" class="chrome" data-fill="#14d4c66c"></div>
+<div id="chrome-status" class="chrome" data-fill="#081018d6" data-border="#6c889e42"></div>
+<div id="chrome-compass" class="chrome" data-border="#c5d5e091"></div>
 <icon class="icon_menu" name="menu"></icon>
 <icon class="icon_nav icon_nav_active icon_nav_layer" name="layer-active"></icon>
 <icon class="icon_nav icon_nav_edit" name="edit"></icon>
