@@ -6,6 +6,7 @@
 #endif
 
 #include <windows.h>
+#include <dbghelp.h>
 #include <dwmapi.h>
 #include <shellapi.h>
 #include <shellscalingapi.h>
@@ -26,6 +27,7 @@
 #include <RmlUi/Core/SystemInterface.h>
 
 #include "d3d_presenter.h"
+#include "perf_trace.h"
 #include "include/core/SkBlendMode.h"
 #include "include/core/SkBlurTypes.h"
 #include "include/core/SkCanvas.h"
@@ -68,6 +70,7 @@
 #include <cstdio>
 #include <cstdint>
 #include <cstdlib>
+#include <cwchar>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -90,7 +93,63 @@ constexpr int kRmlSupersample = 2;
 constexpr float kDefaultDpi = 96.0f;
 constexpr float kPi = 3.14159265358979323846f;
 constexpr COLORREF kWin32Background = RGB(7, 12, 18);
+struct RmlDrawTiming;
 float gRmlTextureScale = 1.0f;
+RmlDrawTiming* gRmlOverlayTiming = nullptr;
+
+LONG WINAPI writeMiniDump(EXCEPTION_POINTERS* exceptionPointers) {
+    wchar_t exePath[MAX_PATH]{};
+    if (!GetModuleFileNameW(nullptr, exePath, MAX_PATH)) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    wchar_t* lastSlash = std::wcsrchr(exePath, L'\\');
+    if (lastSlash) {
+        *(lastSlash + 1) = L'\0';
+    } else {
+        exePath[0] = L'\0';
+    }
+
+    SYSTEMTIME now{};
+    GetLocalTime(&now);
+
+    wchar_t dumpPath[MAX_PATH]{};
+    std::swprintf(dumpPath,
+                  MAX_PATH,
+                  L"%sRmlLayerDesk_%04u%02u%02u_%02u%02u%02u.dmp",
+                  exePath,
+                  now.wYear,
+                  now.wMonth,
+                  now.wDay,
+                  now.wHour,
+                  now.wMinute,
+                  now.wSecond);
+
+    HANDLE file = CreateFileW(dumpPath,
+                              GENERIC_WRITE,
+                              0,
+                              nullptr,
+                              CREATE_ALWAYS,
+                              FILE_ATTRIBUTE_NORMAL,
+                              nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    MINIDUMP_EXCEPTION_INFORMATION info{};
+    info.ThreadId = GetCurrentThreadId();
+    info.ExceptionPointers = exceptionPointers;
+    info.ClientPointers = FALSE;
+    MiniDumpWriteDump(GetCurrentProcess(),
+                      GetCurrentProcessId(),
+                      file,
+                      MiniDumpWithDataSegs,
+                      exceptionPointers ? &info : nullptr,
+                      nullptr,
+                      nullptr);
+    CloseHandle(file);
+    return EXCEPTION_CONTINUE_SEARCH;
+}
 
 struct BrowserLinearGradient {
     float angleDeg = 180.0f;
@@ -136,6 +195,26 @@ struct RmlDrawTiming {
     double chromeStatusMs = 0.0;
     double chromeFrameMs = 0.0;
     double rmlMs = 0.0;
+    double fontBeginFrameMs = 0.0;
+    double generateStringMs = 0.0;
+    double compileGeometryMs = 0.0;
+    double generateTextureMs = 0.0;
+    double imageForCanvasMs = 0.0;
+    double textureUploadMs = 0.0;
+    double verticesMs = 0.0;
+    double drawVerticesMs = 0.0;
+    double renderGeometryMs = 0.0;
+    double iconEnsureTextureMs = 0.0;
+    double iconRenderMs = 0.0;
+    int generatedStringCalls = 0;
+    int compileGeometryCalls = 0;
+    int generateTextureCalls = 0;
+    int imageForCanvasCalls = 0;
+    int textureUploadCalls = 0;
+    int renderGeometryCalls = 0;
+    int iconEnsureTextureCalls = 0;
+    int iconRenderCalls = 0;
+    uint64_t generatedTextureBytes = 0;
 };
 
 struct Rect {
@@ -675,6 +754,7 @@ public:
 
 protected:
     void OnRender() override {
+        const auto traceStart = perf::Trace::now();
         Rml::RenderManager* renderManager = GetRenderManager();
         if (!renderManager) {
             return;
@@ -691,8 +771,14 @@ protected:
         const int textureWidth = std::max(1, static_cast<int>(std::ceil(size.x * textureScale)));
         const int textureHeight = std::max(1, static_cast<int>(std::ceil(size.y * textureScale)));
 
+        const auto ensureStart = perf::Trace::now();
         if (!ensureTexture(*renderManager, name, color, textureWidth, textureHeight)) {
             return;
+        }
+        const double ensureMs = perf::Trace::elapsedMs(ensureStart);
+        if (gRmlOverlayTiming) {
+            gRmlOverlayTiming->iconEnsureTextureMs += ensureMs;
+            ++gRmlOverlayTiming->iconEnsureTextureCalls;
         }
 
         Rml::Mesh mesh;
@@ -702,6 +788,11 @@ protected:
                                          Rml::ColourbPremultiplied(255, 255, 255, 255));
         Rml::Geometry geometry = renderManager->MakeGeometry(std::move(mesh));
         geometry.Render(Rml::Vector2f(0.0f, 0.0f), static_cast<Rml::Texture>(texture_));
+        const double renderMs = perf::Trace::elapsedMs(traceStart);
+        if (gRmlOverlayTiming) {
+            gRmlOverlayTiming->iconRenderMs += renderMs;
+            ++gRmlOverlayTiming->iconRenderCalls;
+        }
     }
 
 private:
@@ -1041,6 +1132,7 @@ public:
                        float,
                        const Rml::TextShapingContext& textShaping,
                        Rml::TexturedMeshList& meshList) override {
+        const auto traceStart = perf::Trace::now();
         const Face& fontFace = face(handle);
         const Rml::String text(string.begin(), string.end());
         const int width = measureString(fontFace, string, textShaping.letter_spacing);
@@ -1101,6 +1193,10 @@ public:
         Rml::MeshUtilities::GenerateQuad(texturedMesh.mesh, topLeft, dimensions, Rml::ColourbPremultiplied(255, 255, 255, 255));
         meshList.push_back(std::move(texturedMesh));
         liveTextures_.push_back(std::move(callback));
+        if (gRmlOverlayTiming) {
+            gRmlOverlayTiming->generateStringMs += perf::Trace::elapsedMs(traceStart);
+            ++gRmlOverlayTiming->generatedStringCalls;
+        }
         return width;
     }
 
@@ -1113,11 +1209,15 @@ public:
     }
 
     void beginFrame(float textureScale) {
+        const auto traceStart = perf::Trace::now();
         const float clampedScale = std::max(1.0f, textureScale);
         if (std::abs(textureScale_ - clampedScale) > 0.001f) {
             textureScale_ = clampedScale;
             ++version_;
             releaseTextTextures();
+        }
+        if (gRmlOverlayTiming) {
+            gRmlOverlayTiming->fontBeginFrameMs += perf::Trace::elapsedMs(traceStart);
         }
     }
 
@@ -1270,6 +1370,7 @@ public:
 #endif
 
         sk_sp<SkImage> imageForCanvas(SkCanvas* canvas) const {
+            const auto traceStart = perf::Trace::now();
 #if defined(SKIATEST_USE_SKIA_D3D) && SKIATEST_USE_SKIA_D3D
             if (canvas && image) {
                 GrDirectContext* directContext = GrAsDirectContext(canvas->recordingContext());
@@ -1279,13 +1380,23 @@ public:
                         gpuContext = nullptr;
                     }
                     if (!gpuImage) {
+                        const auto uploadStart = perf::Trace::now();
                         gpuImage = SkImages::TextureFromImage(directContext,
                                                               image.get(),
                                                               skgpu::Mipmapped::kNo,
                                                               skgpu::Budgeted::kYes);
+                        const double uploadMs = perf::Trace::elapsedMs(uploadStart);
+                        if (gRmlOverlayTiming) {
+                            gRmlOverlayTiming->textureUploadMs += uploadMs;
+                            ++gRmlOverlayTiming->textureUploadCalls;
+                        }
                         gpuContext = gpuImage ? directContext : nullptr;
                     }
                     if (gpuImage) {
+                        if (gRmlOverlayTiming) {
+                            gRmlOverlayTiming->imageForCanvasMs += perf::Trace::elapsedMs(traceStart);
+                            ++gRmlOverlayTiming->imageForCanvasCalls;
+                        }
                         return gpuImage;
                     }
                 }
@@ -1293,6 +1404,10 @@ public:
 #else
             (void)canvas;
 #endif
+            if (gRmlOverlayTiming) {
+                gRmlOverlayTiming->imageForCanvasMs += perf::Trace::elapsedMs(traceStart);
+                ++gRmlOverlayTiming->imageForCanvasCalls;
+            }
             return image;
         }
     };
@@ -1327,6 +1442,7 @@ public:
 
     Rml::CompiledGeometryHandle CompileGeometry(Rml::Span<const Rml::Vertex> vertices,
                                                 Rml::Span<const int> indices) override {
+        const auto traceStart = perf::Trace::now();
         if (counters_) {
             ++counters_->compiledGeometries;
         }
@@ -1355,10 +1471,15 @@ public:
             }
             geometry->indices.push_back(static_cast<uint16_t>(index));
         }
+        if (gRmlOverlayTiming) {
+            gRmlOverlayTiming->compileGeometryMs += perf::Trace::elapsedMs(traceStart);
+            ++gRmlOverlayTiming->compileGeometryCalls;
+        }
         return reinterpret_cast<Rml::CompiledGeometryHandle>(geometry);
     }
 
     void RenderGeometry(Rml::CompiledGeometryHandle handle, Rml::Vector2f translation, Rml::TextureHandle textureHandle) override {
+        const auto traceStart = perf::Trace::now();
         const auto* geometry = reinterpret_cast<const Geometry*>(handle);
         const auto* texture = reinterpret_cast<const Texture*>(textureHandle);
         if (!geometry || !canvas_ || geometry->positions.empty() || geometry->indices.empty()) {
@@ -1375,7 +1496,12 @@ public:
             counters_->renderedIndices += geometry->indices.size();
         }
 
+        const auto verticesStart = perf::Trace::now();
         sk_sp<SkVertices> vertices = geometry->verticesForTexture(texture->width, texture->height);
+        const double verticesMs = perf::Trace::elapsedMs(verticesStart);
+        if (gRmlOverlayTiming) {
+            gRmlOverlayTiming->verticesMs += verticesMs;
+        }
         if (!vertices) {
             return;
         }
@@ -1389,8 +1515,15 @@ public:
                                           SkSamplingOptions(SkFilterMode::kLinear)));
         const int saveCount = canvas_->save();
         canvas_->translate(translation.x, translation.y);
+        const auto drawStart = perf::Trace::now();
         canvas_->drawVertices(vertices, SkBlendMode::kModulate, paint);
+        const double drawMs = perf::Trace::elapsedMs(drawStart);
         canvas_->restoreToCount(saveCount);
+        if (gRmlOverlayTiming) {
+            gRmlOverlayTiming->drawVerticesMs += drawMs;
+            gRmlOverlayTiming->renderGeometryMs += perf::Trace::elapsedMs(traceStart);
+            ++gRmlOverlayTiming->renderGeometryCalls;
+        }
     }
 
     void ReleaseGeometry(Rml::CompiledGeometryHandle handle) override {
@@ -1403,6 +1536,7 @@ public:
     }
 
     Rml::TextureHandle GenerateTexture(Rml::Span<const Rml::byte> source, Rml::Vector2i sourceDimensions) override {
+        const auto traceStart = perf::Trace::now();
         if (sourceDimensions.x <= 0 || sourceDimensions.y <= 0 || source.empty()) {
             return 0;
         }
@@ -1422,6 +1556,11 @@ public:
         if (!texture->image) {
             delete texture;
             return 0;
+        }
+        if (gRmlOverlayTiming) {
+            gRmlOverlayTiming->generateTextureMs += perf::Trace::elapsedMs(traceStart);
+            ++gRmlOverlayTiming->generateTextureCalls;
+            gRmlOverlayTiming->generatedTextureBytes += source.size();
         }
         return reinterpret_cast<Rml::TextureHandle>(texture);
     }
@@ -1523,15 +1662,15 @@ public:
         drawBackground(c, width, height);
         const auto sidebarStart = std::chrono::steady_clock::now();
         if (document) {
-            drawSidebar(c, document, height);
+            drawSidebar(c, nullptr, height);
             const auto panelStart = std::chrono::steady_clock::now();
             drawLayerPanel(c, document, paintStyles);
             const auto compassStart = std::chrono::steady_clock::now();
-            drawCompass(c, document, width - 94.0f, height - 162.0f);
+            drawCompass(c, nullptr, width - 94.0f, height - 162.0f);
             const auto statusStart = std::chrono::steady_clock::now();
-            drawStatusBar(c, document, width, height);
+            drawStatusBar(c, nullptr, width, height);
             const auto frameStart = std::chrono::steady_clock::now();
-            drawFrame(c, document, width, height);
+            drawFrame(c, nullptr, width, height);
             const auto stop = std::chrono::steady_clock::now();
             addTiming(timing, backgroundStart, sidebarStart, panelStart, compassStart, statusStart, frameStart, stop);
             return;
@@ -2129,6 +2268,7 @@ public:
     }
 
     void drawUncached(SkCanvas& canvas, int width, int height, float dpiScale, RmlDrawTiming* timing) {
+        const auto traceStart = perf::Trace::now();
         if (width <= 0 || height <= 0) {
             return;
         }
@@ -2140,10 +2280,38 @@ public:
         const auto prepareStart = std::chrono::steady_clock::now();
         prepareFrame(logicalWidth, logicalHeight, document);
         const auto chromeStart = std::chrono::steady_clock::now();
+        perf::Trace::write("rml", "prepare", width, height, perf::Trace::elapsedMs(prepareStart, chromeStart));
         drawChrome(canvas, document, logicalWidth, logicalHeight, scale, timing);
         const auto rmlStart = std::chrono::steady_clock::now();
-        renderRmlOverlay(canvas, width, height, scale);
+        perf::Trace::write("rml", "chrome", width, height, perf::Trace::elapsedMs(chromeStart, rmlStart));
+        renderRmlOverlay(canvas, width, height, scale, timing);
         const auto stop = std::chrono::steady_clock::now();
+        perf::Trace::write("rml", "overlay", width, height, perf::Trace::elapsedMs(rmlStart, stop));
+        if (timing) {
+            std::ostringstream detail;
+            detail << "font_begin=" << timing->fontBeginFrameMs
+                   << ";generate_string=" << timing->generateStringMs
+                   << ";generate_string_calls=" << timing->generatedStringCalls
+                   << ";compile_geometry=" << timing->compileGeometryMs
+                   << ";compile_geometry_calls=" << timing->compileGeometryCalls
+                   << ";generate_texture=" << timing->generateTextureMs
+                   << ";generate_texture_calls=" << timing->generateTextureCalls
+                   << ";generated_texture_kb=" << (static_cast<double>(timing->generatedTextureBytes) / 1024.0)
+                   << ";image_for_canvas=" << timing->imageForCanvasMs
+                   << ";image_for_canvas_calls=" << timing->imageForCanvasCalls
+                   << ";texture_upload=" << timing->textureUploadMs
+                   << ";texture_upload_calls=" << timing->textureUploadCalls
+                   << ";vertices=" << timing->verticesMs
+                   << ";draw_vertices=" << timing->drawVerticesMs
+                   << ";render_geometry=" << timing->renderGeometryMs
+                   << ";render_geometry_calls=" << timing->renderGeometryCalls
+                   << ";icon_ensure_texture=" << timing->iconEnsureTextureMs
+                   << ";icon_ensure_texture_calls=" << timing->iconEnsureTextureCalls
+                   << ";icon_render=" << timing->iconRenderMs
+                   << ";icon_render_calls=" << timing->iconRenderCalls;
+            perf::Trace::write("rml", "overlay_breakdown", width, height, perf::Trace::elapsedMs(rmlStart, stop), detail.str());
+        }
+        perf::Trace::write("rml", "draw_uncached_total", width, height, perf::Trace::elapsedMs(traceStart));
         if (timing) {
             timing->prepareMs += std::chrono::duration<double, std::milli>(chromeStart - prepareStart).count();
             timing->chromeMs += std::chrono::duration<double, std::milli>(rmlStart - chromeStart).count();
@@ -2445,16 +2613,18 @@ private:
         canvas.restore();
     }
 
-    void renderRmlOverlay(SkCanvas& canvas, int width, int height, float scale) {
+    void renderRmlOverlay(SkCanvas& canvas, int width, int height, float scale, RmlDrawTiming* timing) {
         if (!context_) {
             return;
         }
 
         gRmlTextureScale = scale;
+        gRmlOverlayTiming = timing;
         font_.beginFrame(scale);
         render_.begin(canvas, width, height, scale);
         context_->Render();
         render_.end();
+        gRmlOverlayTiming = nullptr;
     }
 
 
@@ -2616,7 +2786,7 @@ public:
     }
 
 private:
-    D3DPresenter d3d_{kWin32Background, true};
+    D3DPresenter d3d_{kWin32Background};
     RmlLayerRenderer renderer_;
     std::vector<uint32_t> fallbackPixels_;
     int fallbackWidth_ = 0;
@@ -2765,18 +2935,22 @@ private:
     }
 
     bool renderD3D(HWND hwnd, int width, int height) {
-        return d3d_.render(
+        const auto traceStart = perf::Trace::now();
+        const bool ok = d3d_.render(
             hwnd,
             width,
             height,
             [this](SkCanvas& canvas, int drawWidth, int drawHeight) {
                 // Ganesh already provides a GPU-backed canvas. Rebuilding the raster
                 // cache here makes every new resize step pay the CPU full-frame cost.
-                renderer_.drawUncached(canvas, drawWidth, drawHeight, dpiScaleForDpi(dpi_), nullptr);
+                RmlDrawTiming timing;
+                renderer_.drawUncached(canvas, drawWidth, drawHeight, dpiScaleForDpi(dpi_), &timing);
             },
             [this](uint32_t* pixels, int drawWidth, int drawHeight, size_t rowBytes) {
                 return renderCpuPixels(pixels, drawWidth, drawHeight, rowBytes);
             });
+        perf::Trace::write("rml_app", "render_d3d", width, height, perf::Trace::elapsedMs(traceStart));
+        return ok;
     }
 
     void renderGdiFallback(HDC hdc, const PAINTSTRUCT& ps, int width, int height) {
@@ -2822,6 +2996,7 @@ private:
             ValidateRect(hwnd, nullptr);
             return;
         }
+        const auto traceStart = perf::Trace::now();
         paintActive_ = true;
 
         PAINTSTRUCT ps{};
@@ -2832,18 +3007,26 @@ private:
         const int width = std::max<LONG>(1, client.right - client.left);
         const int height = std::max<LONG>(1, client.bottom - client.top);
         dpi_ = getWindowDpi(hwnd);
-        if (!renderD3D(hwnd, width, height)) {
+        const auto renderStart = perf::Trace::now();
+        const bool renderedD3D = renderD3D(hwnd, width, height);
+        perf::Trace::write("rml_app", renderedD3D ? "render_d3d_ok" : "render_d3d_fail", width, height, perf::Trace::elapsedMs(renderStart));
+        if (!renderedD3D) {
+            const auto fallbackStart = perf::Trace::now();
             renderGdiFallback(hdc, ps, width, height);
+            perf::Trace::write("rml_app", "render_gdi_fallback", width, height, perf::Trace::elapsedMs(fallbackStart));
         }
 
         EndPaint(hwnd, &ps);
         paintActive_ = false;
+        perf::Trace::write("rml_app", "paint_total", width, height, perf::Trace::elapsedMs(traceStart));
     }
 };
 
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCmd) {
+    SetUnhandledExceptionFilter(writeMiniDump);
+
     int argc = 0;
     LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
     if (argv) {

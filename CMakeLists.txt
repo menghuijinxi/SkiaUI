@@ -68,6 +68,7 @@ target_link_libraries(RmlLayerDesk PRIVATE
     d3d12
     dxgi
     dxguid
+    dbghelp
 )
 
 target_compile_definitions(RmlLayerDesk PRIVATE

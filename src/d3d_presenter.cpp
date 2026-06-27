@@ -1,4 +1,5 @@
 #include "d3d_presenter.h"
+#include "perf_trace.h"
 
 #include <d3d12.h>
 #include <dxgi1_4.h>
@@ -125,6 +126,7 @@ struct D3DPresenter::Impl {
 #endif
 
     bool init(HWND hwnd, int width, int height) {
+        const auto traceStart = perf::Trace::now();
         tried = true;
         width = std::max(1, width);
         height = std::max(1, height);
@@ -228,6 +230,7 @@ struct D3DPresenter::Impl {
 #endif
 
         ready = true;
+        perf::Trace::write("d3d", "init", width, height, perf::Trace::elapsedMs(traceStart));
         return true;
     }
 
@@ -265,24 +268,30 @@ struct D3DPresenter::Impl {
         swapWidth = 0;
         swapHeight = 0;
         ready = false;
+        tried = false;
     }
 
     bool waitForGpu() {
+        const auto traceStart = perf::Trace::now();
         if (!queue || !fence || !fenceEvent) {
             return true;
         }
 
         const UINT64 value = ++fenceValue;
         if (FAILED(queue->Signal(fence.Get(), value))) {
+            perf::Trace::write("d3d", "wait_gpu_fail_signal", swapWidth, swapHeight, perf::Trace::elapsedMs(traceStart));
             return false;
         }
         if (fence->GetCompletedValue() >= value) {
+            perf::Trace::write("d3d", "wait_gpu", swapWidth, swapHeight, perf::Trace::elapsedMs(traceStart), "already_complete");
             return true;
         }
         if (FAILED(fence->SetEventOnCompletion(value, fenceEvent))) {
+            perf::Trace::write("d3d", "wait_gpu_fail_event", swapWidth, swapHeight, perf::Trace::elapsedMs(traceStart));
             return false;
         }
         WaitForSingleObject(fenceEvent, INFINITE);
+        perf::Trace::write("d3d", "wait_gpu", swapWidth, swapHeight, perf::Trace::elapsedMs(traceStart), "blocked");
         return true;
     }
 
@@ -398,6 +407,7 @@ struct D3DPresenter::Impl {
     }
 
     bool resizeSwapChain(int width, int height) {
+        const auto traceStart = perf::Trace::now();
         width = std::max(1, width);
         height = std::max(1, height);
         if (!swapChain) {
@@ -407,19 +417,25 @@ struct D3DPresenter::Impl {
             return true;
         }
 
+        const auto flushStart = perf::Trace::now();
 #if defined(SKIATEST_USE_SKIA_D3D) && SKIATEST_USE_SKIA_D3D
         if (grContext) {
             grContext->flushAndSubmit(GrSyncCpu::kNo);
         }
 #endif
+        perf::Trace::write("d3d", "resize_flush", width, height, perf::Trace::elapsedMs(flushStart));
+        const auto waitStart = perf::Trace::now();
         waitForGpu();
+        perf::Trace::write("d3d", "resize_wait", width, height, perf::Trace::elapsedMs(waitStart));
         releaseUploadBuffer();
 
+        const auto resizeBuffersStart = perf::Trace::now();
         const HRESULT hr = swapChain->ResizeBuffers(kSwapBufferCount,
                                                     static_cast<UINT>(width),
                                                     static_cast<UINT>(height),
                                                     kSwapFormat,
                                                     0);
+        perf::Trace::write("d3d", "resize_buffers", width, height, perf::Trace::elapsedMs(resizeBuffersStart));
         if (FAILED(hr)) {
             reset();
             return false;
@@ -428,16 +444,20 @@ struct D3DPresenter::Impl {
         swapWidth = width;
         swapHeight = height;
         setSwapChainBackground();
+        perf::Trace::write("d3d", "resize_total", width, height, perf::Trace::elapsedMs(traceStart));
         return true;
     }
 
     bool presentSwapChain() {
+        const auto traceStart = perf::Trace::now();
         if (!swapChain) {
             return false;
         }
 
         DXGI_PRESENT_PARAMETERS params{};
-        return SUCCEEDED(swapChain->Present1(0, 0, &params));
+        const bool ok = SUCCEEDED(swapChain->Present1(0, 0, &params));
+        perf::Trace::write("d3d", ok ? "present" : "present_fail", swapWidth, swapHeight, perf::Trace::elapsedMs(traceStart));
+        return ok;
     }
 
 #if defined(SKIATEST_USE_SKIA_D3D) && SKIATEST_USE_SKIA_D3D
@@ -471,7 +491,7 @@ struct D3DPresenter::Impl {
     }
 
     void rememberGaneshFrame(sk_sp<SkImage> image, int width, int height) {
-        if (!image) {
+        if (!retainGaneshFrames_ || !image) {
             return;
         }
         lastGaneshFrame = std::move(image);
@@ -549,18 +569,25 @@ struct D3DPresenter::Impl {
     bool presentGaneshSurface(sk_sp<SkSurface> surface,
                               ID3D12Resource* backBuffer,
                               GrBackendRenderTarget& backendTarget) {
+        const auto traceStart = perf::Trace::now();
         if (!surface || !backBuffer || !grContext) {
             return false;
         }
 
+        const auto flushStart = perf::Trace::now();
         grContext->flushAndSubmit(surface.get());
+        perf::Trace::write("d3d", "ganesh_flush_submit", swapWidth, swapHeight, perf::Trace::elapsedMs(flushStart));
         surface.reset();
 
+        const auto transitionStart = perf::Trace::now();
         if (!transitionToPresent(backBuffer)) {
             return false;
         }
+        perf::Trace::write("d3d", "transition_present", swapWidth, swapHeight, perf::Trace::elapsedMs(transitionStart));
         GrBackendRenderTargets::SetD3DResourceState(&backendTarget, D3D12_RESOURCE_STATE_PRESENT);
-        return presentSwapChain();
+        const bool ok = presentSwapChain();
+        perf::Trace::write("d3d", "present_ganesh_total", swapWidth, swapHeight, perf::Trace::elapsedMs(traceStart));
+        return ok;
     }
 
     bool renderPreparedGaneshFrameToSwapChain(int width, int height, sk_sp<SkImage> preparedFrame) {
@@ -626,15 +653,22 @@ struct D3DPresenter::Impl {
     }
 
     bool renderDirectGaneshFrame(int width, int height, const D3DPresenter::GaneshDrawCallback& drawGanesh) {
+        const auto traceStart = perf::Trace::now();
         ComPtr<ID3D12Resource> backBuffer;
         GrBackendRenderTarget backendTarget;
+        const auto wrapStart = perf::Trace::now();
         sk_sp<SkSurface> surface = wrapCurrentBackBuffer(width, height, backBuffer, backendTarget);
+        perf::Trace::write("d3d", "wrap_backbuffer", width, height, perf::Trace::elapsedMs(wrapStart));
         if (!surface) {
             return false;
         }
 
+        const auto drawStart = perf::Trace::now();
         drawGanesh(*surface->getCanvas(), width, height);
-        return presentGaneshSurface(surface, backBuffer.Get(), backendTarget);
+        perf::Trace::write("d3d", "draw_ganesh_callback", width, height, perf::Trace::elapsedMs(drawStart));
+        const bool ok = presentGaneshSurface(surface, backBuffer.Get(), backendTarget);
+        perf::Trace::write("d3d", "render_direct_ganesh_total", width, height, perf::Trace::elapsedMs(traceStart));
+        return ok;
     }
 
     bool renderOffscreenGaneshFrame(int width, int height, const D3DPresenter::GaneshDrawCallback& drawGanesh) {
@@ -657,6 +691,13 @@ struct D3DPresenter::Impl {
     }
 
     bool renderResizedGaneshD3D(int width, int height, const D3DPresenter::GaneshDrawCallback& drawGanesh) {
+        if (!shouldRetainEveryGaneshFrame()) {
+            if (!resizeSwapChain(width, height)) {
+                return false;
+            }
+            return renderDirectGaneshFrame(width, height, drawGanesh);
+        }
+
         if (lastGaneshFrame) {
             return renderRetainedThenPreparedGaneshFrame(width, height, drawGanesh);
         }
@@ -758,6 +799,7 @@ struct D3DPresenter::Impl {
                 int height,
                 const D3DPresenter::GaneshDrawCallback& drawGanesh,
                 const D3DPresenter::CpuDrawCallback& drawCpu) {
+        const auto traceStart = perf::Trace::now();
         if (width <= 0 || height <= 0) {
             return false;
         }
@@ -770,6 +812,7 @@ struct D3DPresenter::Impl {
 
 #if defined(SKIATEST_USE_SKIA_D3D) && SKIATEST_USE_SKIA_D3D
         if (renderSkiaGaneshD3D(width, height, drawGanesh)) {
+            perf::Trace::write("d3d", "render_total", width, height, perf::Trace::elapsedMs(traceStart), "ganesh");
             return true;
         }
 #endif
@@ -778,7 +821,9 @@ struct D3DPresenter::Impl {
             return false;
         }
 
-        return renderCpuUpload(width, height, drawCpu);
+        const bool ok = renderCpuUpload(width, height, drawCpu);
+        perf::Trace::write("d3d", "render_total", width, height, perf::Trace::elapsedMs(traceStart), "cpu_upload");
+        return ok;
     }
 };
 

@@ -11,6 +11,7 @@
 #include <shellscalingapi.h>
 
 #include "d3d_presenter.h"
+#include "perf_trace.h"
 #include "include/core/SkCanvas.h"
 #include "include/core/SkColor.h"
 #include "include/core/SkColorType.h"
@@ -149,6 +150,7 @@ public:
     }
 
     void draw(SkCanvas& canvas, int width, int height, float dpiScale) {
+        const auto traceStart = perf::Trace::now();
         const float scale = std::max(0.1f, dpiScale);
         const float logicalWidth = static_cast<float>(width) / scale;
         const float logicalHeight = static_cast<float>(height) / scale;
@@ -158,6 +160,7 @@ public:
         canvas.scale(scale, scale);
         drawApp(canvas, logicalWidth, logicalHeight);
         canvas.restore();
+        perf::Trace::write("skia", "draw_total", width, height, perf::Trace::elapsedMs(traceStart));
     }
 
 private:
@@ -976,7 +979,8 @@ private:
     }
 
     bool renderD3D(HWND hwnd, int width, int height) {
-        return d3d_.render(
+        const auto traceStart = perf::Trace::now();
+        const bool ok = d3d_.render(
             hwnd,
             width,
             height,
@@ -986,6 +990,8 @@ private:
             [this](uint32_t* pixels, int drawWidth, int drawHeight, size_t rowBytes) {
                 return renderCpuSurface(pixels, drawWidth, drawHeight, rowBytes);
             });
+        perf::Trace::write("skia_app", "render_d3d", width, height, perf::Trace::elapsedMs(traceStart));
+        return ok;
     }
 
     bool renderCpuSurface(uint32_t* pixels, int width, int height, size_t rowBytes) {
@@ -1066,6 +1072,7 @@ private:
             ValidateRect(hwnd, nullptr);
             return;
         }
+        const auto traceStart = perf::Trace::now();
         paintActive_ = true;
 
         PAINTSTRUCT ps{};
@@ -1077,12 +1084,18 @@ private:
         const int height = std::max<LONG>(1, client.bottom - client.top);
         dpi_ = getWindowDpi(hwnd);
 
-        if (!renderD3D(hwnd, width, height)) {
+        const auto renderStart = perf::Trace::now();
+        const bool renderedD3D = renderD3D(hwnd, width, height);
+        perf::Trace::write("skia_app", renderedD3D ? "render_d3d_ok" : "render_d3d_fail", width, height, perf::Trace::elapsedMs(renderStart));
+        if (!renderedD3D) {
+            const auto fallbackStart = perf::Trace::now();
             renderCpuFallback(hdc, ps, width, height);
+            perf::Trace::write("skia_app", "render_gdi_fallback", width, height, perf::Trace::elapsedMs(fallbackStart));
         }
 
         EndPaint(hwnd, &ps);
         paintActive_ = false;
+        perf::Trace::write("skia_app", "paint_total", width, height, perf::Trace::elapsedMs(traceStart));
     }
 };
 
