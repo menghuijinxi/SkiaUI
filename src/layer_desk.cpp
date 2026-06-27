@@ -23,6 +23,8 @@
 #include "include/core/SkPaint.h"
 #include "include/core/SkPath.h"
 #include "include/core/SkPathBuilder.h"
+#include "include/core/SkPicture.h"
+#include "include/core/SkPictureRecorder.h"
 #include "include/core/SkPoint.h"
 #include "include/core/SkRRect.h"
 #include "include/core/SkRect.h"
@@ -31,6 +33,7 @@
 #include "include/core/SkShader.h"
 #include "include/core/SkStream.h"
 #include "include/core/SkSurface.h"
+#include "include/core/SkTextBlob.h"
 #include "include/core/SkTypeface.h"
 #include "include/effects/SkGradient.h"
 #include "include/ports/SkTypeface_win.h"
@@ -150,7 +153,8 @@ public:
     }
 
     void draw(SkCanvas& canvas, int width, int height, float dpiScale) {
-        const auto traceStart = perf::Trace::now();
+        const bool traceEnabled = perf::Trace::enabled();
+        const auto traceStart = traceEnabled ? perf::Trace::now() : perf::Trace::Clock::time_point{};
         const float scale = std::max(0.1f, dpiScale);
         const float logicalWidth = static_cast<float>(width) / scale;
         const float logicalHeight = static_cast<float>(height) / scale;
@@ -158,9 +162,11 @@ public:
         canvas.clear(rgb(7, 12, 18));
         canvas.save();
         canvas.scale(scale, scale);
-        drawApp(canvas, logicalWidth, logicalHeight);
+        drawApp(canvas, logicalWidth, logicalHeight, traceEnabled);
         canvas.restore();
-        perf::Trace::write("skia", "draw_total", width, height, perf::Trace::elapsedMs(traceStart));
+        if (traceEnabled) {
+            perf::Trace::write("skia", "draw_total", width, height, perf::Trace::elapsedMs(traceStart));
+        }
     }
 
 private:
@@ -168,6 +174,16 @@ private:
     sk_sp<SkTypeface> regular_;
     sk_sp<SkTypeface> medium_;
     mutable std::unordered_map<std::string, sk_sp<SkSVGDOM>> svgCache_;
+    struct TextEntry {
+        sk_sp<SkTextBlob> blob;
+        float width = 0.0f;
+        SkRect bounds = SkRect::MakeEmpty();
+    };
+    mutable std::unordered_map<std::string, TextEntry> textCache_;
+    mutable sk_sp<SkPicture> sidebarContentPicture_;
+    mutable sk_sp<SkPicture> layerPanelPicture_;
+    mutable sk_sp<SkPicture> statusContentPicture_;
+    mutable sk_sp<SkPicture> compassPicture_;
 
     sk_sp<SkTypeface> pickTypeface(bool bold) {
         const SkFontStyle style = bold ? SkFontStyle::Bold() : SkFontStyle::Normal();
@@ -224,13 +240,43 @@ private:
               SkColor color,
               bool isBold = false) const {
         SkPaint p = fill(color);
-        SkFont f = font(size, isBold);
+        const TextEntry& entry = textEntry(value, size, isBold);
+        if (entry.blob) {
+            c.drawTextBlob(entry.blob, x, y, p);
+            return;
+        }
+        const SkFont f = font(size, isBold);
         c.drawSimpleText(value.data(), value.size(), SkTextEncoding::kUTF8, x, y, f, p);
     }
 
     float textWidth(std::string_view value, float size, bool isBold = false) const {
-        SkFont f = font(size, isBold);
-        return f.measureText(value.data(), value.size(), SkTextEncoding::kUTF8);
+        return textEntry(value, size, isBold).width;
+    }
+
+    std::string textKey(std::string_view value, float size, bool isBold) const {
+        std::string key;
+        key.reserve(value.size() + 32);
+        key.append(isBold ? "1|" : "0|");
+        char sizeBuf[24];
+        std::snprintf(sizeBuf, sizeof(sizeBuf), "%.2f|", size);
+        key.append(sizeBuf);
+        key.append(value.data(), value.size());
+        return key;
+    }
+
+    const TextEntry& textEntry(std::string_view value, float size, bool isBold) const {
+        const std::string key = textKey(value, size, isBold);
+        auto it = textCache_.find(key);
+        if (it != textCache_.end()) {
+            return it->second;
+        }
+
+        const SkFont f = font(size, isBold);
+        TextEntry entry;
+        entry.width = f.measureText(value.data(), value.size(), SkTextEncoding::kUTF8, &entry.bounds);
+        entry.blob = SkTextBlob::MakeFromText(value.data(), value.size(), f, SkTextEncoding::kUTF8);
+        it = textCache_.emplace(key, std::move(entry)).first;
+        return it->second;
     }
 
     std::string svgHex(SkColor color) const {
@@ -300,10 +346,15 @@ private:
                       SkColor color,
                       bool isBold = false) const {
         SkFont f = font(size, isBold);
-        SkRect bounds;
-        const float w = f.measureText(value.data(), value.size(), SkTextEncoding::kUTF8, &bounds);
+        const TextEntry& entry = textEntry(value, size, isBold);
+        const SkRect bounds = entry.bounds;
+        const float w = entry.width;
         const float x = box.x + (box.w - w) * 0.5f;
         const float y = box.y + box.h * 0.5f - (bounds.fTop + bounds.fBottom) * 0.5f;
+        if (entry.blob) {
+            c.drawTextBlob(entry.blob, x, y, fill(color));
+            return;
+        }
         c.drawSimpleText(value.data(), value.size(), SkTextEncoding::kUTF8, x, y, f, fill(color));
     }
 
@@ -369,16 +420,49 @@ private:
         return p;
     }
 
-    void drawApp(SkCanvas& c, float width, float height) {
-        drawBackground(c, width, height);
-        drawSidebar(c, height);
-        drawLayerPanel(c);
-        drawCompass(c, width - 94.0f, height - 162.0f);
-        drawStatusBar(c, width, height);
-        c.drawRoundRect(SkRect::MakeXYWH(2.0f, 2.0f, width - 4.0f, height - 4.0f),
-                        10.0f,
-                        10.0f,
-                        stroke(rgba(125, 155, 173, 105), 1.0f));
+    template <typename DrawFn>
+    sk_sp<SkPicture> recordPicture(const SkRect& bounds, const char* event, DrawFn&& draw) const {
+        const bool traceEnabled = perf::Trace::enabled();
+        const auto traceStart = traceEnabled ? perf::Trace::now() : perf::Trace::Clock::time_point{};
+        SkPictureRecorder recorder;
+        SkCanvas* canvas = recorder.beginRecording(bounds);
+        draw(*canvas);
+        sk_sp<SkPicture> picture = recorder.finishRecordingAsPicture();
+        if (traceEnabled) {
+            perf::Trace::write("skia_cache",
+                               event,
+                               static_cast<int>(bounds.width()),
+                               static_cast<int>(bounds.height()),
+                               perf::Trace::elapsedMs(traceStart));
+        }
+        return picture;
+    }
+
+    template <typename DrawFn>
+    void drawStage(bool traceEnabled, const char* event, int width, int height, DrawFn&& draw) {
+        if (!traceEnabled) {
+            draw();
+            return;
+        }
+        const auto start = perf::Trace::now();
+        draw();
+        perf::Trace::write("skia", event, width, height, perf::Trace::elapsedMs(start));
+    }
+
+    void drawApp(SkCanvas& c, float width, float height, bool traceEnabled) {
+        const int traceWidth = static_cast<int>(width);
+        const int traceHeight = static_cast<int>(height);
+        drawStage(traceEnabled, "background", traceWidth, traceHeight, [&] { drawBackground(c, width, height); });
+        drawStage(traceEnabled, "sidebar", traceWidth, traceHeight, [&] { drawSidebar(c, height); });
+        drawStage(traceEnabled, "layer_panel", traceWidth, traceHeight, [&] { drawLayerPanel(c); });
+        drawStage(traceEnabled, "compass", traceWidth, traceHeight, [&] { drawCompass(c, width - 94.0f, height - 162.0f); });
+        drawStage(traceEnabled, "status_bar", traceWidth, traceHeight, [&] { drawStatusBar(c, width, height); });
+        drawStage(traceEnabled, "frame", traceWidth, traceHeight, [&] {
+            c.drawRoundRect(SkRect::MakeXYWH(2.0f, 2.0f, width - 4.0f, height - 4.0f),
+                            10.0f,
+                            10.0f,
+                            stroke(rgba(125, 155, 173, 105), 1.0f));
+        });
     }
 
     void drawBackground(SkCanvas& c, float width, float height) {
@@ -411,6 +495,18 @@ private:
                    linearPaint(SkPoint::Make(0.0f, 0.0f), SkPoint::Make(sidebarW, 0.0f), colors, pos, 2));
         line(c, sidebarW - 0.5f, 0.0f, sidebarW - 0.5f, height - 60.0f, rgba(83, 118, 143, 46), 1.0f);
 
+        if (!sidebarContentPicture_) {
+            sidebarContentPicture_ = recordPicture(
+                SkRect::MakeWH(sidebarW, 850.0f),
+                "sidebar_content_picture",
+                [this](SkCanvas& pictureCanvas) { drawSidebarContent(pictureCanvas); });
+        }
+        c.drawPicture(sidebarContentPicture_.get());
+    }
+
+    void drawSidebarContent(SkCanvas& c) {
+        constexpr float sidebarW = 118.0f;
+        const SkScalar pos[] = {0.0f, 1.0f};
         for (int i = 0; i < 3; ++i) {
             line(c, 47.0f, 35.0f + i * 12.0f, 77.0f, 35.0f + i * 12.0f, rgba(213, 224, 234, 220), 3.2f);
         }
@@ -460,6 +556,16 @@ private:
     }
 
     void drawLayerPanel(SkCanvas& c) {
+        if (!layerPanelPicture_) {
+            layerPanelPicture_ = recordPicture(
+                SkRect::MakeWH(static_cast<float>(kBaseWidth), static_cast<float>(kBaseHeight)),
+                "layer_panel_picture",
+                [this](SkCanvas& pictureCanvas) { drawLayerPanelContent(pictureCanvas); });
+        }
+        c.drawPicture(layerPanelPicture_.get());
+    }
+
+    void drawLayerPanelContent(SkCanvas& c) {
         const Rect panel{134.0f, 25.0f, 602.0f, 825.0f};
         const SkColor shadowColors[] = {rgba(0, 0, 0, 70), rgba(0, 0, 0, 0)};
         const SkScalar shadowPos[] = {0.0f, 1.0f};
@@ -611,15 +717,43 @@ private:
                    linearPaint(SkPoint::Make(0.0f, bar.y), SkPoint::Make(0.0f, height), colors, pos, 2));
         line(c, 0.0f, bar.y + 0.5f, width, bar.y + 0.5f, rgba(108, 136, 158, 66), 1.0f);
 
-        drawLayerStack(c, 63.0f, height - 30.0f, 31.0f, rgba(216, 226, 238, 210), false);
-        text(c, "图层:5", 89.0f, height - 22.0f, 20.0f, rgba(222, 232, 241, 235), false);
-        drawEyeIcon(c, 293.0f, height - 30.0f, rgba(216, 226, 238, 210), 29.0f);
-        text(c, "可见:5", 323.0f, height - 22.0f, 20.0f, rgba(222, 232, 241, 235), false);
-        drawChartIcon(c, 524.0f, height - 30.0f, rgba(216, 226, 238, 210));
-        text(c, "总要素:11,272", 549.0f, height - 22.0f, 20.0f, rgba(222, 232, 241, 235), false);
+        if (!statusContentPicture_) {
+            statusContentPicture_ = recordPicture(
+                SkRect::MakeWH(760.0f, 60.0f),
+                "status_content_picture",
+                [this](SkCanvas& pictureCanvas) { drawStatusBarContent(pictureCanvas); });
+        }
+        c.save();
+        c.translate(0.0f, height - 60.0f);
+        c.drawPicture(statusContentPicture_.get());
+        c.restore();
+    }
+
+    void drawStatusBarContent(SkCanvas& c) {
+        drawLayerStack(c, 63.0f, 30.0f, 31.0f, rgba(216, 226, 238, 210), false);
+        text(c, "图层:5", 89.0f, 38.0f, 20.0f, rgba(222, 232, 241, 235), false);
+        drawEyeIcon(c, 293.0f, 30.0f, rgba(216, 226, 238, 210), 29.0f);
+        text(c, "可见:5", 323.0f, 38.0f, 20.0f, rgba(222, 232, 241, 235), false);
+        drawChartIcon(c, 524.0f, 30.0f, rgba(216, 226, 238, 210));
+        text(c, "总要素:11,272", 549.0f, 38.0f, 20.0f, rgba(222, 232, 241, 235), false);
     }
 
     void drawCompass(SkCanvas& c, float cx, float cy) {
+        if (!compassPicture_) {
+            compassPicture_ = recordPicture(
+                SkRect::MakeXYWH(-80.0f, -90.0f, 160.0f, 180.0f),
+                "compass_picture",
+                [this](SkCanvas& pictureCanvas) { drawCompassContent(pictureCanvas); });
+        }
+        c.save();
+        c.translate(cx, cy);
+        c.drawPicture(compassPicture_.get());
+        c.restore();
+    }
+
+    void drawCompassContent(SkCanvas& c) {
+        constexpr float cx = 0.0f;
+        constexpr float cy = 0.0f;
         const float r = 51.0f;
         c.drawCircle(cx, cy, r, stroke(rgba(197, 213, 224, 145), 1.1f));
         c.drawCircle(cx, cy, r * 0.74f, stroke(rgba(197, 213, 224, 45), 1.0f));

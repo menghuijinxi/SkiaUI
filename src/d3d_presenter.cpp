@@ -23,6 +23,7 @@
 #endif
 
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <memory>
 
@@ -31,6 +32,7 @@ using Microsoft::WRL::ComPtr;
 namespace {
 
 constexpr int kSwapBufferCount = 2;
+constexpr int kTransitionFrameCount = 3;
 constexpr DXGI_FORMAT kSwapFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
 
 constexpr UINT alignTo(UINT value, UINT alignment) {
@@ -110,6 +112,13 @@ struct D3DPresenter::Impl {
     ComPtr<IDXGISwapChain3> swapChain;
     ComPtr<ID3D12CommandAllocator> commandAllocator;
     ComPtr<ID3D12GraphicsCommandList> commandList;
+    struct TransitionFrame {
+        ComPtr<ID3D12CommandAllocator> allocator;
+        ComPtr<ID3D12GraphicsCommandList> commandList;
+        UINT64 fenceValue = 0;
+    };
+    std::array<TransitionFrame, kTransitionFrameCount> transitionFrames;
+    size_t transitionFrameIndex = 0;
     ComPtr<ID3D12Fence> fence;
     ComPtr<ID3D12Resource> uploadBuffer;
     UINT uploadRowPitch = 0;
@@ -188,6 +197,26 @@ struct D3DPresenter::Impl {
         }
         commandList->Close();
 
+        for (TransitionFrame& frame : transitionFrames) {
+            if (FAILED(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
+                                                      IID_PPV_ARGS(&frame.allocator)))) {
+                reset();
+                return false;
+            }
+
+            if (FAILED(device->CreateCommandList(0,
+                                                 D3D12_COMMAND_LIST_TYPE_DIRECT,
+                                                 frame.allocator.Get(),
+                                                 nullptr,
+                                                 IID_PPV_ARGS(&frame.commandList)))) {
+                reset();
+                return false;
+            }
+            frame.commandList->Close();
+            frame.fenceValue = 0;
+        }
+        transitionFrameIndex = 0;
+
         if (FAILED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence)))) {
             reset();
             return false;
@@ -237,7 +266,8 @@ struct D3DPresenter::Impl {
     void reset() {
 #if defined(SKIATEST_USE_SKIA_D3D) && SKIATEST_USE_SKIA_D3D
         if (grContext) {
-            grContext->flushAndSubmit(GrSyncCpu::kNo);
+            grContext->flushAndSubmit(GrSyncCpu::kYes);
+            grContext->purgeUnlockedResources(GrPurgeResourceOptions::kAllResources);
         }
 #endif
         waitForGpu();
@@ -253,6 +283,12 @@ struct D3DPresenter::Impl {
         allocator.reset();
 #endif
         swapChain.Reset();
+        for (TransitionFrame& frame : transitionFrames) {
+            frame.commandList.Reset();
+            frame.allocator.Reset();
+            frame.fenceValue = 0;
+        }
+        transitionFrameIndex = 0;
         commandList.Reset();
         commandAllocator.Reset();
         fence.Reset();
@@ -420,7 +456,8 @@ struct D3DPresenter::Impl {
         const auto flushStart = perf::Trace::now();
 #if defined(SKIATEST_USE_SKIA_D3D) && SKIATEST_USE_SKIA_D3D
         if (grContext) {
-            grContext->flushAndSubmit(GrSyncCpu::kNo);
+            grContext->flushAndSubmit(GrSyncCpu::kYes);
+            grContext->purgeUnlockedResources(GrPurgeResourceOptions::kAllResources);
         }
 #endif
         perf::Trace::write("d3d", "resize_flush", width, height, perf::Trace::elapsedMs(flushStart));
@@ -504,18 +541,22 @@ struct D3DPresenter::Impl {
             return false;
         }
 
-        ComPtr<ID3D12CommandAllocator> allocator;
-        if (FAILED(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
-                                                  IID_PPV_ARGS(&allocator)))) {
+        TransitionFrame& frame = transitionFrames[transitionFrameIndex];
+        if (!frame.allocator || !frame.commandList || !fence || !fenceEvent) {
             return false;
         }
 
-        ComPtr<ID3D12GraphicsCommandList> list;
-        if (FAILED(device->CreateCommandList(0,
-                                             D3D12_COMMAND_LIST_TYPE_DIRECT,
-                                             allocator.Get(),
-                                             nullptr,
-                                             IID_PPV_ARGS(&list)))) {
+        // A command allocator cannot be reset until the GPU has consumed the
+        // previous command list that used it. Rotate a few tiny transition lists
+        // and only wait when rapid resize/present traffic laps the GPU.
+        if (frame.fenceValue != 0 && fence->GetCompletedValue() < frame.fenceValue) {
+            if (FAILED(fence->SetEventOnCompletion(frame.fenceValue, fenceEvent))) {
+                return false;
+            }
+            WaitForSingleObject(fenceEvent, INFINITE);
+        }
+        if (FAILED(frame.allocator->Reset()) ||
+            FAILED(frame.commandList->Reset(frame.allocator.Get(), nullptr))) {
             return false;
         }
 
@@ -526,14 +567,20 @@ struct D3DPresenter::Impl {
         barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
         barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
         barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
-        list->ResourceBarrier(1, &barrier);
+        frame.commandList->ResourceBarrier(1, &barrier);
 
-        if (FAILED(list->Close())) {
+        if (FAILED(frame.commandList->Close())) {
             return false;
         }
 
-        ID3D12CommandList* lists[] = {list.Get()};
+        ID3D12CommandList* lists[] = {frame.commandList.Get()};
         queue->ExecuteCommandLists(1, lists);
+        const UINT64 value = ++fenceValue;
+        if (FAILED(queue->Signal(fence.Get(), value))) {
+            return false;
+        }
+        frame.fenceValue = value;
+        transitionFrameIndex = (transitionFrameIndex + 1) % transitionFrames.size();
         return true;
     }
 
@@ -550,13 +597,15 @@ struct D3DPresenter::Impl {
             return nullptr;
         }
 
-        GrD3DTextureResourceInfo textureInfo(backBuffer.Get(),
-                                             nullptr,
-                                             D3D12_RESOURCE_STATE_PRESENT,
-                                             kSwapFormat,
-                                             1,
-                                             1,
-                                             DXGI_STANDARD_MULTISAMPLE_QUALITY_PATTERN);
+        GrD3DTextureResourceInfo textureInfo;
+        // gr_cp(T*) adopts a COM reference. Keep the swap-chain ComPtr's
+        // reference separate and give Skia its own retained reference.
+        textureInfo.fResource.retain(backBuffer.Get());
+        textureInfo.fResourceState = D3D12_RESOURCE_STATE_PRESENT;
+        textureInfo.fFormat = kSwapFormat;
+        textureInfo.fSampleCount = 1;
+        textureInfo.fLevelCount = 1;
+        textureInfo.fSampleQualityPattern = DXGI_STANDARD_MULTISAMPLE_QUALITY_PATTERN;
         backendTarget = GrBackendRenderTargets::MakeD3D(width, height, textureInfo);
         return SkSurfaces::WrapBackendRenderTarget(grContext.get(),
                                                    backendTarget,
