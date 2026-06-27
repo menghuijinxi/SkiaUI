@@ -1007,6 +1007,10 @@ private:
     UINT dpi_ = static_cast<UINT>(kDefaultDpi);
     HBRUSH backgroundBrush_ = nullptr;
     bool paintActive_ = false;
+    bool frameDirty_ = true;
+    bool hasPresentedFrame_ = false;
+    int presentedWidth_ = 0;
+    int presentedHeight_ = 0;
 
     static float dpiScaleForDpi(UINT dpi) {
         return static_cast<float>(std::max<UINT>(dpi, 1)) / kDefaultDpi;
@@ -1036,6 +1040,10 @@ private:
         const UINT flags = RDW_INVALIDATE | RDW_NOCHILDREN |
                            (immediate ? (RDW_ERASE | RDW_UPDATENOW) : 0);
         RedrawWindow(hwnd, nullptr, nullptr, flags);
+    }
+
+    void markFrameDirty() {
+        frameDirty_ = true;
     }
 
     void eraseBackground(HWND hwnd, HDC hdc) {
@@ -1073,13 +1081,17 @@ private:
             if (wParam == SIZE_MINIMIZED) {
                 return 0;
             }
+            app->markFrameDirty();
             app->requestRepaint(hwnd, true);
             return 0;
         case WM_EXITSIZEMOVE:
-            app->requestRepaint(hwnd, true);
+            if (app->frameDirty_) {
+                app->requestRepaint(hwnd, true);
+            }
             return 0;
         case WM_DPICHANGED: {
             app->dpi_ = HIWORD(wParam);
+            app->markFrameDirty();
             const auto* suggested = reinterpret_cast<RECT*>(lParam);
             SetWindowPos(hwnd,
                          nullptr,
@@ -1218,9 +1230,22 @@ private:
         const int height = std::max<LONG>(1, client.bottom - client.top);
         dpi_ = getWindowDpi(hwnd);
 
+        if (!frameDirty_ && hasPresentedFrame_ && width == presentedWidth_ && height == presentedHeight_) {
+            EndPaint(hwnd, &ps);
+            paintActive_ = false;
+            perf::Trace::write("skia_app", "paint_reuse_presented_frame", width, height, perf::Trace::elapsedMs(traceStart));
+            return;
+        }
+
         const auto renderStart = perf::Trace::now();
         const bool renderedD3D = renderD3D(hwnd, width, height);
         perf::Trace::write("skia_app", renderedD3D ? "render_d3d_ok" : "render_d3d_fail", width, height, perf::Trace::elapsedMs(renderStart));
+        if (renderedD3D) {
+            hasPresentedFrame_ = true;
+            presentedWidth_ = width;
+            presentedHeight_ = height;
+            frameDirty_ = false;
+        }
         if (!renderedD3D) {
             const auto fallbackStart = perf::Trace::now();
             renderCpuFallback(hdc, ps, width, height);
