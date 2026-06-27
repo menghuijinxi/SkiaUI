@@ -1,0 +1,463 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    .screen {
+      flex-grow: 1;
+      flex-shrink: 1;
+      position: relative;
+      background: radial-gradient(rgba(83,119,151,0.48), rgba(26,55,83,0.28), rgba(8,15,22,0));
+      color: rgba(239,247,253,0.96);
+      font-size: 16px;
+    }
+    .background-base {
+      position: absolute;
+      left: 0px;
+      top: 0px;
+      right: 0px;
+      bottom: 0px;
+      background: linear-gradient-x(#070d14, #152231, #0c1621);
+    }
+    .sidebar {
+      position: absolute;
+      left: 0px;
+      top: 0px;
+      width: 118px;
+      bottom: 60px;
+      background: linear-gradient-x(rgba(5,10,16,0.93), rgba(10,18,27,0.86));
+      border-color: rgba(83,118,143,0.18);
+      border-width: 1px;
+    }
+    .menu {
+      position: absolute;
+      left: 42px;
+      top: 24px;
+      width: 44px;
+      height: 48px;
+      icon: menu;
+      icon-size: 42px;
+      icon-color: rgba(213,224,234,0.86);
+    }
+    .nav-active {
+      position: absolute;
+      left: 3px;
+      top: 88px;
+      width: 115px;
+      height: 102px;
+      background: linear-gradient-x(rgba(16,224,207,0.15), rgba(81,178,203,0.06));
+    }
+    .nav-line {
+      position: absolute;
+      left: 3px;
+      top: 88px;
+      width: 5px;
+      height: 102px;
+      background-color: #22e0d3;
+    }
+    .nav-item {
+      position: absolute;
+      width: 70px;
+      height: 82px;
+      flex-direction: column;
+      align-items: center;
+      color: rgba(222,230,242,0.82);
+      icon-color: rgba(222,230,242,0.82);
+      icon-size: 43px;
+      font-size: 17px;
+    }
+    .nav-item-active {
+      color: #30eadc;
+      icon-color: #30eadc;
+    }
+    .nav-icon {
+      width: 52px;
+      height: 48px;
+      align-items: center;
+      justify-content: center;
+      icon-size: 43px;
+    }
+    .nav-icon-active {
+      height: 52px;
+      icon-size: 50px;
+    }
+    .nav-label {
+      width: 70px;
+      height: 30px;
+      align-items: center;
+      justify-content: center;
+      font-size: 17px;
+    }
+    .nav-label-active {
+      font-size: 20px;
+    }
+    .panel {
+      position: absolute;
+      left: 134px;
+      top: 25px;
+      width: 602px;
+      height: 825px;
+      background: linear-gradient-x(rgba(23,39,55,0.84), rgba(11,22,32,0.89), rgba(20,34,48,0.80));
+      border-color: rgba(146,179,199,0.63);
+      border-width: 1.25px;
+      border-radius: 9px;
+    }
+    .title-row {
+      position: absolute;
+      left: 160px;
+      top: 41px;
+      width: 470px;
+      height: 50px;
+      flex-direction: row;
+      align-items: center;
+    }
+    .title-icon {
+      width: 46px;
+      height: 50px;
+      icon: layers;
+      icon-size: 44px;
+      icon-color: rgba(221,252,255,0.94);
+      margin-right: 10px;
+    }
+    .title-main {
+      width: 70px;
+      height: 42px;
+      font-size: 27px;
+      font-weight: bold;
+      color: rgba(239,247,253,0.96);
+    }
+    .title-sub {
+      width: 210px;
+      height: 38px;
+      font-size: 20.5px;
+      color: rgba(239,247,253,0.91);
+    }
+    .button {
+      position: absolute;
+      height: 47px;
+      flex-direction: row;
+      align-items: center;
+      justify-content: center;
+      border-radius: 7px;
+      border-width: 1.1px;
+      font-size: 20.5px;
+      font-weight: bold;
+      color: rgba(240,247,252,0.93);
+      icon-color: rgba(242,252,255,0.92);
+      icon-size: 31px;
+    }
+    .button-primary {
+      left: 160px;
+      top: 110px;
+      width: 253px;
+      background: linear-gradient-x(rgba(18,190,178,0.51), rgba(8,95,102,0.59));
+      border-color: rgba(38,237,218,0.69);
+    }
+    .button-secondary {
+      left: 431px;
+      top: 110px;
+      width: 266px;
+      background-color: rgba(19,32,45,0.41);
+      border-color: rgba(142,170,193,0.56);
+    }
+    .button-icon {
+      width: 36px;
+      height: 40px;
+      margin-right: 10px;
+    }
+    .search {
+      position: absolute;
+      left: 161px;
+      top: 180px;
+      width: 536px;
+      height: 46px;
+      flex-direction: row;
+      align-items: center;
+      background-color: rgba(11,22,32,0.51);
+      border-color: rgba(132,164,190,0.51);
+      border-width: 1.15px;
+      border-radius: 7px;
+      padding-left: 18px;
+      color: rgba(180,195,207,0.52);
+      icon-color: rgba(213,224,236,0.86);
+      font-size: 17.5px;
+    }
+    .search-icon {
+      width: 30px;
+      height: 44px;
+      icon: search;
+      icon-size: 28px;
+      margin-right: 8px;
+    }
+    .table-header {
+      position: absolute;
+      left: 149px;
+      top: 242px;
+      width: 570px;
+      height: 38px;
+      flex-direction: row;
+      color: rgba(229,239,247,0.90);
+      font-size: 16.5px;
+    }
+    .cell-name { position: absolute; left: 75px; top: 0px; width: 80px; height: 38px; }
+    .cell-visible { position: absolute; left: 207px; top: 0px; width: 70px; height: 38px; }
+    .cell-count { position: absolute; left: 274px; top: 0px; width: 80px; height: 38px; }
+    .cell-type { position: absolute; left: 359px; top: 0px; width: 80px; height: 38px; }
+    .cell-crs { position: absolute; left: 447px; top: 0px; width: 100px; height: 38px; }
+    .row {
+      position: absolute;
+      left: 149px;
+      width: 570px;
+      height: 54px;
+      background-color: rgba(11,23,33,0.24);
+      color: rgba(239,246,251,0.93);
+      icon-color: rgba(216,226,238,0.86);
+      font-size: 16px;
+    }
+    .row-selected {
+      background: linear-gradient-x(rgba(0,168,150,0.59), rgba(20,173,166,0.41));
+      icon-color: #3fede1;
+    }
+    .row-drag { position: absolute; left: 5px; top: 0px; width: 28px; height: 54px; icon: drag; icon-size: 28px; icon-color: rgba(220,232,241,0.78); }
+    .row-geom { position: absolute; left: 47px; top: 0px; width: 24px; height: 54px; icon-size: 23px; }
+    .row-name { position: absolute; left: 84px; top: 0px; width: 126px; height: 54px; font-size: 16.5px; }
+    .row-eye { position: absolute; left: 207px; top: 0px; width: 28px; height: 54px; icon: eye; icon-size: 27px; icon-color: #30eadc; }
+    .row-count { position: absolute; left: 274px; top: 0px; width: 70px; height: 54px; font-size: 15.8px; }
+    .row-type { position: absolute; left: 356px; top: 0px; width: 85px; height: 54px; font-size: 15px; }
+    .row-crs { position: absolute; left: 447px; top: 0px; width: 90px; height: 54px; font-size: 15px; }
+    .row-more { position: absolute; left: 537px; top: 0px; width: 28px; height: 54px; icon: more; icon-size: 28px; icon-color: rgba(232,241,248,0.84); }
+    .details {
+      position: absolute;
+      left: 149px;
+      top: 566px;
+      width: 568px;
+      height: 262px;
+      background-color: rgba(11,23,33,0.42);
+      border-color: rgba(142,170,193,0.53);
+      border-width: 1.1px;
+      border-radius: 10px;
+    }
+    .details-title {
+      position: absolute;
+      left: 171px;
+      top: 576px;
+      width: 240px;
+      height: 50px;
+      flex-direction: row;
+      align-items: center;
+      color: rgba(239,248,252,0.95);
+      icon-color: #40ece1;
+      icon-size: 29px;
+      font-size: 24.5px;
+      font-weight: bold;
+    }
+    .detail-icon {
+      width: 28px;
+      height: 50px;
+      icon-size: 29px;
+      margin-right: 18px;
+    }
+    .pill {
+      position: absolute;
+      left: 335px;
+      top: 584px;
+      width: 82px;
+      height: 29px;
+      align-items: center;
+      justify-content: center;
+      background: linear-gradient-x(rgba(20,212,198,0.42), rgba(10,121,125,0.47));
+      border-radius: 15px;
+      color: #44ece0;
+      font-size: 14px;
+    }
+    .detail-line {
+      position: absolute;
+      left: 169px;
+      top: 630px;
+      width: 528px;
+      height: 1px;
+      background-color: rgba(140,170,191,0.41);
+    }
+    .info {
+      position: absolute;
+      width: 250px;
+      height: 28px;
+      flex-direction: row;
+      font-size: 16px;
+      color: rgba(238,246,251,0.91);
+    }
+    .info-label {
+      width: 80px;
+      height: 28px;
+      color: rgba(192,207,220,0.84);
+    }
+    .info-value {
+      width: 170px;
+      height: 28px;
+    }
+    .status {
+      position: absolute;
+      left: 0px;
+      right: 0px;
+      bottom: 0px;
+      height: 60px;
+      flex-direction: row;
+      align-items: center;
+      background: linear-gradient-y(rgba(8,16,24,0.84), rgba(4,10,16,0.93));
+      color: rgba(222,232,241,0.92);
+      icon-color: rgba(216,226,238,0.82);
+      font-size: 20px;
+    }
+    .status-icon {
+      position: absolute;
+      top: 0px;
+      width: 38px;
+      height: 60px;
+      icon-size: 30px;
+    }
+    .status-text {
+      position: absolute;
+      top: 0px;
+      width: 180px;
+      height: 60px;
+      font-size: 20px;
+    }
+    .compass {
+      position: absolute;
+      right: 22px;
+      bottom: 64px;
+      width: 120px;
+      height: 150px;
+      color: rgba(237,245,251,0.90);
+    }
+    .compass-ring {
+      position: absolute;
+      left: 35px;
+      top: 42px;
+      width: 52px;
+      height: 52px;
+      border-color: rgba(197,213,224,0.56);
+      border-width: 1.1px;
+      border-radius: 51px;
+    }
+    .compass-n { position: absolute; left: 54px; top: 0px; width: 20px; height: 24px; font-size: 17px; font-weight: bold; }
+    .compass-e { position: absolute; left: 100px; top: 66px; width: 20px; height: 24px; font-size: 16px; }
+    .compass-s { position: absolute; left: 54px; top: 122px; width: 20px; height: 24px; font-size: 16px; }
+    .compass-w { position: absolute; left: 0px; top: 66px; width: 20px; height: 24px; font-size: 16px; }
+  </style>
+</head>
+<body>
+  <div class="screen">
+    <div class="background-base"></div>
+    <div class="sidebar"></div>
+    <div class="menu"></div>
+    <div class="nav-active"></div>
+    <div class="nav-line"></div>
+
+    <div class="nav-item nav-item-active" style="left:29px;top:104px">
+      <div class="nav-icon nav-icon-active" data-icon="layers"></div>
+      <div class="nav-label nav-label-active">图层</div>
+    </div>
+    <div class="nav-item" style="left:29px;top:207px">
+      <div class="nav-icon" data-icon="edit"></div>
+      <div class="nav-label">编辑</div>
+    </div>
+    <div class="nav-item" style="left:29px;top:310px">
+      <div class="nav-icon" data-icon="pencil"></div>
+      <div class="nav-label">绘制</div>
+    </div>
+    <div class="nav-item" style="left:29px;top:413px">
+      <div class="nav-icon" data-icon="target"></div>
+      <div class="nav-label">高亮</div>
+    </div>
+    <div class="nav-item" style="left:29px;top:517px">
+      <div class="nav-icon" data-icon="doc"></div>
+      <div class="nav-label">属性</div>
+    </div>
+    <div class="nav-item" style="left:29px;top:622px">
+      <div class="nav-icon" data-icon="switch"></div>
+      <div class="nav-label">变更</div>
+    </div>
+    <div class="nav-item" style="left:29px;top:729px">
+      <div class="nav-icon" data-icon="gear"></div>
+      <div class="nav-label">设置</div>
+    </div>
+
+    <div class="panel"></div>
+    <div class="title-row">
+      <div class="title-icon"></div>
+      <div class="title-main">图层</div>
+      <div class="title-sub"> / 图层管理</div>
+    </div>
+
+    <button class="button button-primary">
+      <span class="button-icon" data-icon="upload"></span>
+      <span>导入SHP</span>
+    </button>
+    <button class="button button-secondary">
+      <span class="button-icon" data-icon="plus"></span>
+      <span>新建图层</span>
+    </button>
+    <div class="search">
+      <div class="search-icon"></div>
+      <span>搜索图层...</span>
+    </div>
+
+    <div class="table-header">
+      <span class="cell-name">名称</span>
+      <span class="cell-visible">可见</span>
+      <span class="cell-count">要素数</span>
+      <span class="cell-type">类型</span>
+      <span class="cell-crs">坐标系</span>
+    </div>
+
+    <div class="row row-selected" style="top:280px">
+      <div class="row-drag"></div><div class="row-geom" data-icon="polygon"></div><div class="row-name">地块边界</div><div class="row-eye"></div><div class="row-count">6,523</div><div class="row-type">Polygon</div><div class="row-crs">EPSG:4326</div><div class="row-more"></div>
+    </div>
+    <div class="row" style="top:334px">
+      <div class="row-drag"></div><div class="row-geom" data-icon="line"></div><div class="row-name">道路中心线</div><div class="row-eye"></div><div class="row-count">2,431</div><div class="row-type">LineString</div><div class="row-crs">EPSG:4326</div><div class="row-more"></div>
+    </div>
+    <div class="row" style="top:388px">
+      <div class="row-drag"></div><div class="row-geom" data-icon="point"></div><div class="row-name">控制点</div><div class="row-eye"></div><div class="row-count">1,842</div><div class="row-type">Point</div><div class="row-crs">EPSG:4326</div><div class="row-more"></div>
+    </div>
+    <div class="row" style="top:442px">
+      <div class="row-drag"></div><div class="row-geom" data-icon="river"></div><div class="row-name">河流</div><div class="row-eye"></div><div class="row-count">312</div><div class="row-type">LineString</div><div class="row-crs">EPSG:4326</div><div class="row-more"></div>
+    </div>
+    <div class="row" style="top:496px">
+      <div class="row-drag"></div><div class="row-geom" data-icon="square"></div><div class="row-name">建筑物</div><div class="row-eye"></div><div class="row-count">164</div><div class="row-type">Polygon</div><div class="row-crs">EPSG:4326</div><div class="row-more"></div>
+    </div>
+
+    <div class="details"></div>
+    <div class="details-title"><span class="detail-icon" data-icon="polygon"></span><span>地块边界</span></div>
+    <div class="pill">Polygon</div>
+    <div class="detail-line"></div>
+
+    <div class="info" style="left:169px;top:650px"><span class="info-label">图层名称:</span><span class="info-value">地块边界</span></div>
+    <div class="info" style="left:169px;top:686px"><span class="info-label">数据源:</span><span class="info-value">parcels.shp</span></div>
+    <div class="info" style="left:169px;top:722px"><span class="info-label">坐标系:</span><span class="info-value">EPSG:4326</span></div>
+    <div class="info" style="left:169px;top:774px"><span class="info-label">创建时间:</span><span class="info-value">2024-05-16 14:32:18</span></div>
+    <div class="info" style="left:451px;top:650px"><span class="info-label">要素数量:</span><span class="info-value">6,523</span></div>
+    <div class="info" style="left:451px;top:686px"><span class="info-label">几何类型:</span><span class="info-value">Polygon</span></div>
+    <div class="info" style="left:451px;top:722px"><span class="info-label">范围:</span><span class="info-value">113.2142,22.4987</span></div>
+    <div class="info" style="left:509px;top:748px"><span class="info-value">-114.9876,23.9145</span></div>
+    <div class="info" style="left:451px;top:774px"><span class="info-label">最后编辑:</span><span class="info-value">2024-05-16 15:47:09</span></div>
+
+    <div class="compass">
+      <div class="compass-ring"></div>
+      <div class="compass-n">N</div>
+      <div class="compass-e">E</div>
+      <div class="compass-s">S</div>
+      <div class="compass-w">W</div>
+    </div>
+
+    <div class="status">
+      <div class="status-icon" style="left:44px" data-icon="layers"></div>
+      <div class="status-text" style="left:89px">图层:5</div>
+      <div class="status-icon" style="left:274px" data-icon="eye"></div>
+      <div class="status-text" style="left:323px">可见:5</div>
+      <div class="status-icon" style="left:505px" data-icon="chart"></div>
+      <div class="status-text" style="left:549px">总要素:11,272</div>
+    </div>
+  </div>
+</body>
+</html>
