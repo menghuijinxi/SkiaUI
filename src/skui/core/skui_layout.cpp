@@ -78,18 +78,15 @@ void LayoutEngine::layout(Document& document, float width, float height) {
         return;
     }
 
-    std::vector<std::unique_ptr<YogaNode>> owned;
-    owned.reserve(256);
-
     YogaNode rootYoga;
     YGNodeStyleSetWidth(rootYoga.get(), std::max(1.0f, width));
     YGNodeStyleSetHeight(rootYoga.get(), std::max(1.0f, height));
-    buildYoga(*document.root, rootYoga.get(), owned);
+    buildYoga(*document.root, rootYoga.get());
     YGNodeCalculateLayout(rootYoga.get(), std::max(1.0f, width), std::max(1.0f, height), YGDirectionLTR);
     readYoga(*document.root, rootYoga.get(), 0.0f, 0.0f);
 }
 
-void LayoutEngine::buildYoga(Node& node, YGNodeRef yogaNode, std::vector<std::unique_ptr<YogaNode>>& owned) {
+void LayoutEngine::buildYoga(Node& node, YGNodeRef yogaNode) {
     const Style& s = node.style;
     if (s.display == Display::None) {
         return;
@@ -135,11 +132,9 @@ void LayoutEngine::buildYoga(Node& node, YGNodeRef yogaNode, std::vector<std::un
         if (child->style.display == Display::None) {
             continue;
         }
-        auto childYoga = std::make_unique<YogaNode>();
-        YGNodeRef childRef = childYoga->get();
-        buildYoga(*child, childRef, owned);
+        YGNodeRef childRef = YGNodeNew();
+        buildYoga(*child, childRef);
         YGNodeInsertChild(yogaNode, childRef, YGNodeGetChildCount(yogaNode));
-        owned.push_back(std::move(childYoga));
     }
 }
 

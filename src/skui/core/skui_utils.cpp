@@ -123,7 +123,7 @@ YogaNode::YogaNode() : node_(YGNodeNew()) {}
 
 YogaNode::~YogaNode() {
     if (node_) {
-        YGNodeFree(node_);
+        YGNodeFreeRecursive(node_);
     }
 }
 

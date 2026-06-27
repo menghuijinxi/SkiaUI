@@ -12,6 +12,16 @@
 #include <utility>
 
 namespace skui {
+namespace {
+
+void rebindParents(Node& node, Node* parent) {
+    node.parent = parent;
+    for (auto& child : node.children) {
+        rebindParents(*child, &node);
+    }
+}
+
+}  // namespace
 
 class Runtime::Impl {
 public:
@@ -33,7 +43,11 @@ public:
 
 Runtime::Runtime(RuntimeOptions options) : impl_(std::make_unique<Impl>(std::move(options))) {}
 
-Runtime::~Runtime() = default;
+Runtime::~Runtime() {
+    if (impl_) {
+        impl_->renderer.clearCaches();
+    }
+}
 
 bool Runtime::loadDocument(const std::string& path) {
     Document next;
@@ -43,6 +57,9 @@ bool Runtime::loadDocument(const std::string& path) {
         return false;
     }
     impl_->document = std::move(next);
+    if (impl_->document.root) {
+        rebindParents(*impl_->document.root, nullptr);
+    }
     impl_->hasDocument = true;
     impl_->dirty = true;
     impl_->lastError.clear();
@@ -60,6 +77,9 @@ bool Runtime::loadDocumentFromString(std::string_view html, std::string_view bas
         return false;
     }
     impl_->document = std::move(next);
+    if (impl_->document.root) {
+        rebindParents(*impl_->document.root, nullptr);
+    }
     impl_->hasDocument = true;
     impl_->dirty = true;
     impl_->lastError.clear();

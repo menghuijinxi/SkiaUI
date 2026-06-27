@@ -83,7 +83,6 @@ target_include_directories(Skui PRIVATE
 
 target_link_libraries(Skui PUBLIC
     unofficial::skia::skia
-    unofficial::skia::modules::svg
     yoga::yogacore
 )
 
@@ -194,10 +193,9 @@ add_custom_command(TARGET RmlLayerDesk POST_BUILD
 )
 
 add_custom_command(TARGET SkiaUiDesk POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:SkiaUiDesk>/assets/skui_demo"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${CMAKE_CURRENT_SOURCE_DIR}/assets/skui_demo/layers.html"
-            "$<TARGET_FILE_DIR:SkiaUiDesk>/assets/skui_demo/layers.html"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_CURRENT_SOURCE_DIR}/assets/skui_demo"
+            "$<TARGET_FILE_DIR:SkiaUiDesk>/assets/skui_demo"
 )
 
 if(SKIATEST_USE_SKIA_D3D)

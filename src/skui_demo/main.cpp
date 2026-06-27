@@ -115,27 +115,35 @@ int exportDocument(const wchar_t* outputPath, int width, int height, float dpiSc
     height = std::max(1, height);
     dpiScale = std::max(0.1f, dpiScale);
 
-    skui::RuntimeOptions runtimeOptions;
-    runtimeOptions.assetRoot = "assets/skui_demo";
-    runtimeOptions.clearColor = kDemoClearColor;
-    skui::Runtime runtime(runtimeOptions);
-    const std::string documentPath = defaultDocumentPath();
-    if (!runtime.loadDocument(documentPath)) {
-        std::cerr << "load html failed: " << runtime.lastError() << "\n";
-        return 2;
+    const HRESULT initResult = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    const bool shouldUninitializeCom = SUCCEEDED(initResult);
+
+    int result = 0;
+    {
+        skui::RuntimeOptions runtimeOptions;
+        runtimeOptions.assetRoot = "assets/skui_demo";
+        runtimeOptions.clearColor = kDemoClearColor;
+        skui::Runtime runtime(runtimeOptions);
+        const std::string documentPath = defaultDocumentPath();
+        if (!runtime.loadDocument(documentPath)) {
+            std::cerr << "load html failed: " << runtime.lastError() << "\n";
+            result = 2;
+        } else {
+            std::vector<uint32_t> pixels(static_cast<size_t>(width) * static_cast<size_t>(height), 0xff070c12u);
+            if (!runtime.renderToBgraPixels(pixels.data(), width, height, static_cast<size_t>(width) * sizeof(uint32_t), dpiScale)) {
+                std::cerr << "render failed: " << runtime.lastError() << "\n";
+                result = 3;
+            } else if (!writePngBgra(outputPath, pixels.data(), width, height)) {
+                std::cerr << "write png failed\n";
+                result = 4;
+            }
+        }
     }
 
-    std::vector<uint32_t> pixels(static_cast<size_t>(width) * static_cast<size_t>(height), 0xff070c12u);
-    if (!runtime.renderToBgraPixels(pixels.data(), width, height, static_cast<size_t>(width) * sizeof(uint32_t), dpiScale)) {
-        std::cerr << "render failed: " << runtime.lastError() << "\n";
-        return 3;
+    if (shouldUninitializeCom) {
+        CoUninitialize();
     }
-
-    if (!writePngBgra(outputPath, pixels.data(), width, height)) {
-        std::cerr << "write png failed\n";
-        return 4;
-    }
-    return 0;
+    return result;
 }
 
 float parseFloatArg(const wchar_t* value, float fallback) {

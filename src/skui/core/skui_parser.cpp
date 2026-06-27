@@ -5,6 +5,7 @@
 #include <lexbor/dom/interfaces/element.h>
 #include <lexbor/html/interfaces/document.h>
 #include <lexbor/html/parser.h>
+#include <lexbor/html/serialize.h>
 
 #include <algorithm>
 #include <charconv>
@@ -76,6 +77,23 @@ std::string nodeName(lxb_dom_element_t* element) {
     return lower(std::string(reinterpret_cast<const char*>(value), len));
 }
 
+lxb_status_t appendSerialized(const lxb_char_t* data, size_t len, void* ctx) {
+    auto* out = static_cast<std::string*>(ctx);
+    out->append(reinterpret_cast<const char*>(data), len);
+    return LXB_STATUS_OK;
+}
+
+std::string serializeTree(lxb_dom_node_t* node) {
+    if (!node) {
+        return {};
+    }
+    std::string out;
+    if (lxb_html_serialize_tree_cb(node, appendSerialized, &out) != LXB_STATUS_OK) {
+        return {};
+    }
+    return out;
+}
+
 bool isWhitespaceOnly(std::string_view text) {
     return std::all_of(text.begin(), text.end(), [](unsigned char ch) {
         return std::isspace(ch) != 0;
@@ -132,6 +150,66 @@ void setEdgeByName(EdgeValues& edges,
                    float value) {
     edges.*field = value;
     flags.*flag = true;
+}
+
+std::vector<std::string> splitCssTokens(std::string_view raw) {
+    std::vector<std::string> tokens;
+    size_t start = std::string_view::npos;
+    int parenDepth = 0;
+    for (size_t i = 0; i < raw.size(); ++i) {
+        const char ch = raw[i];
+        if (ch == '(') {
+            ++parenDepth;
+        } else if (ch == ')' && parenDepth > 0) {
+            --parenDepth;
+        }
+
+        if (std::isspace(static_cast<unsigned char>(ch)) != 0 && parenDepth == 0) {
+            if (start != std::string_view::npos) {
+                tokens.push_back(trim(raw.substr(start, i - start)));
+                start = std::string_view::npos;
+            }
+        } else if (start == std::string_view::npos) {
+            start = i;
+        }
+    }
+    if (start != std::string_view::npos) {
+        tokens.push_back(trim(raw.substr(start)));
+    }
+    return tokens;
+}
+
+std::optional<BorderStyle> parseBorderStyleValue(std::string_view raw) {
+    const std::string value = lower(trim(raw));
+    if (value == "solid") {
+        return BorderStyle::Solid;
+    }
+    if (value == "none" || value == "hidden") {
+        return BorderStyle::None;
+    }
+    return std::nullopt;
+}
+
+void applyBorderShorthand(Style& style, std::string_view rawValue) {
+    const SkColor colorSentinel = SkColorSetARGB(1, 2, 3, 4);
+    for (const std::string& token : splitCssTokens(rawValue)) {
+        if (std::optional<float> width = parseLength(token)) {
+            style.borderWidth = *width;
+            style.flags.borderWidth = true;
+            continue;
+        }
+        if (std::optional<BorderStyle> borderStyle = parseBorderStyleValue(token)) {
+            style.borderStyle = *borderStyle;
+            style.flags.borderStyle = true;
+            continue;
+        }
+
+        const SkColor color = parseColor(token, colorSentinel);
+        if (color != colorSentinel) {
+            style.borderColor = color;
+            style.flags.borderColor = true;
+        }
+    }
 }
 
 void mergeStyle(Style& target, const Style& source) {
@@ -256,6 +334,10 @@ void mergeStyle(Style& target, const Style& source) {
         target.borderWidth = source.borderWidth;
         target.flags.borderWidth = true;
     }
+    if (f.borderStyle) {
+        target.borderStyle = source.borderStyle;
+        target.flags.borderStyle = true;
+    }
     if (f.borderRadius) {
         target.borderRadius = source.borderRadius;
         target.flags.borderRadius = true;
@@ -267,18 +349,6 @@ void mergeStyle(Style& target, const Style& source) {
     if (f.fontBold) {
         target.fontBold = source.fontBold;
         target.flags.fontBold = true;
-    }
-    if (f.icon) {
-        target.icon = source.icon;
-        target.flags.icon = true;
-    }
-    if (f.iconColor) {
-        target.iconColor = source.iconColor;
-        target.flags.iconColor = true;
-    }
-    if (f.iconSize) {
-        target.iconSize = source.iconSize;
-        target.flags.iconSize = true;
     }
     if (f.backgroundGradient) {
         target.backgroundGradient = source.backgroundGradient;
@@ -314,31 +384,15 @@ void applyInlineStyles(Node& node) {
     }
 }
 
-void applyInlineAttributes(Node& node) {
-    if (!node.icon.empty()) {
-        node.style.icon = node.icon;
-        node.style.flags.icon = true;
-    }
-    for (auto& child : node.children) {
-        applyInlineAttributes(*child);
-    }
-}
-
 void applyInheritedStyle(Node& node, const RuntimeOptions& options) {
     if (!node.parent) {
         if (!node.style.flags.color) {
             node.style.color = options.theme.text;
         }
-        if (!node.style.flags.iconColor) {
-            node.style.iconColor = options.theme.text;
-        }
     } else {
         const Style& parent = node.parent->style;
         if (!node.style.flags.color) {
             node.style.color = parent.color;
-        }
-        if (!node.style.flags.iconColor) {
-            node.style.iconColor = parent.iconColor;
         }
         if (!node.style.flags.fontSize) {
             node.style.fontSize = parent.fontSize;
@@ -348,7 +402,8 @@ void applyInheritedStyle(Node& node, const RuntimeOptions& options) {
         }
     }
 
-    if (node.tag == "text" || node.tag == "span" || node.tag == "label" || node.tag == "button") {
+    if (node.tag == "text" || node.tag == "span" || node.tag == "label" || node.tag == "button" ||
+        node.tag == "img" || node.tag == "svg") {
         node.style.flexShrink = 0.0f;
     }
     for (auto& child : node.children) {
@@ -358,14 +413,26 @@ void applyInheritedStyle(Node& node, const RuntimeOptions& options) {
 
 void parseGradient(std::string_view raw, Style& style) {
     std::string value = trim(raw);
+    const std::string valueLower = lower(value);
     Gradient gradient;
-    if (value.rfind("linear-gradient-x(", 0) == 0 && value.back() == ')') {
+    if (valueLower.rfind("linear-gradient-x(", 0) == 0 && value.back() == ')') {
         gradient.kind = GradientKind::LinearX;
         value = value.substr(18, value.size() - 19);
-    } else if (value.rfind("linear-gradient-y(", 0) == 0 && value.back() == ')') {
+    } else if (valueLower.rfind("linear-gradient-y(", 0) == 0 && value.back() == ')') {
         gradient.kind = GradientKind::LinearY;
         value = value.substr(18, value.size() - 19);
-    } else if (value.rfind("radial-gradient(", 0) == 0 && value.back() == ')') {
+    } else if (valueLower.rfind("linear-gradient(", 0) == 0 && value.back() == ')') {
+        gradient.kind = GradientKind::LinearY;
+        value = value.substr(16, value.size() - 17);
+        std::string argsLower = lower(trim(value));
+        if (argsLower.rfind("to right,", 0) == 0) {
+            gradient.kind = GradientKind::LinearX;
+            value = trim(std::string_view(value).substr(9));
+        } else if (argsLower.rfind("to bottom,", 0) == 0) {
+            gradient.kind = GradientKind::LinearY;
+            value = trim(std::string_view(value).substr(10));
+        }
+    } else if (valueLower.rfind("radial-gradient(", 0) == 0 && value.back() == ')') {
         gradient.kind = GradientKind::Radial;
         value = value.substr(16, value.size() - 17);
     } else {
@@ -555,12 +622,18 @@ void applyDeclaration(Style& style, std::string_view rawName, std::string_view r
             style.backgroundColor = parseColor(value, style.backgroundColor);
             style.flags.backgroundColor = true;
         }
+    } else if (name == "border") {
+        applyBorderShorthand(style, value);
     } else if (name == "border-color") {
         style.borderColor = parseColor(value, style.borderColor);
         style.flags.borderColor = true;
     } else if (name == "border-width" && length) {
         style.borderWidth = *length;
         style.flags.borderWidth = true;
+    } else if (name == "border-style") {
+        const std::string v = lower(value);
+        style.borderStyle = v == "solid" ? BorderStyle::Solid : BorderStyle::None;
+        style.flags.borderStyle = true;
     } else if (name == "border-radius" && length) {
         style.borderRadius = *length;
         style.flags.borderRadius = true;
@@ -570,15 +643,6 @@ void applyDeclaration(Style& style, std::string_view rawName, std::string_view r
     } else if (name == "font-weight") {
         style.fontBold = lower(value) == "bold" || value == "600" || value == "700";
         style.flags.fontBold = true;
-    } else if (name == "icon") {
-        style.icon = value;
-        style.flags.icon = true;
-    } else if (name == "icon-color") {
-        style.iconColor = parseColor(value, style.iconColor);
-        style.flags.iconColor = true;
-    } else if (name == "icon-size" && length) {
-        style.iconSize = *length;
-        style.flags.iconSize = true;
     }
 }
 
@@ -666,11 +730,16 @@ std::unique_ptr<Node> convertElement(lxb_dom_element_t* element, Node* parent, s
     node->id = attr(element, "id");
     node->classes = splitWhitespace(attr(element, "class"));
     node->value = attr(element, "value");
-    node->icon = attr(element, "data-icon");
+    node->src = attr(element, "src");
 
     const std::string inlineStyle = attr(element, "style");
     if (!inlineStyle.empty()) {
         parseDeclarations(inlineStyle, node->inlineStyle);
+    }
+
+    if (tag == "svg") {
+        node->svgMarkup = serializeTree(lxb_dom_interface_node(element));
+        return node;
     }
 
     for (lxb_dom_node_t* child = lxb_dom_interface_node(element)->first_child; child; child = child->next) {
@@ -715,7 +784,7 @@ bool DocumentParser::loadFile(const std::string& path, Document& outDocument, st
 }
 
 bool DocumentParser::loadString(std::string_view html,
-                                std::string_view,
+                                std::string_view basePath,
                                 Document& outDocument,
                                 std::string& error) {
     HtmlDocumentPtr htmlDocument(lxb_html_document_create());
@@ -757,12 +826,12 @@ bool DocumentParser::loadString(std::string_view html,
 
     outDocument.root = std::move(root);
     outDocument.rules = std::move(rules);
+    outDocument.basePath = std::string(basePath);
     applyInheritedStyle(*outDocument.root, options_);
     applyRules(*outDocument.root, outDocument.rules);
     applyInheritedStyle(*outDocument.root, options_);
     applyInlineStyles(*outDocument.root);
     applyInheritedStyle(*outDocument.root, options_);
-    applyInlineAttributes(*outDocument.root);
     return true;
 }
 

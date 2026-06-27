@@ -6,14 +6,13 @@
 #include "include/core/SkFont.h"
 #include "include/core/SkFontMgr.h"
 #include "include/core/SkFontStyle.h"
+#include "include/core/SkPaint.h"
 #include "include/core/SkPath.h"
-#include "include/core/SkPicture.h"
 #include "include/core/SkRRect.h"
 #include "include/core/SkRect.h"
 #include "include/core/SkRefCnt.h"
 #include "include/core/SkTextBlob.h"
 #include "include/core/SkTypeface.h"
-#include "modules/svg/include/SkSVGDOM.h"
 #include <yoga/Yoga.h>
 
 #include <memory>
@@ -55,6 +54,11 @@ enum class GradientKind {
     LinearX,
     LinearY,
     Radial
+};
+
+enum class BorderStyle {
+    None,
+    Solid
 };
 
 struct Gradient {
@@ -102,12 +106,10 @@ struct Style {
         bool backgroundColor = false;
         bool borderColor = false;
         bool borderWidth = false;
+        bool borderStyle = false;
         bool borderRadius = false;
         bool fontSize = false;
         bool fontBold = false;
-        bool icon = false;
-        bool iconColor = false;
-        bool iconSize = false;
         bool backgroundGradient = false;
     };
 
@@ -133,12 +135,10 @@ struct Style {
     SkColor backgroundColor = SK_ColorTRANSPARENT;
     SkColor borderColor = SK_ColorTRANSPARENT;
     float borderWidth = 0.0f;
+    BorderStyle borderStyle = BorderStyle::None;
     float borderRadius = 0.0f;
     float fontSize = 16.0f;
     bool fontBold = false;
-    std::string icon;
-    SkColor iconColor = SkColorSetARGB(220, 216, 226, 238);
-    float iconSize = 24.0f;
     Gradient backgroundGradient;
 };
 
@@ -148,7 +148,8 @@ struct Node {
     std::vector<std::string> classes;
     std::string text;
     std::string value;
-    std::string icon;
+    std::string src;
+    std::string svgMarkup;
     Style style;
     Style inlineStyle;
     Rect layout;
@@ -174,6 +175,7 @@ struct StyleRule {
 struct Document {
     std::unique_ptr<Node> root;
     std::vector<StyleRule> rules;
+    std::string basePath;
 };
 
 class YogaNode {
@@ -206,14 +208,16 @@ public:
     void layout(Document& document, float width, float height);
 
 private:
-    void buildYoga(Node& node, YGNodeRef yogaNode, std::vector<std::unique_ptr<YogaNode>>& owned);
+    void buildYoga(Node& node, YGNodeRef yogaNode);
     void readYoga(Node& node, YGNodeRef yogaNode, float offsetX, float offsetY);
 };
 
 class SkiaRenderer {
 public:
     explicit SkiaRenderer(RuntimeOptions options);
+    ~SkiaRenderer();
     void draw(Document& document, SkCanvas& canvas, int width, int height, float dpiScale);
+    void clearCaches();
 
 private:
     struct TextEntry {
@@ -222,26 +226,45 @@ private:
         SkRect bounds = SkRect::MakeEmpty();
     };
 
+    struct SvgShape {
+        SkPath path;
+        std::optional<SkPaint> fill;
+        std::optional<SkPaint> stroke;
+    };
+
+    struct ParsedSvg {
+        float viewX = 0.0f;
+        float viewY = 0.0f;
+        float viewWidth = 24.0f;
+        float viewHeight = 24.0f;
+        std::vector<SvgShape> shapes;
+    };
+
     RuntimeOptions options_;
     sk_sp<SkFontMgr> fontMgr_;
     sk_sp<SkTypeface> regular_;
     sk_sp<SkTypeface> bold_;
     std::unordered_map<std::string, TextEntry> textCache_;
-    std::unordered_map<std::string, sk_sp<SkSVGDOM>> svgCache_;
 
     sk_sp<SkTypeface> pickTypeface(bool bold);
     SkFont font(float size, bool bold) const;
     SkPaint fill(SkColor color) const;
     SkPaint stroke(SkColor color, float width) const;
     SkPaint backgroundPaint(const Node& node) const;
-    void drawNode(SkCanvas& canvas, const Node& node);
+    void drawNode(SkCanvas& canvas, const Document& document, const Node& node);
     void drawBox(SkCanvas& canvas, const Node& node);
+    void drawImage(SkCanvas& canvas, const Document& document, const Node& node);
+    void drawInlineSvg(SkCanvas& canvas, const Node& node);
+    void drawSvgMarkup(SkCanvas& canvas, const std::string& svg, const Rect& rect);
     void drawText(SkCanvas& canvas, const Node& node);
-    void drawIcon(SkCanvas& canvas, const Node& node);
-    void drawSvgIcon(SkCanvas& canvas, const std::string& svg, float cx, float cy, float size);
-    std::string iconSvg(const Node& node) const;
+    std::optional<std::string> readSvgAsset(const Document& document, std::string_view src);
+    std::string resolveAssetPath(const Document& document, std::string_view src) const;
+    ParsedSvg parseSvg(std::string_view svg) const;
+    const ParsedSvg& parsedSvg(std::string_view svg);
     const TextEntry& textEntry(std::string_view value, float size, bool bold);
     float textWidth(std::string_view value, float size, bool bold);
+    std::unordered_map<std::string, ParsedSvg> parsedSvgCache_;
+    std::unordered_map<std::string, std::string> svgFileCache_;
 };
 
 SkColor rgb(unsigned r, unsigned g, unsigned b);

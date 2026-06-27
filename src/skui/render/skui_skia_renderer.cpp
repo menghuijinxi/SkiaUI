@@ -1,66 +1,24 @@
 #include "skui_internal.h"
 
 #include "include/core/SkCanvas.h"
-#include "include/core/SkColorSpace.h"
 #include "include/core/SkPaint.h"
 #include "include/core/SkPathBuilder.h"
 #include "include/core/SkPoint.h"
-#include "include/core/SkSamplingOptions.h"
 #include "include/core/SkShader.h"
-#include "include/core/SkStream.h"
 #include "include/effects/SkGradient.h"
 #include "include/ports/SkTypeface_win.h"
+#include "include/utils/SkParsePath.h"
 
 #include <algorithm>
 #include <array>
 #include <cstdio>
+#include <charconv>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
 
 namespace skui {
 namespace {
-
-SkColor withAlpha(SkColor color, unsigned alpha) {
-    return SkColorSetARGB(static_cast<uint8_t>(std::min(alpha, 255u)),
-                          SkColorGetR(color),
-                          SkColorGetG(color),
-                          SkColorGetB(color));
-}
-
-std::string svgHex(SkColor color) {
-    char buf[16];
-    std::snprintf(buf,
-                  sizeof(buf),
-                  "#%02X%02X%02X",
-                  SkColorGetR(color),
-                  SkColorGetG(color),
-                  SkColorGetB(color));
-    return buf;
-}
-
-std::string svgOpacity(SkColor color) {
-    char buf[16];
-    std::snprintf(buf, sizeof(buf), "%.3f", static_cast<float>(SkColorGetA(color)) / 255.0f);
-    return buf;
-}
-
-std::string strokeAttrs(SkColor color, float width) {
-    char widthBuf[24];
-    std::snprintf(widthBuf, sizeof(widthBuf), "%.2f", width);
-    return "stroke=\"" + svgHex(color) + "\" stroke-opacity=\"" + svgOpacity(color) +
-           "\" stroke-width=\"" + widthBuf + "\" stroke-linecap=\"round\" stroke-linejoin=\"round\"";
-}
-
-std::string fillAttrs(SkColor color) {
-    return "fill=\"" + svgHex(color) + "\" fill-opacity=\"" + svgOpacity(color) + "\"";
-}
-
-std::string wrapSvg(std::string_view body, const std::string& attrs) {
-    std::string svg = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" ";
-    svg += attrs;
-    svg += ">";
-    svg += body;
-    svg += "</svg>";
-    return svg;
-}
 
 std::vector<SkColor4f> gradientColors(const std::vector<SkColor>& colors) {
     std::vector<SkColor4f> stops;
@@ -69,6 +27,200 @@ std::vector<SkColor4f> gradientColors(const std::vector<SkColor>& colors) {
         stops.push_back(SkColor4f::FromColor(color));
     }
     return stops;
+}
+
+std::string readTextFile(const std::filesystem::path& path) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file) {
+        return {};
+    }
+    std::ostringstream stream;
+    stream << file.rdbuf();
+    return stream.str();
+}
+
+std::string normalizeSvgMarkup(std::string svg) {
+    const size_t svgPos = svg.find("<svg");
+    if (svgPos != std::string::npos && svg.find("xmlns=", svgPos) == std::string::npos) {
+        svg.insert(svgPos + 4, " xmlns=\"http://www.w3.org/2000/svg\"");
+    }
+    return svg;
+}
+
+std::optional<float> parseSvgFloat(std::string_view raw) {
+    std::string value = trim(raw);
+    if (value.empty()) {
+        return std::nullopt;
+    }
+    if (value.ends_with("px")) {
+        value.resize(value.size() - 2);
+    }
+    float out = 0.0f;
+    const char* begin = value.data();
+    const char* end = value.data() + value.size();
+    const auto result = std::from_chars(begin, end, out);
+    if (result.ec != std::errc{} || result.ptr != end) {
+        return std::nullopt;
+    }
+    return out;
+}
+
+std::vector<float> parseFloatList(std::string_view raw) {
+    std::vector<float> values;
+    size_t start = 0;
+    while (start < raw.size()) {
+        while (start < raw.size() && (std::isspace(static_cast<unsigned char>(raw[start])) || raw[start] == ',')) {
+            ++start;
+        }
+        size_t end = start;
+        while (end < raw.size() && !std::isspace(static_cast<unsigned char>(raw[end])) && raw[end] != ',') {
+            ++end;
+        }
+        if (end > start) {
+            if (std::optional<float> value = parseSvgFloat(raw.substr(start, end - start))) {
+                values.push_back(*value);
+            }
+        }
+        start = end;
+    }
+    return values;
+}
+
+std::string attrValue(std::string_view tag, std::string_view name) {
+    size_t pos = 0;
+    while (pos < tag.size()) {
+        pos = tag.find(name, pos);
+        if (pos == std::string_view::npos) {
+            return {};
+        }
+        const bool leftOk = pos == 0 || std::isspace(static_cast<unsigned char>(tag[pos - 1])) || tag[pos - 1] == '<';
+        const size_t afterName = pos + name.size();
+        if (!leftOk || afterName >= tag.size() || tag[afterName] != '=') {
+            pos = afterName;
+            continue;
+        }
+        size_t valueStart = afterName + 1;
+        if (valueStart >= tag.size()) {
+            return {};
+        }
+        const char quote = tag[valueStart];
+        if (quote == '"' || quote == '\'') {
+            ++valueStart;
+            const size_t valueEnd = tag.find(quote, valueStart);
+            if (valueEnd == std::string_view::npos) {
+                return {};
+            }
+            return std::string(tag.substr(valueStart, valueEnd - valueStart));
+        }
+        size_t valueEnd = valueStart;
+        while (valueEnd < tag.size() && !std::isspace(static_cast<unsigned char>(tag[valueEnd])) && tag[valueEnd] != '>') {
+            ++valueEnd;
+        }
+        return std::string(tag.substr(valueStart, valueEnd - valueStart));
+    }
+    return {};
+}
+
+bool hasAttr(std::string_view tag, std::string_view name) {
+    size_t pos = 0;
+    while (pos < tag.size()) {
+        pos = tag.find(name, pos);
+        if (pos == std::string_view::npos) {
+            return false;
+        }
+        const bool leftOk = pos == 0 || std::isspace(static_cast<unsigned char>(tag[pos - 1])) || tag[pos - 1] == '<';
+        const size_t afterName = pos + name.size();
+        if (leftOk && afterName < tag.size() && tag[afterName] == '=') {
+            return true;
+        }
+        pos = afterName;
+    }
+    return false;
+}
+
+std::vector<std::string_view> tagsNamed(std::string_view svg, std::string_view name) {
+    std::vector<std::string_view> tags;
+    std::string open = "<" + std::string(name);
+    size_t pos = 0;
+    while ((pos = svg.find(open, pos)) != std::string_view::npos) {
+        const size_t end = svg.find('>', pos + open.size());
+        if (end == std::string_view::npos) {
+            break;
+        }
+        tags.push_back(svg.substr(pos, end - pos + 1));
+        pos = end + 1;
+    }
+    return tags;
+}
+
+SkColor colorWithOpacity(SkColor color, float opacity) {
+    opacity = clampf(opacity, 0.0f, 1.0f);
+    return SkColorSetA(color, static_cast<U8CPU>(static_cast<float>(SkColorGetA(color)) * opacity));
+}
+
+std::optional<SkPaint> svgPaint(std::string_view tag,
+                                std::string_view name,
+                                SkPaint::Style style,
+                                float defaultStrokeWidth,
+                                std::optional<SkColor> inheritedColor = std::nullopt,
+                                float inheritedOpacity = 1.0f,
+                                bool defaultFill = true) {
+    const std::string raw = attrValue(tag, name);
+    if (raw == "none") {
+        return std::nullopt;
+    }
+    SkColor color = SK_ColorTRANSPARENT;
+    if (!raw.empty()) {
+        color = parseColor(raw, SK_ColorTRANSPARENT);
+    } else if (inheritedColor) {
+        color = *inheritedColor;
+    } else if (style == SkPaint::kFill_Style && defaultFill) {
+        color = SK_ColorBLACK;
+    } else {
+        return std::nullopt;
+    }
+    if (SkColorGetA(color) == 0) {
+        return std::nullopt;
+    }
+
+    float opacity = inheritedOpacity;
+    if (const std::string rawOpacity = attrValue(tag, std::string(name) + "-opacity"); !rawOpacity.empty()) {
+        opacity = parseSvgFloat(rawOpacity).value_or(1.0f);
+    }
+    if (const std::string rawOpacity = attrValue(tag, "opacity"); !rawOpacity.empty()) {
+        opacity *= parseSvgFloat(rawOpacity).value_or(1.0f);
+    }
+
+    SkPaint paint;
+    paint.setAntiAlias(true);
+    paint.setStyle(style);
+    paint.setColor(colorWithOpacity(color, opacity));
+    if (style == SkPaint::kStroke_Style) {
+        paint.setStrokeWidth(parseSvgFloat(attrValue(tag, "stroke-width")).value_or(defaultStrokeWidth));
+        paint.setStrokeCap(SkPaint::kRound_Cap);
+        paint.setStrokeJoin(SkPaint::kRound_Join);
+    }
+    return paint;
+}
+
+std::optional<SkColor> svgColorAttr(std::string_view tag, std::string_view name) {
+    const std::string raw = attrValue(tag, name);
+    if (raw.empty() || raw == "none") {
+        return std::nullopt;
+    }
+    const SkColor color = parseColor(raw, SK_ColorTRANSPARENT);
+    if (SkColorGetA(color) == 0) {
+        return std::nullopt;
+    }
+    return color;
+}
+
+float svgOpacityAttr(std::string_view tag, std::string_view name, float fallback) {
+    const std::string raw = attrValue(tag, name);
+    if (raw.empty()) {
+        return fallback;
+    }
+    return parseSvgFloat(raw).value_or(fallback);
 }
 
 }  // namespace
@@ -80,6 +232,16 @@ SkiaRenderer::SkiaRenderer(RuntimeOptions options) : options_(std::move(options)
     }
     regular_ = pickTypeface(false);
     bold_ = pickTypeface(true);
+}
+
+SkiaRenderer::~SkiaRenderer() {
+    clearCaches();
+}
+
+void SkiaRenderer::clearCaches() {
+    svgFileCache_.clear();
+    parsedSvgCache_.clear();
+    textCache_.clear();
 }
 
 sk_sp<SkTypeface> SkiaRenderer::pickTypeface(bool bold) {
@@ -157,21 +319,22 @@ void SkiaRenderer::draw(Document& document, SkCanvas& canvas, int width, int hei
     canvas.save();
     canvas.scale(scale, scale);
     if (document.root) {
-        drawNode(canvas, *document.root);
+        drawNode(canvas, document, *document.root);
     }
     canvas.restore();
 }
 
-void SkiaRenderer::drawNode(SkCanvas& canvas, const Node& node) {
+void SkiaRenderer::drawNode(SkCanvas& canvas, const Document& document, const Node& node) {
     if (node.style.display == Display::None) {
         return;
     }
 
     drawBox(canvas, node);
-    drawIcon(canvas, node);
+    drawImage(canvas, document, node);
+    drawInlineSvg(canvas, node);
     drawText(canvas, node);
     for (const auto& child : node.children) {
-        drawNode(canvas, *child);
+        drawNode(canvas, document, *child);
     }
 }
 
@@ -190,16 +353,67 @@ void SkiaRenderer::drawBox(SkCanvas& canvas, const Node& node) {
         }
     }
 
-    if (node.style.borderWidth > 0.0f && SkColorGetA(node.style.borderColor) > 0) {
+    const SkColor borderColor = node.style.flags.borderColor ? node.style.borderColor : node.style.color;
+    if (node.style.borderStyle == BorderStyle::Solid &&
+        node.style.borderWidth > 0.0f &&
+        SkColorGetA(borderColor) > 0) {
         const float half = node.style.borderWidth * 0.5f;
         const SkRect border = SkRect::MakeXYWH(r.x + half, r.y + half, std::max(0.0f, r.w - node.style.borderWidth), std::max(0.0f, r.h - node.style.borderWidth));
         if (node.style.borderRadius > 0.0f) {
             canvas.drawRRect(SkRRect::MakeRectXY(border, node.style.borderRadius, node.style.borderRadius),
-                             stroke(node.style.borderColor, node.style.borderWidth));
+                             stroke(borderColor, node.style.borderWidth));
         } else {
-            canvas.drawRect(border, stroke(node.style.borderColor, node.style.borderWidth));
+            canvas.drawRect(border, stroke(borderColor, node.style.borderWidth));
         }
     }
+}
+
+void SkiaRenderer::drawImage(SkCanvas& canvas, const Document& document, const Node& node) {
+    if (node.tag != "img" || node.src.empty()) {
+        return;
+    }
+
+    const std::optional<std::string> svg = readSvgAsset(document, node.src);
+    if (!svg || svg->empty()) {
+        return;
+    }
+    drawSvgMarkup(canvas, *svg, node.layout);
+}
+
+void SkiaRenderer::drawInlineSvg(SkCanvas& canvas, const Node& node) {
+    if (node.tag != "svg" || node.svgMarkup.empty()) {
+        return;
+    }
+    drawSvgMarkup(canvas, node.svgMarkup, node.layout);
+}
+
+void SkiaRenderer::drawSvgMarkup(SkCanvas& canvas, const std::string& svg, const Rect& rect) {
+    if (svg.empty() || rect.w <= 0.0f || rect.h <= 0.0f) {
+        return;
+    }
+
+    const ParsedSvg& parsed = parsedSvg(svg);
+    if (parsed.shapes.empty() || parsed.viewWidth <= 0.0f || parsed.viewHeight <= 0.0f) {
+        return;
+    }
+
+    const float scale = std::min(rect.w / parsed.viewWidth, rect.h / parsed.viewHeight);
+    const float drawWidth = parsed.viewWidth * scale;
+    const float drawHeight = parsed.viewHeight * scale;
+
+    canvas.save();
+    canvas.translate(rect.x + (rect.w - drawWidth) * 0.5f, rect.y + (rect.h - drawHeight) * 0.5f);
+    canvas.scale(scale, scale);
+    canvas.translate(-parsed.viewX, -parsed.viewY);
+    for (const SvgShape& shape : parsed.shapes) {
+        if (shape.fill) {
+            canvas.drawPath(shape.path, *shape.fill);
+        }
+        if (shape.stroke) {
+            canvas.drawPath(shape.path, *shape.stroke);
+        }
+    }
+    canvas.restore();
 }
 
 void SkiaRenderer::drawText(SkCanvas& canvas, const Node& node) {
@@ -209,156 +423,142 @@ void SkiaRenderer::drawText(SkCanvas& canvas, const Node& node) {
     }
 
     const TextEntry& entry = textEntry(value, node.style.fontSize, node.style.fontBold);
-    const float iconOffset = node.style.icon.empty() ? 0.0f : node.style.iconSize + 8.0f;
-    const bool drawOwnInlineContent = node.children.empty();
-    const float contentOffset = drawOwnInlineContent ? iconOffset : 0.0f;
-    const float availableWidth = std::max(0.0f, node.layout.w - contentOffset);
-    float x = node.layout.x + contentOffset;
+    const float availableWidth = std::max(0.0f, node.layout.w);
+    float x = node.layout.x;
     if (node.style.justifyContent == YGJustifyCenter) {
-        x = node.layout.x + contentOffset + (availableWidth - entry.width) * 0.5f;
+        x = node.layout.x + (availableWidth - entry.width) * 0.5f;
     } else if (node.style.justifyContent == YGJustifyFlexEnd) {
-        x = node.layout.x + contentOffset + availableWidth - entry.width;
+        x = node.layout.x + availableWidth - entry.width;
     }
     x = std::max(node.layout.x, x);
     const float y = node.layout.y + node.layout.h * 0.5f - (entry.bounds.fTop + entry.bounds.fBottom) * 0.5f;
     canvas.drawTextBlob(entry.blob, x, y, fill(node.style.color));
 }
 
-void SkiaRenderer::drawIcon(SkCanvas& canvas, const Node& node) {
-    const std::string icon = node.style.icon.empty() ? node.icon : node.style.icon;
-    if (icon.empty()) {
-        return;
+SkiaRenderer::ParsedSvg SkiaRenderer::parseSvg(std::string_view svg) const {
+    ParsedSvg parsed;
+    std::optional<SkColor> inheritedFill;
+    std::optional<SkColor> inheritedStroke;
+    float inheritedFillOpacity = 1.0f;
+    float inheritedStrokeOpacity = 1.0f;
+    bool defaultFill = true;
+    if (const size_t svgPos = svg.find("<svg"); svgPos != std::string_view::npos) {
+        if (const size_t svgEnd = svg.find('>', svgPos); svgEnd != std::string_view::npos) {
+            const std::string_view svgTag = svg.substr(svgPos, svgEnd - svgPos + 1);
+            const std::string viewBox = attrValue(svgTag, "viewBox");
+            const std::vector<float> values = parseFloatList(viewBox);
+            if (values.size() == 4 && values[2] > 0.0f && values[3] > 0.0f) {
+                parsed.viewX = values[0];
+                parsed.viewY = values[1];
+                parsed.viewWidth = values[2];
+                parsed.viewHeight = values[3];
+            }
+            inheritedFill = svgColorAttr(svgTag, "fill");
+            inheritedStroke = svgColorAttr(svgTag, "stroke");
+            if (hasAttr(svgTag, "fill") && !inheritedFill) {
+                defaultFill = false;
+            }
+            inheritedFillOpacity = svgOpacityAttr(svgTag, "fill-opacity", 1.0f) *
+                                   svgOpacityAttr(svgTag, "opacity", 1.0f);
+            inheritedStrokeOpacity = svgOpacityAttr(svgTag, "stroke-opacity", 1.0f) *
+                                     svgOpacityAttr(svgTag, "opacity", 1.0f);
+        }
     }
 
-    const float size = std::max(1.0f, node.style.iconSize);
-    float cx = node.layout.x + size * 0.5f;
-    float cy = node.layout.y + node.layout.h * 0.5f;
-    if (node.text.empty() && node.value.empty() && node.layout.w > size) {
-        cx = node.layout.x + node.layout.w * 0.5f;
+    for (std::string_view pathTag : tagsNamed(svg, "path")) {
+        const std::string d = attrValue(pathTag, "d");
+        if (d.empty()) {
+            continue;
+        }
+        std::optional<SkPath> path = SkParsePath::FromSVGString(d.c_str());
+        if (!path) {
+            continue;
+        }
+        SvgShape shape;
+        shape.path = *path;
+        shape.fill = svgPaint(pathTag, "fill", SkPaint::kFill_Style, 1.0f, inheritedFill, inheritedFillOpacity, defaultFill);
+        shape.stroke = svgPaint(pathTag, "stroke", SkPaint::kStroke_Style, 1.0f, inheritedStroke, inheritedStrokeOpacity);
+        if (shape.fill || shape.stroke) {
+            parsed.shapes.push_back(std::move(shape));
+        }
     }
-    drawSvgIcon(canvas, iconSvg(node), cx, cy, size);
+
+    for (std::string_view circleTag : tagsNamed(svg, "circle")) {
+        const float cx = parseSvgFloat(attrValue(circleTag, "cx")).value_or(0.0f);
+        const float cy = parseSvgFloat(attrValue(circleTag, "cy")).value_or(0.0f);
+        const float r = parseSvgFloat(attrValue(circleTag, "r")).value_or(0.0f);
+        if (r <= 0.0f) {
+            continue;
+        }
+        SvgShape shape;
+        shape.path = SkPathBuilder().addCircle(cx, cy, r).detach();
+        shape.fill = svgPaint(circleTag, "fill", SkPaint::kFill_Style, 1.0f, inheritedFill, inheritedFillOpacity, defaultFill);
+        shape.stroke = svgPaint(circleTag, "stroke", SkPaint::kStroke_Style, 1.0f, inheritedStroke, inheritedStrokeOpacity);
+        if (shape.fill || shape.stroke) {
+            parsed.shapes.push_back(std::move(shape));
+        }
+    }
+
+    return parsed;
 }
 
-void SkiaRenderer::drawSvgIcon(SkCanvas& canvas, const std::string& svg, float cx, float cy, float size) {
-    auto it = svgCache_.find(svg);
-    if (it == svgCache_.end()) {
-        SkMemoryStream stream(svg.data(), svg.size(), false);
-        sk_sp<SkSVGDOM> dom = SkSVGDOM::MakeFromStream(stream);
-        if (!dom) {
-            return;
-        }
-        dom->setContainerSize(SkSize::Make(24.0f, 24.0f));
-        it = svgCache_.emplace(svg, std::move(dom)).first;
+const SkiaRenderer::ParsedSvg& SkiaRenderer::parsedSvg(std::string_view svg) {
+    std::string key = normalizeSvgMarkup(std::string(svg));
+    auto it = parsedSvgCache_.find(key);
+    if (it != parsedSvgCache_.end()) {
+        return it->second;
     }
-
-    canvas.save();
-    canvas.translate(cx - size * 0.5f, cy - size * 0.5f);
-    canvas.scale(size / 24.0f, size / 24.0f);
-    it->second->render(&canvas);
-    canvas.restore();
+    ParsedSvg parsed = parseSvg(key);
+    it = parsedSvgCache_.emplace(std::move(key), std::move(parsed)).first;
+    return it->second;
 }
 
-std::string SkiaRenderer::iconSvg(const Node& node) const {
-    const std::string icon = node.style.icon.empty() ? node.icon : node.style.icon;
-    const SkColor color = node.style.iconColor;
-    if (icon == "layers") {
-        std::string body;
-        body += "<path d=\"M12 3.2 4.2 7.2 12 11.2l7.8-4-7.8-4Z\" ";
-        body += fillAttrs(withAlpha(color, 235));
-        body += "/><path d=\"M4.2 12 12 16l7.8-4\"/><path d=\"M4.2 16.6 12 20.6l7.8-4\"/>";
-        return wrapSvg(body, strokeAttrs(color, 2.05f));
+std::optional<std::string> SkiaRenderer::readSvgAsset(const Document& document, std::string_view src) {
+    const std::string path = resolveAssetPath(document, src);
+    if (path.empty()) {
+        return std::nullopt;
     }
-    if (icon == "upload") {
-        return wrapSvg("<path d=\"M12 16.5V5.4\"/><path d=\"M7.1 10.3 12 5.4l4.9 4.9\"/><path d=\"M5.2 15.6v3.2h13.6v-3.2\"/>",
-                       strokeAttrs(color, 2.15f));
+
+    auto it = svgFileCache_.find(path);
+    if (it != svgFileCache_.end()) {
+        return it->second;
     }
-    if (icon == "plus") {
-        return wrapSvg("<path d=\"M12 5v14\"/><path d=\"M5 12h14\"/>", strokeAttrs(color, 1.9f));
+
+    std::string svg = readTextFile(std::filesystem::path(path));
+    if (svg.empty()) {
+        return std::nullopt;
     }
-    if (icon == "search") {
-        return wrapSvg("<circle cx=\"10.5\" cy=\"10.5\" r=\"6.3\"/><path d=\"M15.4 15.4 21 21\"/>",
-                       strokeAttrs(color, 2.3f));
+    svg = normalizeSvgMarkup(std::move(svg));
+    it = svgFileCache_.emplace(path, std::move(svg)).first;
+    return it->second;
+}
+
+std::string SkiaRenderer::resolveAssetPath(const Document& document, std::string_view src) const {
+    namespace fs = std::filesystem;
+    if (src.empty()) {
+        return {};
     }
-    if (icon == "eye") {
-        std::string body = "<path d=\"M3.2 12s3.3-5.2 8.8-5.2 8.8 5.2 8.8 5.2-3.3 5.2-8.8 5.2S3.2 12 3.2 12Z\"/>";
-        body += "<circle cx=\"12\" cy=\"12\" r=\"2.25\" ";
-        body += fillAttrs(color);
-        body += " stroke=\"none\"/>";
-        return wrapSvg(body, strokeAttrs(color, 1.9f));
+
+    fs::path path{std::string(src)};
+    if (path.is_absolute()) {
+        return path.string();
     }
-    if (icon == "polygon") {
-        return wrapSvg("<path d=\"M12.2 2.9 20.1 8.8 17.2 21 5.7 20.2 3.7 9.1 12.2 2.9Z\"/>",
-                       strokeAttrs(color, 2.1f));
-    }
-    if (icon == "line") {
-        return wrapSvg("<path d=\"M3.8 5.4 9.1 9.6 13.6 13.2 20.2 18.3\"/><circle cx=\"3.8\" cy=\"5.4\" r=\"1.35\"/><circle cx=\"20.2\" cy=\"18.3\" r=\"1.35\"/>",
-                       strokeAttrs(color, 2.1f));
-    }
-    if (icon == "point") {
-        return wrapSvg("<circle cx=\"12\" cy=\"12\" r=\"6.2\"/>", strokeAttrs(color, 2.1f));
-    }
-    if (icon == "river") {
-        return wrapSvg("<path d=\"M3.8 9.4c3.3 2.4 6.1 2.4 9.3 0 2.7-2 5-2.1 7.1-.3\"/><path d=\"M3.8 14.8c3.3 2.4 6.1 2.4 9.3 0 2.7-2 5-2.1 7.1-.3\"/>",
-                       strokeAttrs(color, 2.1f));
-    }
-    if (icon == "square") {
-        return wrapSvg("<path d=\"M5.1 5.1h13.8v13.8H5.1Z\"/>", strokeAttrs(color, 2.1f));
-    }
-    if (icon == "edit") {
-        return wrapSvg("<path d=\"M12 3.6H5.7c-1.2 0-2.1.9-2.1 2.1v12.6c0 1.2.9 2.1 2.1 2.1h12.6c1.2 0 2.1-.9 2.1-2.1V12\"/><path d=\"M16.8 3.9c.8-.8 2.1-.8 2.9 0s.8 2.1 0 2.9l-8.9 8.9-4 1 1-4 9-8.8Z\"/><path d=\"M15.5 5.2l3.3 3.3\"/>",
-                       strokeAttrs(color, 2.05f));
-    }
-    if (icon == "pencil") {
-        return wrapSvg("<path d=\"M4.2 19.8 5 16.2 16.4 4.8l2.8 2.8L7.8 19l-3.6.8Z\"/><path d=\"M14.8 6.4 17.6 9.2\"/>",
-                       strokeAttrs(color, 2.0f));
-    }
-    if (icon == "target") {
-        std::string body = "<circle cx=\"12\" cy=\"12\" r=\"8.1\"/><circle cx=\"12\" cy=\"12\" r=\"3.8\"/>";
-        body += "<circle cx=\"12\" cy=\"12\" r=\"1.25\" ";
-        body += fillAttrs(color);
-        body += " stroke=\"none\"/>";
-        return wrapSvg(body, strokeAttrs(color, 1.85f));
-    }
-    if (icon == "doc") {
-        return wrapSvg("<path d=\"M6.1 3.5h11.8v17H6.1Z\"/><path d=\"M9 7.2h6\"/><path d=\"M9 11.5h6\"/><path d=\"M9 15.8h6\"/>",
-                       strokeAttrs(color, 1.95f));
-    }
-    if (icon == "switch") {
-        return wrapSvg("<path d=\"M4 7.2h15\"/><path d=\"M15.1 3.9 19 7.2l-3.9 3.3\"/><path d=\"M20 16.8H5\"/><path d=\"M8.9 13.5 5 16.8l3.9 3.3\"/>",
-                       strokeAttrs(color, 1.95f));
-    }
-    if (icon == "gear") {
-        return wrapSvg("<path d=\"M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.09a2 2 0 0 1 1 1.74v.5a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.38a2 2 0 0 0-.73-2.73l-.15-.09a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2Z\"/><circle cx=\"12\" cy=\"12\" r=\"3\"/>",
-                       strokeAttrs(color, 2.0f));
-    }
-    if (icon == "chart") {
-        return wrapSvg("<path d=\"M4.4 4.4h15.2v15.2H4.4Z\"/><path d=\"M8 15.7v-4.2M12 15.7V8.2M16 15.7v-6\"/>",
-                       strokeAttrs(color, 1.8f));
-    }
-    if (icon == "menu") {
-        return wrapSvg("<path d=\"M4.2 6.8h15.6\"/><path d=\"M4.2 12h15.6\"/><path d=\"M4.2 17.2h15.6\"/>",
-                       strokeAttrs(color, 2.0f));
-    }
-    if (icon == "more") {
-        std::string body;
-        body += "<circle cx=\"12\" cy=\"5.4\" r=\"1.9\" ";
-        body += fillAttrs(color);
-        body += "/><circle cx=\"12\" cy=\"12\" r=\"1.9\" ";
-        body += fillAttrs(color);
-        body += "/><circle cx=\"12\" cy=\"18.6\" r=\"1.9\" ";
-        body += fillAttrs(color);
-        body += "/>";
-        return wrapSvg(body, "stroke=\"none\"");
-    }
-    if (icon == "drag") {
-        std::string body;
-        for (int y : {5, 12, 19}) {
-            body += "<circle cx=\"8\" cy=\"" + std::to_string(y) + "\" r=\"1.6\" " + fillAttrs(color) + "/>";
-            body += "<circle cx=\"16\" cy=\"" + std::to_string(y) + "\" r=\"1.6\" " + fillAttrs(color) + "/>";
+
+    if (!document.basePath.empty()) {
+        fs::path candidate = fs::path(document.basePath) / path;
+        if (fs::exists(candidate)) {
+            return candidate.string();
         }
-        return wrapSvg(body, "stroke=\"none\"");
     }
-    return wrapSvg("<path d=\"M5.1 5.1h13.8v13.8H5.1Z\"/>", strokeAttrs(color, 2.0f));
+
+    if (!options_.assetRoot.empty()) {
+        fs::path candidate = fs::path(options_.assetRoot) / path;
+        if (fs::exists(candidate)) {
+            return candidate.string();
+        }
+    }
+
+    return path.string();
 }
 
 const SkiaRenderer::TextEntry& SkiaRenderer::textEntry(std::string_view value, float size, bool bold) {
