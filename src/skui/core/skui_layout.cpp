@@ -40,7 +40,9 @@ YGSize measureTextNode(YGNodeConstRef node,
         return {0.0f, 0.0f};
     }
 
-    const std::string& value = !uiNode->value.empty() ? uiNode->value : uiNode->text;
+    const std::string& value = !uiNode->value.empty()
+        ? uiNode->value
+        : (!uiNode->text.empty() ? uiNode->text : uiNode->placeholder);
     float measuredWidth = estimateTextWidth(value, uiNode->style.fontSize);
     float measuredHeight = uiNode->style.fontSize * 1.35f;
     if (widthMode == YGMeasureModeExactly) {
@@ -125,7 +127,7 @@ void LayoutEngine::buildYoga(Node& node, YGNodeRef yogaNode) {
     setEdge(yogaNode, YGNodeStyleSetPosition, YGEdgeRight, s.inset.right);
     setEdge(yogaNode, YGNodeStyleSetPosition, YGEdgeBottom, s.inset.bottom);
 
-    const bool hasText = !node.text.empty() || !node.value.empty();
+    const bool hasText = !node.text.empty() || !node.value.empty() || (node.tag == "input" && !node.placeholder.empty());
     if (node.children.empty() && hasText && !s.width && !s.height) {
         YGNodeSetMeasureFunc(yogaNode, measureTextNode);
     }

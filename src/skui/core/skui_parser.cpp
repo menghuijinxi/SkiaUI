@@ -1,6 +1,7 @@
 #include "skui_internal.h"
 
 #include <lexbor/dom/interface.h>
+#include <lexbor/dom/interfaces/attr.h>
 #include <lexbor/dom/interfaces/character_data.h>
 #include <lexbor/dom/interfaces/element.h>
 #include <lexbor/html/interfaces/document.h>
@@ -66,6 +67,38 @@ std::string attr(lxb_dom_element_t* element, const char* name) {
         return {};
     }
     return std::string(reinterpret_cast<const char*>(value), len);
+}
+
+std::unordered_map<std::string, std::string> elementAttributes(lxb_dom_element_t* element) {
+    std::unordered_map<std::string, std::string> attributes;
+    if (!element) {
+        return attributes;
+    }
+    for (lxb_dom_attr_t* attribute = lxb_dom_element_first_attribute(element);
+         attribute;
+         attribute = lxb_dom_element_next_attribute(attribute)) {
+        size_t nameLen = 0;
+        const lxb_char_t* rawName = lxb_dom_attr_local_name(attribute, &nameLen);
+        if (!rawName || nameLen == 0) {
+            continue;
+        }
+        std::string name(reinterpret_cast<const char*>(rawName), nameLen);
+        name = lower(std::move(name));
+
+        size_t valueLen = 0;
+        const lxb_char_t* rawValue = lxb_dom_attr_value(attribute, &valueLen);
+        std::string value;
+        if (rawValue && valueLen > 0) {
+            value.assign(reinterpret_cast<const char*>(rawValue), valueLen);
+        }
+        attributes[std::move(name)] = std::move(value);
+    }
+    return attributes;
+}
+
+std::string attributeValue(const std::unordered_map<std::string, std::string>& attributes, std::string_view name) {
+    auto it = attributes.find(std::string(name));
+    return it == attributes.end() ? std::string{} : it->second;
 }
 
 std::string nodeName(lxb_dom_element_t* element) {
@@ -177,6 +210,36 @@ std::vector<std::string> splitCssTokens(std::string_view raw) {
         tokens.push_back(trim(raw.substr(start)));
     }
     return tokens;
+}
+
+bool applyEdgeShorthand(EdgeValues& edges,
+                        Style::Flags& flags,
+                        bool Style::Flags::*leftFlag,
+                        bool Style::Flags::*topFlag,
+                        bool Style::Flags::*rightFlag,
+                        bool Style::Flags::*bottomFlag,
+                        std::string_view raw) {
+    std::vector<float> values;
+    for (const std::string& token : splitCssTokens(raw)) {
+        std::optional<float> length = parseLength(token);
+        if (!length) {
+            return false;
+        }
+        values.push_back(*length);
+    }
+    if (values.empty() || values.size() > 4) {
+        return false;
+    }
+
+    const float top = values[0];
+    const float right = values.size() >= 2 ? values[1] : values[0];
+    const float bottom = values.size() >= 3 ? values[2] : values[0];
+    const float left = values.size() >= 4 ? values[3] : right;
+    setEdgeByName(edges, flags, leftFlag, &EdgeValues::left, left);
+    setEdgeByName(edges, flags, topFlag, &EdgeValues::top, top);
+    setEdgeByName(edges, flags, rightFlag, &EdgeValues::right, right);
+    setEdgeByName(edges, flags, bottomFlag, &EdgeValues::bottom, bottom);
+    return true;
 }
 
 std::optional<BorderStyle> parseBorderStyleValue(std::string_view raw) {
@@ -366,37 +429,148 @@ Style defaultStyleForNode(const Node& node) {
     return style;
 }
 
-bool matchesRule(const Node& node, const StyleRule& rule) {
-    if (!rule.pseudo.empty()) {
-        if (rule.pseudo == "hover") {
-            if (!node.hovered) {
-                return false;
-            }
-        } else if (rule.pseudo == "active") {
-            if (!node.active) {
-                return false;
-            }
-        } else {
+bool nodeHasClass(const Node& node, const std::string& className) {
+    return std::find(node.classes.begin(), node.classes.end(), className) != node.classes.end();
+}
+
+bool nodeHasAttribute(const Node& node, std::string_view name) {
+    return node.attributes.find(std::string(name)) != node.attributes.end();
+}
+
+std::optional<size_t> childIndex(const Node& node) {
+    if (!node.parent) {
+        return std::nullopt;
+    }
+    size_t index = 1;
+    for (const auto& child : node.parent->children) {
+        if (child.get() == &node) {
+            return index;
+        }
+        ++index;
+    }
+    return std::nullopt;
+}
+
+bool matchesNthChild(const Node& node, std::string_view expression) {
+    std::optional<size_t> index = childIndex(node);
+    if (!index) {
+        return false;
+    }
+    std::string value = lower(trim(expression));
+    if (value == "odd") {
+        return (*index % 2) == 1;
+    }
+    if (value == "even") {
+        return (*index % 2) == 0;
+    }
+    unsigned expected = 0;
+    const char* begin = value.data();
+    const char* end = value.data() + value.size();
+    const auto result = std::from_chars(begin, end, expected);
+    return result.ec == std::errc{} && result.ptr == end && *index == expected;
+}
+
+bool matchesPseudo(const Node& node, const std::string& pseudo) {
+    if (pseudo == "hover") {
+        return node.hovered;
+    }
+    if (pseudo == "active") {
+        return node.active;
+    }
+    if (pseudo == "focus") {
+        return node.focused;
+    }
+    if (pseudo == "disabled") {
+        return nodeHasAttribute(node, "disabled");
+    }
+    if (pseudo == "checked") {
+        return nodeHasAttribute(node, "checked");
+    }
+    if (pseudo == "selected") {
+        return nodeHasAttribute(node, "selected");
+    }
+    if (pseudo == "first-child") {
+        return childIndex(node).value_or(0) == 1;
+    }
+    if (pseudo == "last-child") {
+        return node.parent && !node.parent->children.empty() && node.parent->children.back().get() == &node;
+    }
+    constexpr std::string_view nthPrefix = "nth-child(";
+    if (pseudo.rfind(nthPrefix, 0) == 0 && pseudo.ends_with(')')) {
+        return matchesNthChild(node, std::string_view(pseudo).substr(nthPrefix.size(), pseudo.size() - nthPrefix.size() - 1));
+    }
+    return false;
+}
+
+bool matchesCompound(const Node& node, const CompoundSelector& selector) {
+    if (!selector.tag.empty() && selector.tag != "*" && node.tag != selector.tag) {
+        return false;
+    }
+    if (!selector.id.empty() && node.id != selector.id) {
+        return false;
+    }
+    for (const std::string& className : selector.classes) {
+        if (!nodeHasClass(node, className)) {
             return false;
         }
     }
-    if (!rule.tag.empty() && node.tag != rule.tag) {
+    for (const AttributeSelector& attribute : selector.attributes) {
+        auto it = node.attributes.find(attribute.name);
+        if (it == node.attributes.end()) {
+            return false;
+        }
+        if (attribute.value && it->second != *attribute.value) {
+            return false;
+        }
+    }
+    for (const std::string& pseudo : selector.pseudos) {
+        if (!matchesPseudo(node, pseudo)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool matchesSelectorAt(const Node& node, const std::vector<SelectorPart>& selector, size_t index) {
+    if (!matchesCompound(node, selector[index].selector)) {
         return false;
     }
-    if (rule.kind == StyleRule::Kind::Tag) {
-        return node.tag == rule.selector;
+    if (index == 0) {
+        return true;
     }
-    if (rule.kind == StyleRule::Kind::Id) {
-        return node.id == rule.selector;
+
+    const SelectorCombinator combinator = selector[index].combinator;
+    if (combinator == SelectorCombinator::Child) {
+        return node.parent && matchesSelectorAt(*node.parent, selector, index - 1);
     }
-    return std::find(node.classes.begin(), node.classes.end(), rule.selector) != node.classes.end();
+
+    for (const Node* ancestor = node.parent; ancestor; ancestor = ancestor->parent) {
+        if (matchesSelectorAt(*ancestor, selector, index - 1)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool matchesRule(const Node& node, const StyleRule& rule) {
+    return !rule.selector.empty() && matchesSelectorAt(node, rule.selector, rule.selector.size() - 1);
 }
 
 void applyRules(Node& node, const std::vector<StyleRule>& rules) {
+    std::vector<const StyleRule*> matched;
     for (const StyleRule& rule : rules) {
         if (matchesRule(node, rule)) {
-            mergeStyle(node.style, rule.style);
+            matched.push_back(&rule);
         }
+    }
+    std::sort(matched.begin(), matched.end(), [](const StyleRule* lhs, const StyleRule* rhs) {
+        if (lhs->specificity != rhs->specificity) {
+            return lhs->specificity < rhs->specificity;
+        }
+        return lhs->order < rhs->order;
+    });
+    for (const StyleRule* rule : matched) {
+        mergeStyle(node.style, rule->style);
     }
     for (auto& child : node.children) {
         applyRules(*child, rules);
@@ -429,6 +603,7 @@ void applyInheritedStyle(Node& node, const RuntimeOptions& options) {
     }
 
     if (node.tag == "text" || node.tag == "span" || node.tag == "label" || node.tag == "button" ||
+        node.tag == "input" ||
         node.tag == "img" || node.tag == "svg") {
         node.style.flexShrink = 0.0f;
     }
@@ -603,14 +778,14 @@ void applyDeclaration(Style& style, std::string_view rawName, std::string_view r
     } else if (name == "max-height" && length) {
         style.maxHeight = *length;
         style.flags.maxHeight = true;
-    } else if (name == "margin" && length) {
-        setEdges(style.margin,
-                 style.flags,
-                 &Style::Flags::marginLeft,
-                 &Style::Flags::marginTop,
-                 &Style::Flags::marginRight,
-                 &Style::Flags::marginBottom,
-                 *length);
+    } else if (name == "margin") {
+        applyEdgeShorthand(style.margin,
+                           style.flags,
+                           &Style::Flags::marginLeft,
+                           &Style::Flags::marginTop,
+                           &Style::Flags::marginRight,
+                           &Style::Flags::marginBottom,
+                           value);
     } else if (name == "margin-left" && length) {
         setEdgeByName(style.margin, style.flags, &Style::Flags::marginLeft, &EdgeValues::left, *length);
     } else if (name == "margin-top" && length) {
@@ -619,14 +794,14 @@ void applyDeclaration(Style& style, std::string_view rawName, std::string_view r
         setEdgeByName(style.margin, style.flags, &Style::Flags::marginRight, &EdgeValues::right, *length);
     } else if (name == "margin-bottom" && length) {
         setEdgeByName(style.margin, style.flags, &Style::Flags::marginBottom, &EdgeValues::bottom, *length);
-    } else if (name == "padding" && length) {
-        setEdges(style.padding,
-                 style.flags,
-                 &Style::Flags::paddingLeft,
-                 &Style::Flags::paddingTop,
-                 &Style::Flags::paddingRight,
-                 &Style::Flags::paddingBottom,
-                 *length);
+    } else if (name == "padding") {
+        applyEdgeShorthand(style.padding,
+                           style.flags,
+                           &Style::Flags::paddingLeft,
+                           &Style::Flags::paddingTop,
+                           &Style::Flags::paddingRight,
+                           &Style::Flags::paddingBottom,
+                           value);
     } else if (name == "padding-left" && length) {
         setEdgeByName(style.padding, style.flags, &Style::Flags::paddingLeft, &EdgeValues::left, *length);
     } else if (name == "padding-top" && length) {
@@ -695,7 +870,214 @@ void parseDeclarations(std::string_view block, Style& style) {
     }
 }
 
+std::string stripCssComments(std::string_view css) {
+    std::string out;
+    out.reserve(css.size());
+    for (size_t i = 0; i < css.size();) {
+        if (i + 1 < css.size() && css[i] == '/' && css[i + 1] == '*') {
+            const size_t end = css.find("*/", i + 2);
+            if (end == std::string_view::npos) {
+                break;
+            }
+            i = end + 2;
+            continue;
+        }
+        out.push_back(css[i++]);
+    }
+    return out;
+}
+
+std::vector<std::string> splitSelectorList(std::string_view selectors) {
+    std::vector<std::string> out;
+    size_t start = 0;
+    int bracketDepth = 0;
+    int parenDepth = 0;
+    for (size_t i = 0; i < selectors.size(); ++i) {
+        const char ch = selectors[i];
+        if (ch == '[') {
+            ++bracketDepth;
+        } else if (ch == ']' && bracketDepth > 0) {
+            --bracketDepth;
+        } else if (ch == '(') {
+            ++parenDepth;
+        } else if (ch == ')' && parenDepth > 0) {
+            --parenDepth;
+        } else if (ch == ',' && bracketDepth == 0 && parenDepth == 0) {
+            out.push_back(trim(selectors.substr(start, i - start)));
+            start = i + 1;
+        }
+    }
+    out.push_back(trim(selectors.substr(start)));
+    return out;
+}
+
+bool isSelectorNameChar(char ch) {
+    const unsigned char c = static_cast<unsigned char>(ch);
+    return std::isalnum(c) != 0 || ch == '_' || ch == '-';
+}
+
+std::string parseSelectorName(std::string_view raw, size_t& pos) {
+    const size_t start = pos;
+    while (pos < raw.size() && isSelectorNameChar(raw[pos])) {
+        ++pos;
+    }
+    return std::string(raw.substr(start, pos - start));
+}
+
+std::string unquoteCssValue(std::string value) {
+    value = trim(value);
+    if (value.size() >= 2 && ((value.front() == '"' && value.back() == '"') ||
+                              (value.front() == '\'' && value.back() == '\''))) {
+        value = value.substr(1, value.size() - 2);
+    }
+    return value;
+}
+
+std::optional<CompoundSelector> parseCompoundSelector(std::string_view raw) {
+    CompoundSelector selector;
+    size_t pos = 0;
+    while (pos < raw.size()) {
+        const char ch = raw[pos];
+        if (ch == '*') {
+            selector.tag = "*";
+            ++pos;
+        } else if (ch == '.') {
+            ++pos;
+            std::string className = parseSelectorName(raw, pos);
+            if (className.empty()) {
+                return std::nullopt;
+            }
+            selector.classes.push_back(std::move(className));
+        } else if (ch == '#') {
+            ++pos;
+            selector.id = parseSelectorName(raw, pos);
+            if (selector.id.empty()) {
+                return std::nullopt;
+            }
+        } else if (ch == '[') {
+            const size_t close = raw.find(']', pos + 1);
+            if (close == std::string_view::npos) {
+                return std::nullopt;
+            }
+            std::string body = trim(raw.substr(pos + 1, close - pos - 1));
+            const size_t eq = body.find('=');
+            AttributeSelector attribute;
+            if (eq == std::string::npos) {
+                attribute.name = lower(trim(body));
+            } else {
+                attribute.name = lower(trim(std::string_view(body).substr(0, eq)));
+                attribute.value = unquoteCssValue(std::string(std::string_view(body).substr(eq + 1)));
+            }
+            if (attribute.name.empty()) {
+                return std::nullopt;
+            }
+            selector.attributes.push_back(std::move(attribute));
+            pos = close + 1;
+        } else if (ch == ':') {
+            ++pos;
+            std::string pseudo = lower(parseSelectorName(raw, pos));
+            if (pseudo.empty()) {
+                return std::nullopt;
+            }
+            if (pos < raw.size() && raw[pos] == '(') {
+                const size_t close = raw.find(')', pos + 1);
+                if (close == std::string_view::npos) {
+                    return std::nullopt;
+                }
+                pseudo += std::string(raw.substr(pos, close - pos + 1));
+                pos = close + 1;
+            }
+            selector.pseudos.push_back(std::move(pseudo));
+        } else if (std::isalpha(static_cast<unsigned char>(ch)) != 0) {
+            selector.tag = lower(parseSelectorName(raw, pos));
+        } else {
+            return std::nullopt;
+        }
+    }
+    if (selector.tag.empty() && selector.id.empty() && selector.classes.empty() &&
+        selector.attributes.empty() && selector.pseudos.empty()) {
+        return std::nullopt;
+    }
+    return selector;
+}
+
+unsigned selectorSpecificity(const CompoundSelector& selector) {
+    unsigned value = 0;
+    if (!selector.id.empty()) {
+        value += 100;
+    }
+    value += static_cast<unsigned>(selector.classes.size() + selector.attributes.size() + selector.pseudos.size()) * 10;
+    if (!selector.tag.empty() && selector.tag != "*") {
+        value += 1;
+    }
+    return value;
+}
+
+std::optional<StyleRule> parseSelector(std::string_view selectorText) {
+    StyleRule rule;
+    SelectorCombinator nextCombinator = SelectorCombinator::None;
+    size_t pos = 0;
+    while (pos < selectorText.size()) {
+        bool sawWhitespace = false;
+        while (pos < selectorText.size() && std::isspace(static_cast<unsigned char>(selectorText[pos])) != 0) {
+            sawWhitespace = true;
+            ++pos;
+        }
+        if (pos >= selectorText.size()) {
+            break;
+        }
+        if (selectorText[pos] == '>') {
+            nextCombinator = SelectorCombinator::Child;
+            ++pos;
+            continue;
+        }
+        if (sawWhitespace && !rule.selector.empty() && nextCombinator == SelectorCombinator::None) {
+            nextCombinator = SelectorCombinator::Descendant;
+        }
+
+        const size_t partStart = pos;
+        int bracketDepth = 0;
+        int parenDepth = 0;
+        while (pos < selectorText.size()) {
+            const char ch = selectorText[pos];
+            if (ch == '[') {
+                ++bracketDepth;
+            } else if (ch == ']' && bracketDepth > 0) {
+                --bracketDepth;
+            } else if (ch == '(') {
+                ++parenDepth;
+            } else if (ch == ')' && parenDepth > 0) {
+                --parenDepth;
+            } else if (bracketDepth == 0 && parenDepth == 0 &&
+                       (ch == '>' || std::isspace(static_cast<unsigned char>(ch)) != 0)) {
+                break;
+            }
+            ++pos;
+        }
+
+        std::optional<CompoundSelector> compound = parseCompoundSelector(selectorText.substr(partStart, pos - partStart));
+        if (!compound) {
+            return std::nullopt;
+        }
+        SelectorPart part;
+        part.combinator = rule.selector.empty() ? SelectorCombinator::None : nextCombinator;
+        if (!rule.selector.empty() && part.combinator == SelectorCombinator::None) {
+            part.combinator = SelectorCombinator::Descendant;
+        }
+        part.selector = std::move(*compound);
+        rule.specificity += selectorSpecificity(part.selector);
+        rule.selector.push_back(std::move(part));
+        nextCombinator = SelectorCombinator::None;
+    }
+    if (rule.selector.empty()) {
+        return std::nullopt;
+    }
+    return rule;
+}
+
 void parseStyleSheet(std::string_view css, std::vector<StyleRule>& rules) {
+    const std::string cleanedCss = stripCssComments(css);
+    css = cleanedCss;
     size_t start = 0;
     unsigned order = static_cast<unsigned>(rules.size());
     while (start < css.size()) {
@@ -709,38 +1091,16 @@ void parseStyleSheet(std::string_view css, std::vector<StyleRule>& rules) {
         }
         const std::string selectorText = trim(css.substr(start, open - start));
         const std::string block = trim(css.substr(open + 1, close - open - 1));
-        std::stringstream selectorStream(selectorText);
-        std::string selector;
-        while (std::getline(selectorStream, selector, ',')) {
-            selector = trim(selector);
+        for (const std::string& selector : splitSelectorList(selectorText)) {
             if (selector.empty()) {
                 continue;
             }
-            StyleRule rule;
+            std::optional<StyleRule> parsed = parseSelector(selector);
+            if (!parsed) {
+                continue;
+            }
+            StyleRule rule = std::move(*parsed);
             rule.order = order++;
-            const size_t pseudoPos = selector.find(':');
-            if (pseudoPos != std::string::npos) {
-                rule.pseudo = lower(trim(std::string_view(selector).substr(pseudoPos + 1)));
-                selector = trim(std::string_view(selector).substr(0, pseudoPos));
-            }
-            if (selector.empty()) {
-                continue;
-            }
-            const size_t classPos = selector.find('.');
-            if (classPos != std::string::npos && classPos > 0) {
-                rule.tag = lower(selector.substr(0, classPos));
-                selector = selector.substr(classPos);
-            }
-            if (selector[0] == '.') {
-                rule.kind = StyleRule::Kind::Class;
-                rule.selector = selector.substr(1);
-            } else if (selector[0] == '#') {
-                rule.kind = StyleRule::Kind::Id;
-                rule.selector = selector.substr(1);
-            } else {
-                rule.kind = StyleRule::Kind::Tag;
-                rule.selector = lower(selector);
-            }
             parseDeclarations(block, rule.style);
             rules.push_back(std::move(rule));
         }
@@ -773,13 +1133,15 @@ std::unique_ptr<Node> convertElement(lxb_dom_element_t* element, Node* parent, s
     auto node = std::make_unique<Node>();
     node->tag = tag;
     node->parent = parent;
-    node->id = attr(element, "id");
-    node->classes = splitWhitespace(attr(element, "class"));
-    node->value = attr(element, "value");
-    node->src = attr(element, "src");
-    node->action = attr(element, "data-action");
+    node->attributes = elementAttributes(element);
+    node->id = attributeValue(node->attributes, "id");
+    node->classes = splitWhitespace(attributeValue(node->attributes, "class"));
+    node->value = attributeValue(node->attributes, "value");
+    node->placeholder = attributeValue(node->attributes, "placeholder");
+    node->src = attributeValue(node->attributes, "src");
+    node->action = attributeValue(node->attributes, "data-action");
 
-    const std::string inlineStyle = attr(element, "style");
+    const std::string inlineStyle = attributeValue(node->attributes, "style");
     if (!inlineStyle.empty()) {
         parseDeclarations(inlineStyle, node->inlineStyle);
     }
@@ -817,6 +1179,10 @@ bool readFile(const std::string& path, std::string& out) {
 }
 
 }  // namespace
+
+void parseInlineStyle(std::string_view declarations, Style& style) {
+    parseDeclarations(declarations, style);
+}
 
 DocumentParser::DocumentParser(RuntimeOptions options) : options_(std::move(options)) {}
 

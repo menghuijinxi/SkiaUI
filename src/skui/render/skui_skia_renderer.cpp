@@ -146,6 +146,21 @@ bool isCurrentColor(std::string_view raw) {
     return value == "currentcolor";
 }
 
+bool isUtf8ContinuationByte(unsigned char ch) {
+    return (ch & 0xC0) == 0x80;
+}
+
+size_t nextUtf8Boundary(std::string_view value, size_t index) {
+    if (index >= value.size()) {
+        return value.size();
+    }
+    ++index;
+    while (index < value.size() && isUtf8ContinuationByte(static_cast<unsigned char>(value[index]))) {
+        ++index;
+    }
+    return index;
+}
+
 std::vector<std::string_view> tagsNamed(std::string_view svg, std::string_view name) {
     std::vector<std::string_view> tags;
     std::string open = "<" + std::string(name);
@@ -346,7 +361,10 @@ void SkiaRenderer::drawNode(SkCanvas& canvas, const Document& document, const No
     drawBox(canvas, node);
     drawImage(canvas, document, node);
     drawInlineSvg(canvas, node);
+    drawInputSelection(canvas, node);
     drawText(canvas, node);
+    drawInputCompositionUnderline(canvas, node);
+    drawInputCaret(canvas, node);
     for (const auto& child : node.children) {
         drawNode(canvas, document, *child);
     }
@@ -430,8 +448,48 @@ void SkiaRenderer::drawSvgMarkup(SkCanvas& canvas, const std::string& svg, const
     canvas.restore();
 }
 
+void SkiaRenderer::drawInputSelection(SkCanvas& canvas, const Node& node) {
+    if (node.tag != "input" || !node.focused || node.selectionStart == node.selectionEnd || node.value.empty()) {
+        return;
+    }
+
+    const size_t start = std::min(node.selectionStart, node.value.size());
+    const size_t end = std::min(node.selectionEnd, node.value.size());
+    if (start >= end) {
+        return;
+    }
+
+    const float before = start == 0 ? 0.0f : textWidth(std::string_view(node.value.data(), start), node.style.fontSize, node.style.fontBold);
+    const float selected = textWidth(std::string_view(node.value.data() + start, end - start), node.style.fontSize, node.style.fontBold);
+    const float x = std::max(node.layout.x, node.layout.x + before);
+    const float right = std::min(node.layout.x + node.layout.w, x + selected);
+    if (right <= x) {
+        return;
+    }
+
+    const float selectionHeight = std::max(12.0f, node.style.fontSize * 1.35f);
+    const float y = node.layout.y + (node.layout.h - selectionHeight) * 0.5f;
+    SkPaint p = fill(SkColorSetARGB(96, 36, 232, 219));
+    canvas.save();
+    canvas.clipRect(node.layout.sk(), SkClipOp::kIntersect, true);
+    canvas.drawRect(SkRect::MakeXYWH(x, y, right - x, selectionHeight), p);
+    canvas.restore();
+}
+
 void SkiaRenderer::drawText(SkCanvas& canvas, const Node& node) {
-    const std::string value = !node.value.empty() ? node.value : node.text;
+    const bool hasComposition = node.tag == "input" && !node.compositionText.empty();
+    const bool inputPlaceholder = node.tag == "input" && node.value.empty() && !hasComposition && !node.placeholder.empty();
+    std::string value;
+    if (inputPlaceholder) {
+        value = node.placeholder;
+    } else if (hasComposition) {
+        const size_t cursor = std::min(node.cursorIndex, node.value.size());
+        value = node.value.substr(0, cursor);
+        value += node.compositionText;
+        value += node.value.substr(cursor);
+    } else {
+        value = !node.value.empty() ? node.value : node.text;
+    }
     if (value.empty()) {
         return;
     }
@@ -446,7 +504,57 @@ void SkiaRenderer::drawText(SkCanvas& canvas, const Node& node) {
     }
     x = std::max(node.layout.x, x);
     const float y = node.layout.y + node.layout.h * 0.5f - (entry.bounds.fTop + entry.bounds.fBottom) * 0.5f;
-    canvas.drawTextBlob(entry.blob, x, y, fill(node.style.color));
+    SkColor textColor = node.style.color;
+    if (inputPlaceholder) {
+        textColor = SkColorSetA(textColor, static_cast<U8CPU>(std::min(150, static_cast<int>(SkColorGetA(textColor)))));
+    }
+    canvas.save();
+    canvas.clipRect(node.layout.sk(), SkClipOp::kIntersect, true);
+    canvas.drawTextBlob(entry.blob, x, y, fill(textColor));
+    canvas.restore();
+}
+
+void SkiaRenderer::drawInputCompositionUnderline(SkCanvas& canvas, const Node& node) {
+    if (node.tag != "input" || node.compositionText.empty()) {
+        return;
+    }
+
+    const size_t cursor = std::min(node.cursorIndex, node.value.size());
+    const float before = cursor == 0 ? 0.0f : textWidth(std::string_view(node.value.data(), cursor), node.style.fontSize, node.style.fontBold);
+    const float width = textWidth(node.compositionText, node.style.fontSize, node.style.fontBold);
+    const float x = node.layout.x + before;
+    const float right = std::min(node.layout.x + node.layout.w, x + width);
+    if (right <= x) {
+        return;
+    }
+    const float y = node.layout.y + node.layout.h * 0.5f + node.style.fontSize * 0.58f;
+    SkPaint p = stroke(node.style.color, 1.0f);
+    p.setStrokeCap(SkPaint::kButt_Cap);
+    canvas.save();
+    canvas.clipRect(node.layout.sk(), SkClipOp::kIntersect, true);
+    canvas.drawLine(x, y, right, y, p);
+    canvas.restore();
+}
+
+void SkiaRenderer::drawInputCaret(SkCanvas& canvas, const Node& node) {
+    if (node.tag != "input" || !node.focused || node.selectionStart != node.selectionEnd) {
+        return;
+    }
+
+    const size_t cursor = std::min(node.cursorIndex, node.value.size());
+    std::string_view before(node.value.data(), cursor);
+    float caretOffset = before.empty() ? 0.0f : textWidth(before, node.style.fontSize, node.style.fontBold);
+    if (!node.compositionText.empty()) {
+        caretOffset += textWidth(node.compositionText, node.style.fontSize, node.style.fontBold);
+    }
+    const float x = std::min(node.layout.x + node.layout.w - 1.0f, node.layout.x + caretOffset);
+    const float caretHeight = std::max(12.0f, node.style.fontSize * 1.18f);
+    const float y0 = node.layout.y + (node.layout.h - caretHeight) * 0.5f;
+    const float y1 = y0 + caretHeight;
+
+    SkPaint p = stroke(node.style.color, 1.25f);
+    p.setStrokeCap(SkPaint::kButt_Cap);
+    canvas.drawLine(x, y0, x, y1, p);
 }
 
 SkiaRenderer::ParsedSvg SkiaRenderer::parseSvg(std::string_view svg, SkColor currentColor) const {
@@ -613,6 +721,28 @@ const SkiaRenderer::TextEntry& SkiaRenderer::textEntry(std::string_view value, f
 
 float SkiaRenderer::textWidth(std::string_view value, float size, bool bold) {
     return textEntry(value, size, bold).width;
+}
+
+size_t SkiaRenderer::textIndexAtOffset(std::string_view value, float size, bool bold, float offset) {
+    if (value.empty() || offset <= 0.0f) {
+        return 0;
+    }
+
+    size_t previousIndex = 0;
+    float previousWidth = 0.0f;
+    for (size_t index = nextUtf8Boundary(value, 0); index <= value.size(); index = nextUtf8Boundary(value, index)) {
+        const float width = textWidth(value.substr(0, index), size, bold);
+        const float midpoint = (previousWidth + width) * 0.5f;
+        if (offset < midpoint) {
+            return previousIndex;
+        }
+        previousIndex = index;
+        previousWidth = width;
+        if (index == value.size()) {
+            break;
+        }
+    }
+    return value.size();
 }
 
 }  // namespace skui

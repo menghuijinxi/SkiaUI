@@ -216,6 +216,17 @@
       height: 44px;
       margin-right: 8px;
     }
+    .search-input {
+      width: 470px;
+      height: 44px;
+      flex-grow: 1;
+      background-color: rgba(0,0,0,0);
+      color: rgba(210,224,235,0.78);
+      font-size: 17.5px;
+    }
+    .search-input:focus {
+      color: rgba(232,243,250,0.93);
+    }
     .table-header {
       position: absolute;
       left: 149px;
@@ -458,7 +469,7 @@
       <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="#D5E0EC" stroke-opacity="0.86" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round">
         <circle cx="10.5" cy="10.5" r="6.3"></circle><path d="M15.4 15.4 21 21"></path>
       </svg>
-      <span>搜索图层...</span>
+      <input id="layer-search" class="search-input" placeholder="搜索图层...">
     </div>
 
     <div class="table-header">

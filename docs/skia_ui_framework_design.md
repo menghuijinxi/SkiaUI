@@ -277,11 +277,22 @@ ui.registerControl("color-picker", std::make_unique<ColorPickerFactory>());
 - `.class`
 - `#id`
 - `tag.class`
+- `.a.b`
+- `#id.class`
+- 后代选择器：`.a .b`
+- 子选择器：`.a > .b`
+- 属性选择器：`[attr]`、`[attr=value]`
 - `:hover`
 - `:active`
 - `:focus`
 - `:checked`
 - `:disabled`
+- `:selected`
+- `:first-child`
+- `:last-child`
+- `:nth-child(n)`、`:nth-child(odd)`、`:nth-child(even)`
+- 浏览器式基础 specificity：id 高于 class/属性/伪类，高于 tag；同优先级按源码顺序覆盖；inline style 最后覆盖。
+- 运行时 `addClassById` / `removeClassById` / `setStyleById` / `setAttributeById` / `removeAttributeById`。
 
 第一阶段不支持：
 
@@ -291,6 +302,14 @@ ui.registerControl("color-picker", std::make_unique<ColorPickerFactory>());
 - 媒体查询。
 - CSS 变量。
 - 动画。
+
+动态 CSS 后续待补充：
+
+- 运行时增删 `<style>` 或外部 stylesheet 规则。
+- 兄弟选择器：`+`、`~`。
+- `:not()`、`:has()`、`:is()` 等更复杂伪类。
+- `transition` / `animation`。
+- 样式变化的精细 dirty 标记，区分只重绘、需要 layout、需要重新测量文本。
 
 ## Lexbor 说明
 
@@ -462,6 +481,7 @@ behavior->paint(context, element, painter);
 - 左右方向键。
 - Home / End。
 - 鼠标点选。
+- Shift + 鼠标点选扩展选区。
 - 文本输入。
 
 中文输入法需要单独设计：
@@ -471,6 +491,10 @@ behavior->paint(context, element, painter);
 - `ImeEnd`
 
 建议第一阶段只做单行输入框。多行文本框后面再做。
+
+输入框后续待补充：
+
+- 双击中文词汇时按中文分词选中完整词。当前只保证 ASCII 单词、空白和单个非 ASCII 字符的基础行为，完整中文分词需要单独词法模块或接入分词库。
 
 ## 绘制流程
 
@@ -676,4 +700,3 @@ button:hover {
 - 渲染后端接口是否直接暴露 `SkCanvas*`，还是封装成更小的绘制命令接口。
 - 控件回调用元素 id 绑定，还是做事件订阅系统。
 - 默认主题是否先写死，还是从 CSS 全部控制。
-

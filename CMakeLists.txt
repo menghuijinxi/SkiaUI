@@ -120,6 +120,7 @@ target_link_libraries(SkuiWin32Dx12 PRIVATE
     dxguid
     dbghelp
     ole32
+    imm32
     shell32
     usp10
     windowscodecs

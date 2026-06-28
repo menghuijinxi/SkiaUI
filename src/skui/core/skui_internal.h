@@ -148,31 +148,55 @@ struct Node {
     std::vector<std::string> classes;
     std::string text;
     std::string value;
+    std::string placeholder;
+    std::string compositionText;
     std::string src;
     std::string action;
     std::string svgMarkup;
+    std::unordered_map<std::string, std::string> attributes;
     Style style;
     Style inlineStyle;
     Rect layout;
     bool hovered = false;
     bool active = false;
+    bool focused = false;
+    size_t cursorIndex = 0;
+    size_t selectionAnchor = 0;
+    size_t selectionStart = 0;
+    size_t selectionEnd = 0;
     Node* parent = nullptr;
     std::vector<std::unique_ptr<Node>> children;
 };
 
-struct StyleRule {
-    enum class Kind {
-        Tag,
-        Class,
-        Id
-    };
+struct AttributeSelector {
+    std::string name;
+    std::optional<std::string> value;
+};
 
-    Kind kind = Kind::Tag;
+struct CompoundSelector {
     std::string tag;
-    std::string selector;
-    std::string pseudo;
+    std::string id;
+    std::vector<std::string> classes;
+    std::vector<AttributeSelector> attributes;
+    std::vector<std::string> pseudos;
+};
+
+enum class SelectorCombinator {
+    None,
+    Descendant,
+    Child
+};
+
+struct SelectorPart {
+    SelectorCombinator combinator = SelectorCombinator::None;
+    CompoundSelector selector;
+};
+
+struct StyleRule {
+    std::vector<SelectorPart> selector;
     Style style;
     unsigned order = 0;
+    unsigned specificity = 0;
 };
 
 struct Document {
@@ -221,6 +245,7 @@ public:
     ~SkiaRenderer();
     void draw(Document& document, SkCanvas& canvas, int width, int height, float dpiScale);
     void clearCaches();
+    size_t textIndexAtOffset(std::string_view value, float size, bool bold, float offset);
 
 private:
     struct TextEntry {
@@ -259,7 +284,10 @@ private:
     void drawImage(SkCanvas& canvas, const Document& document, const Node& node);
     void drawInlineSvg(SkCanvas& canvas, const Node& node);
     void drawSvgMarkup(SkCanvas& canvas, const std::string& svg, const Rect& rect, SkColor currentColor);
+    void drawInputSelection(SkCanvas& canvas, const Node& node);
     void drawText(SkCanvas& canvas, const Node& node);
+    void drawInputCompositionUnderline(SkCanvas& canvas, const Node& node);
+    void drawInputCaret(SkCanvas& canvas, const Node& node);
     std::optional<std::string> readSvgAsset(const Document& document, std::string_view src);
     std::string resolveAssetPath(const Document& document, std::string_view src) const;
     ParsedSvg parseSvg(std::string_view svg, SkColor currentColor) const;
@@ -276,6 +304,7 @@ SkColor parseColor(std::string_view value, SkColor fallback);
 float clampf(float value, float lo, float hi);
 std::string trim(std::string_view value);
 std::vector<std::string> splitWhitespace(std::string_view value);
+void parseInlineStyle(std::string_view declarations, Style& style);
 void recomputeStyles(Document& document, const RuntimeOptions& options);
 
 }  // namespace skui

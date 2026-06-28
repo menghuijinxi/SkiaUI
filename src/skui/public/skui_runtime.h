@@ -28,10 +28,13 @@ enum class EventType {
     MouseLeave,
     MouseDown,
     MouseUp,
+    MouseDoubleClick,
     MouseWheel,
     KeyDown,
     KeyUp,
-    TextInput
+    TextInput,
+    ImeComposition,
+    ImeEnd
 };
 
 enum class MouseButton {
@@ -44,7 +47,8 @@ enum class MouseButton {
 enum class ElementEventType {
     MouseDown,
     MouseUp,
-    Click
+    Click,
+    Input
 };
 
 struct ElementEvent {
@@ -61,6 +65,8 @@ struct ElementEvent {
 };
 
 using ElementEventCallback = std::function<void(const ElementEvent&)>;
+using ClipboardReadCallback = std::function<std::string()>;
+using ClipboardWriteCallback = std::function<void(std::string_view)>;
 
 struct RuntimeOptions {
     std::string assetRoot;
@@ -68,6 +74,8 @@ struct RuntimeOptions {
     SkColor clearColor = SkColorSetRGB(7, 12, 18);
     Theme theme = Theme::dark();
     ElementEventCallback onElementEvent;
+    ClipboardReadCallback readClipboardText;
+    ClipboardWriteCallback writeClipboardText;
 };
 
 struct Event {
@@ -77,6 +85,8 @@ struct Event {
     float wheelDelta = 0.0f;
     MouseButton button = MouseButton::None;
     unsigned key = 0;
+    bool shiftKey = false;
+    bool ctrlKey = false;
     std::string text;
 };
 
@@ -102,6 +112,9 @@ public:
     bool renderToBgraPixels(uint32_t* pixels, int width, int height, size_t rowBytes, float dpiScale);
     bool addClassById(std::string_view id, std::string_view className);
     bool removeClassById(std::string_view id, std::string_view className);
+    bool setStyleById(std::string_view id, std::string_view declarations);
+    bool setAttributeById(std::string_view id, std::string_view name, std::string_view value);
+    bool removeAttributeById(std::string_view id, std::string_view name);
     [[nodiscard]] bool hasClassById(std::string_view id, std::string_view className) const;
     void setElementEventCallback(ElementEventCallback callback);
 
