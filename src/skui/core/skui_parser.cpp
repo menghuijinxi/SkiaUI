@@ -356,7 +356,33 @@ void mergeStyle(Style& target, const Style& source) {
     }
 }
 
+Style defaultStyleForNode(const Node& node) {
+    Style style;
+    if (!node.parent) {
+        style.flexDirection = YGFlexDirectionColumn;
+        style.alignItems = YGAlignStretch;
+        style.flexGrow = 1.0f;
+    }
+    return style;
+}
+
 bool matchesRule(const Node& node, const StyleRule& rule) {
+    if (!rule.pseudo.empty()) {
+        if (rule.pseudo == "hover") {
+            if (!node.hovered) {
+                return false;
+            }
+        } else if (rule.pseudo == "active") {
+            if (!node.active) {
+                return false;
+            }
+        } else {
+            return false;
+        }
+    }
+    if (!rule.tag.empty() && node.tag != rule.tag) {
+        return false;
+    }
     if (rule.kind == StyleRule::Kind::Tag) {
         return node.tag == rule.selector;
     }
@@ -408,6 +434,13 @@ void applyInheritedStyle(Node& node, const RuntimeOptions& options) {
     }
     for (auto& child : node.children) {
         applyInheritedStyle(*child, options);
+    }
+}
+
+void resetStyles(Node& node) {
+    node.style = defaultStyleForNode(node);
+    for (auto& child : node.children) {
+        resetStyles(*child);
     }
 }
 
@@ -685,6 +718,19 @@ void parseStyleSheet(std::string_view css, std::vector<StyleRule>& rules) {
             }
             StyleRule rule;
             rule.order = order++;
+            const size_t pseudoPos = selector.find(':');
+            if (pseudoPos != std::string::npos) {
+                rule.pseudo = lower(trim(std::string_view(selector).substr(pseudoPos + 1)));
+                selector = trim(std::string_view(selector).substr(0, pseudoPos));
+            }
+            if (selector.empty()) {
+                continue;
+            }
+            const size_t classPos = selector.find('.');
+            if (classPos != std::string::npos && classPos > 0) {
+                rule.tag = lower(selector.substr(0, classPos));
+                selector = selector.substr(classPos);
+            }
             if (selector[0] == '.') {
                 rule.kind = StyleRule::Kind::Class;
                 rule.selector = selector.substr(1);
@@ -731,6 +777,7 @@ std::unique_ptr<Node> convertElement(lxb_dom_element_t* element, Node* parent, s
     node->classes = splitWhitespace(attr(element, "class"));
     node->value = attr(element, "value");
     node->src = attr(element, "src");
+    node->action = attr(element, "data-action");
 
     const std::string inlineStyle = attr(element, "style");
     if (!inlineStyle.empty()) {
@@ -807,9 +854,6 @@ bool DocumentParser::loadString(std::string_view html,
 
     auto root = std::make_unique<Node>();
     root->tag = "root";
-    root->style.flexDirection = YGFlexDirectionColumn;
-    root->style.alignItems = YGAlignStretch;
-    root->style.flexGrow = 1.0f;
 
     std::vector<StyleRule> rules;
     if (lxb_html_head_element_t* head = lxb_html_document_head_element(htmlDocument.get())) {
@@ -827,12 +871,20 @@ bool DocumentParser::loadString(std::string_view html,
     outDocument.root = std::move(root);
     outDocument.rules = std::move(rules);
     outDocument.basePath = std::string(basePath);
-    applyInheritedStyle(*outDocument.root, options_);
-    applyRules(*outDocument.root, outDocument.rules);
-    applyInheritedStyle(*outDocument.root, options_);
-    applyInlineStyles(*outDocument.root);
-    applyInheritedStyle(*outDocument.root, options_);
+    recomputeStyles(outDocument, options_);
     return true;
+}
+
+void recomputeStyles(Document& document, const RuntimeOptions& options) {
+    if (!document.root) {
+        return;
+    }
+    resetStyles(*document.root);
+    applyInheritedStyle(*document.root, options);
+    applyRules(*document.root, document.rules);
+    applyInheritedStyle(*document.root, options);
+    applyInlineStyles(*document.root);
+    applyInheritedStyle(*document.root, options);
 }
 
 }  // namespace skui

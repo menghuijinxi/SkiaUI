@@ -4,9 +4,11 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <string_view>
+#include <vector>
 
 class SkCanvas;
 
@@ -20,16 +22,10 @@ struct Theme {
     static Theme dark();
 };
 
-struct RuntimeOptions {
-    std::string assetRoot;
-    float scale = 1.0f;
-    SkColor clearColor = SkColorSetRGB(7, 12, 18);
-    Theme theme = Theme::dark();
-};
-
 enum class EventType {
     None,
     MouseMove,
+    MouseLeave,
     MouseDown,
     MouseUp,
     MouseWheel,
@@ -43,6 +39,35 @@ enum class MouseButton {
     Left,
     Middle,
     Right
+};
+
+enum class ElementEventType {
+    MouseDown,
+    MouseUp,
+    Click
+};
+
+struct ElementEvent {
+    ElementEventType type = ElementEventType::Click;
+    std::string tag;
+    std::string id;
+    std::vector<std::string> classes;
+    std::string action;
+    std::string text;
+    std::string value;
+    float x = 0.0f;
+    float y = 0.0f;
+    MouseButton button = MouseButton::None;
+};
+
+using ElementEventCallback = std::function<void(const ElementEvent&)>;
+
+struct RuntimeOptions {
+    std::string assetRoot;
+    float scale = 1.0f;
+    SkColor clearColor = SkColorSetRGB(7, 12, 18);
+    Theme theme = Theme::dark();
+    ElementEventCallback onElementEvent;
 };
 
 struct Event {
@@ -75,6 +100,10 @@ public:
     bool handleEvent(const Event& event);
     void render(SkCanvas& canvas);
     bool renderToBgraPixels(uint32_t* pixels, int width, int height, size_t rowBytes, float dpiScale);
+    bool addClassById(std::string_view id, std::string_view className);
+    bool removeClassById(std::string_view id, std::string_view className);
+    [[nodiscard]] bool hasClassById(std::string_view id, std::string_view className) const;
+    void setElementEventCallback(ElementEventCallback callback);
 
     [[nodiscard]] int width() const;
     [[nodiscard]] int height() const;

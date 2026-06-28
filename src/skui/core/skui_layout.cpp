@@ -82,6 +82,8 @@ void LayoutEngine::layout(Document& document, float width, float height) {
     YGNodeStyleSetWidth(rootYoga.get(), std::max(1.0f, width));
     YGNodeStyleSetHeight(rootYoga.get(), std::max(1.0f, height));
     buildYoga(*document.root, rootYoga.get());
+    YGNodeStyleSetWidth(rootYoga.get(), std::max(1.0f, width));
+    YGNodeStyleSetHeight(rootYoga.get(), std::max(1.0f, height));
     YGNodeCalculateLayout(rootYoga.get(), std::max(1.0f, width), std::max(1.0f, height), YGDirectionLTR);
     readYoga(*document.root, rootYoga.get(), 0.0f, 0.0f);
 }

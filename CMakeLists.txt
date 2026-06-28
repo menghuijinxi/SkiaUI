@@ -6,6 +6,8 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+include(CTest)
+
 find_package(unofficial-skia CONFIG REQUIRED)
 find_package(RmlUi CONFIG REQUIRED)
 find_package(yoga CONFIG REQUIRED)
@@ -42,6 +44,10 @@ add_library(SkuiWin32Dx12 STATIC
 
 add_executable(SkiaUiDesk WIN32
     src/skui_demo/main.cpp
+)
+
+add_executable(SkuiInteractionTests
+    tests/skui_interaction_tests.cpp
 )
 
 foreach(app_target IN ITEMS SkiaRelayDesk SkiaLayerDesk)
@@ -144,6 +150,11 @@ target_link_libraries(SkiaUiDesk PRIVATE
     usp10
 )
 
+target_link_libraries(SkuiInteractionTests PRIVATE
+    Skui
+    usp10
+)
+
 target_compile_definitions(SkiaUiDesk PRIVATE
     WIN32_LEAN_AND_MEAN
     NOMINMAX
@@ -155,6 +166,11 @@ if(MSVC)
     target_compile_options(Skui PRIVATE /utf-8 /permissive- /Zc:__cplusplus)
     target_compile_options(SkuiWin32Dx12 PRIVATE /utf-8 /permissive- /Zc:__cplusplus)
     target_compile_options(SkiaUiDesk PRIVATE /utf-8 /permissive- /Zc:__cplusplus)
+    target_compile_options(SkuiInteractionTests PRIVATE /utf-8 /permissive- /Zc:__cplusplus)
+endif()
+
+if(BUILD_TESTING)
+    add_test(NAME SkuiInteractionTests COMMAND SkuiInteractionTests)
 endif()
 
 target_link_libraries(RmlLayerDesk PRIVATE

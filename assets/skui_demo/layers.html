@@ -40,39 +40,59 @@
     .nav-active {
       position: absolute;
       left: 3px;
-      top: 88px;
       width: 115px;
-      height: 102px;
+      height: 103px;
       background: linear-gradient(to right, rgba(16,224,207,0.15), rgba(81,178,203,0.06));
     }
     .nav-line {
       position: absolute;
       left: 3px;
-      top: 88px;
       width: 5px;
-      height: 102px;
+      height: 103px;
       background-color: #22e0d3;
     }
+    .nav-pos-layers { top: 88px; }
+    .nav-pos-edit { top: 191px; }
+    .nav-pos-draw { top: 294px; }
+    .nav-pos-highlight { top: 397px; }
+    .nav-pos-properties { top: 500px; }
+    .nav-pos-change { top: 603px; }
+    .nav-pos-settings { top: 706px; }
     .nav-item {
       position: absolute;
-      width: 70px;
-      height: 82px;
+      width: 115px;
+      height: 103px;
       flex-direction: column;
       align-items: center;
+      padding-top: 16px;
+      background-color: rgba(0,0,0,0);
       color: rgba(222,230,242,0.82);
       font-size: 17px;
     }
     .nav-item-active {
       color: #30eadc;
     }
+    .nav-item:hover {
+      color: rgba(239,247,253,0.95);
+      background: linear-gradient(to right, rgba(36,232,219,0.20), rgba(62,139,165,0.14), rgba(20,39,55,0.08));
+    }
+    .nav-item:active {
+      color: rgba(239,247,253,0.88);
+      background: linear-gradient(to right, rgba(26,216,204,0.30), rgba(40,133,154,0.20), rgba(15,33,47,0.11));
+    }
+    .nav-item-active:hover {
+      color: #30eadc;
+      background: linear-gradient(to right, rgba(34,232,219,0.28), rgba(72,181,205,0.16), rgba(20,39,55,0.09));
+    }
+    .nav-item-active:active {
+      color: #30eadc;
+      background: linear-gradient(to right, rgba(21,218,205,0.35), rgba(66,166,190,0.20), rgba(18,37,53,0.12));
+    }
     .nav-icon {
       width: 52px;
       height: 48px;
       align-items: center;
       justify-content: center;
-    }
-    .nav-icon-active {
-      height: 52px;
     }
     .nav-label {
       width: 70px;
@@ -81,7 +101,10 @@
       justify-content: center;
       font-size: 17px;
     }
-    .nav-label-active {
+    .nav-item-active .nav-icon {
+      height: 52px;
+    }
+    .nav-item-active .nav-label {
       font-size: 20px;
     }
     .panel {
@@ -143,12 +166,28 @@
       background: linear-gradient(to right, rgba(18,190,178,0.51), rgba(8,95,102,0.59));
       border-color: rgba(38,237,218,0.69);
     }
+    .button-primary:hover {
+      background: linear-gradient(to right, rgba(31,224,211,0.64), rgba(10,116,124,0.68));
+      border-color: rgba(67,255,244,0.82);
+    }
+    .button-primary:active {
+      background: linear-gradient(to right, rgba(9,151,142,0.72), rgba(7,72,82,0.74));
+      border-color: rgba(32,211,199,0.88);
+    }
     .button-secondary {
       left: 431px;
       top: 110px;
       width: 266px;
       background-color: rgba(19,32,45,0.41);
       border-color: rgba(142,170,193,0.56);
+    }
+    .button-secondary:hover {
+      background-color: rgba(30,48,66,0.55);
+      border-color: rgba(170,202,225,0.70);
+    }
+    .button-secondary:active {
+      background-color: rgba(11,24,36,0.64);
+      border-color: rgba(105,139,166,0.76);
     }
     .button-icon {
       width: 36px;
@@ -203,6 +242,18 @@
     }
     .row-selected {
       background: linear-gradient(to right, rgba(0,168,150,0.59), rgba(20,173,166,0.41));
+    }
+    .row:hover {
+      background: linear-gradient(to right, rgba(24,118,121,0.50), rgba(25,90,105,0.34), rgba(12,32,45,0.24));
+    }
+    .row:active {
+      background: linear-gradient(to right, rgba(18,150,140,0.58), rgba(19,96,106,0.40), rgba(8,27,39,0.30));
+    }
+    .row-selected:hover {
+      background: linear-gradient(to right, rgba(8,190,171,0.67), rgba(26,190,183,0.49));
+    }
+    .row-selected:active {
+      background: linear-gradient(to right, rgba(0,135,122,0.75), rgba(12,143,137,0.60));
     }
     .row-drag { position: absolute; left: 5px; top: 0px; width: 28px; height: 54px; }
     .row-geom { position: absolute; left: 47px; top: 0px; width: 24px; height: 54px; }
@@ -336,53 +387,53 @@
     <svg class="menu" viewBox="0 0 24 24" fill="none" stroke="#D5E0EA" stroke-opacity="0.86" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
       <path d="M4.2 6.8h15.6"></path><path d="M4.2 12h15.6"></path><path d="M4.2 17.2h15.6"></path>
     </svg>
-    <div class="nav-active"></div>
-    <div class="nav-line"></div>
+    <div id="nav-active-bg" class="nav-active nav-pos-layers"></div>
 
-    <div class="nav-item nav-item-active" style="left:29px;top:104px">
-      <svg class="nav-icon nav-icon-active" viewBox="0 0 24 24" fill="none" stroke="#30EADC" stroke-width="2.05" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M12 3.2 4.2 7.2 12 11.2l7.8-4-7.8-4Z" fill="#30EADC" fill-opacity="0.92"></path>
+    <div id="nav-item-layers" class="nav-item nav-item-active" style="left:3px;top:88px" data-action="nav-layers">
+      <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.05" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 3.2 4.2 7.2 12 11.2l7.8-4-7.8-4Z" fill="currentColor" fill-opacity="0.92"></path>
         <path d="M4.2 12 12 16l7.8-4"></path><path d="M4.2 16.6 12 20.6l7.8-4"></path>
       </svg>
-      <div class="nav-label nav-label-active">图层</div>
+      <div class="nav-label">图层</div>
     </div>
-    <div class="nav-item" style="left:29px;top:207px">
-      <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="#DEE6F2" stroke-opacity="0.82" stroke-width="2.05" stroke-linecap="round" stroke-linejoin="round">
+    <div id="nav-item-edit" class="nav-item" style="left:3px;top:191px" data-action="nav-edit">
+      <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-opacity="0.82" stroke-width="2.05" stroke-linecap="round" stroke-linejoin="round">
         <path d="M12 3.6H5.7c-1.2 0-2.1.9-2.1 2.1v12.6c0 1.2.9 2.1 2.1 2.1h12.6c1.2 0 2.1-.9 2.1-2.1V12"></path>
         <path d="M16.8 3.9c.8-.8 2.1-.8 2.9 0s.8 2.1 0 2.9l-8.9 8.9-4 1 1-4 9-8.8Z"></path><path d="M15.5 5.2l3.3 3.3"></path>
       </svg>
       <div class="nav-label">编辑</div>
     </div>
-    <div class="nav-item" style="left:29px;top:310px">
-      <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="#DEE6F2" stroke-opacity="0.82" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <div id="nav-item-draw" class="nav-item" style="left:3px;top:294px" data-action="nav-draw">
+      <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-opacity="0.82" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <path d="M4.2 19.8 5 16.2 16.4 4.8l2.8 2.8L7.8 19l-3.6.8Z"></path><path d="M14.8 6.4 17.6 9.2"></path>
       </svg>
       <div class="nav-label">绘制</div>
     </div>
-    <div class="nav-item" style="left:29px;top:413px">
-      <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="#DEE6F2" stroke-opacity="0.82" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round">
-        <circle cx="12" cy="12" r="8.1"></circle><circle cx="12" cy="12" r="3.8"></circle><circle cx="12" cy="12" r="1.25" fill="#DEE6F2" fill-opacity="0.82" stroke="none"></circle>
+    <div id="nav-item-highlight" class="nav-item" style="left:3px;top:397px" data-action="nav-highlight">
+      <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-opacity="0.82" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="8.1"></circle><circle cx="12" cy="12" r="3.8"></circle><circle cx="12" cy="12" r="1.25" fill="currentColor" fill-opacity="0.82" stroke="none"></circle>
       </svg>
       <div class="nav-label">高亮</div>
     </div>
-    <div class="nav-item" style="left:29px;top:517px">
-      <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="#DEE6F2" stroke-opacity="0.82" stroke-width="1.95" stroke-linecap="round" stroke-linejoin="round">
+    <div id="nav-item-properties" class="nav-item" style="left:3px;top:500px" data-action="nav-properties">
+      <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-opacity="0.82" stroke-width="1.95" stroke-linecap="round" stroke-linejoin="round">
         <path d="M6.1 3.5h11.8v17H6.1Z"></path><path d="M9 7.2h6"></path><path d="M9 11.5h6"></path><path d="M9 15.8h6"></path>
       </svg>
       <div class="nav-label">属性</div>
     </div>
-    <div class="nav-item" style="left:29px;top:622px">
-      <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="#DEE6F2" stroke-opacity="0.82" stroke-width="1.95" stroke-linecap="round" stroke-linejoin="round">
+    <div id="nav-item-change" class="nav-item" style="left:3px;top:603px" data-action="nav-change">
+      <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-opacity="0.82" stroke-width="1.95" stroke-linecap="round" stroke-linejoin="round">
         <path d="M4 7.2h15"></path><path d="M15.1 3.9 19 7.2l-3.9 3.3"></path><path d="M20 16.8H5"></path><path d="M8.9 13.5 5 16.8l3.9 3.3"></path>
       </svg>
       <div class="nav-label">变更</div>
     </div>
-    <div class="nav-item" style="left:29px;top:729px">
-      <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="#DEE6F2" stroke-opacity="0.82" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <div id="nav-item-settings" class="nav-item" style="left:3px;top:706px" data-action="nav-settings">
+      <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-opacity="0.82" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.09a2 2 0 0 1 1 1.74v.5a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.38a2 2 0 0 0-.73-2.73l-.15-.09a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2Z"></path><circle cx="12" cy="12" r="3"></circle>
       </svg>
       <div class="nav-label">设置</div>
     </div>
+    <div id="nav-active-line" class="nav-line nav-pos-layers"></div>
 
     <div class="panel"></div>
     <div class="title-row">
@@ -391,13 +442,13 @@
       <div class="title-sub"> / 图层管理</div>
     </div>
 
-    <button class="button button-primary">
+    <button class="button button-primary" data-action="import-shp">
       <svg class="button-icon" viewBox="0 0 24 24" fill="none" stroke="#F2FCFF" stroke-opacity="0.92" stroke-width="2.15" stroke-linecap="round" stroke-linejoin="round">
         <path d="M12 16.5V5.4"></path><path d="M7.1 10.3 12 5.4l4.9 4.9"></path><path d="M5.2 15.6v3.2h13.6v-3.2"></path>
       </svg>
       <span>导入SHP</span>
     </button>
-    <button class="button button-secondary">
+    <button class="button button-secondary" data-action="create-layer">
       <svg class="button-icon" viewBox="0 0 24 24" fill="none" stroke="#F2FCFF" stroke-opacity="0.92" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
         <path d="M12 5v14"></path><path d="M5 12h14"></path>
       </svg>
@@ -418,19 +469,19 @@
       <span class="cell-crs">坐标系</span>
     </div>
 
-    <div class="row row-selected" style="top:280px">
+    <div id="layer-row-parcels" class="row row-selected" style="top:280px" data-action="select-layer:layer-row-parcels">
       <svg class="row-drag" viewBox="0 0 24 24" fill="none"><circle cx="8" cy="5" r="1.6" fill="#DCE8F1" fill-opacity="0.78"></circle><circle cx="16" cy="5" r="1.6" fill="#DCE8F1" fill-opacity="0.78"></circle><circle cx="8" cy="12" r="1.6" fill="#DCE8F1" fill-opacity="0.78"></circle><circle cx="16" cy="12" r="1.6" fill="#DCE8F1" fill-opacity="0.78"></circle><circle cx="8" cy="19" r="1.6" fill="#DCE8F1" fill-opacity="0.78"></circle><circle cx="16" cy="19" r="1.6" fill="#DCE8F1" fill-opacity="0.78"></circle></svg><svg class="row-geom" viewBox="0 0 24 24" fill="none" stroke="#3FEDE1" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M12.2 2.9 20.1 8.8 17.2 21 5.7 20.2 3.7 9.1 12.2 2.9Z"></path></svg><div class="row-name">地块边界</div><svg class="row-eye" viewBox="0 0 24 24" fill="none" stroke="#30EADC" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3.2 12s3.3-5.2 8.8-5.2 8.8 5.2 8.8 5.2-3.3 5.2-8.8 5.2S3.2 12 3.2 12Z"></path><circle cx="12" cy="12" r="2.25" fill="#30EADC" stroke="none"></circle></svg><div class="row-count">6,523</div><div class="row-type">Polygon</div><div class="row-crs">EPSG:4326</div><svg class="row-more" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="5.4" r="1.9" fill="#E8F1F8" fill-opacity="0.84"></circle><circle cx="12" cy="12" r="1.9" fill="#E8F1F8" fill-opacity="0.84"></circle><circle cx="12" cy="18.6" r="1.9" fill="#E8F1F8" fill-opacity="0.84"></circle></svg>
     </div>
-    <div class="row" style="top:334px">
+    <div id="layer-row-roads" class="row" style="top:334px" data-action="select-layer:layer-row-roads">
       <svg class="row-drag" viewBox="0 0 24 24" fill="none"><circle cx="8" cy="5" r="1.6" fill="#DCE8F1" fill-opacity="0.78"></circle><circle cx="16" cy="5" r="1.6" fill="#DCE8F1" fill-opacity="0.78"></circle><circle cx="8" cy="12" r="1.6" fill="#DCE8F1" fill-opacity="0.78"></circle><circle cx="16" cy="12" r="1.6" fill="#DCE8F1" fill-opacity="0.78"></circle><circle cx="8" cy="19" r="1.6" fill="#DCE8F1" fill-opacity="0.78"></circle><circle cx="16" cy="19" r="1.6" fill="#DCE8F1" fill-opacity="0.78"></circle></svg><svg class="row-geom" viewBox="0 0 24 24" fill="none" stroke="#D8E2EE" stroke-opacity="0.86" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M3.8 5.4 9.1 9.6 13.6 13.2 20.2 18.3"></path><circle cx="3.8" cy="5.4" r="1.35"></circle><circle cx="20.2" cy="18.3" r="1.35"></circle></svg><div class="row-name">道路中心线</div><svg class="row-eye" viewBox="0 0 24 24" fill="none" stroke="#30EADC" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3.2 12s3.3-5.2 8.8-5.2 8.8 5.2 8.8 5.2-3.3 5.2-8.8 5.2S3.2 12 3.2 12Z"></path><circle cx="12" cy="12" r="2.25" fill="#30EADC" stroke="none"></circle></svg><div class="row-count">2,431</div><div class="row-type">LineString</div><div class="row-crs">EPSG:4326</div><svg class="row-more" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="5.4" r="1.9" fill="#E8F1F8" fill-opacity="0.84"></circle><circle cx="12" cy="12" r="1.9" fill="#E8F1F8" fill-opacity="0.84"></circle><circle cx="12" cy="18.6" r="1.9" fill="#E8F1F8" fill-opacity="0.84"></circle></svg>
     </div>
-    <div class="row" style="top:388px">
+    <div id="layer-row-control" class="row" style="top:388px" data-action="select-layer:layer-row-control">
       <svg class="row-drag" viewBox="0 0 24 24" fill="none"><circle cx="8" cy="5" r="1.6" fill="#DCE8F1" fill-opacity="0.78"></circle><circle cx="16" cy="5" r="1.6" fill="#DCE8F1" fill-opacity="0.78"></circle><circle cx="8" cy="12" r="1.6" fill="#DCE8F1" fill-opacity="0.78"></circle><circle cx="16" cy="12" r="1.6" fill="#DCE8F1" fill-opacity="0.78"></circle><circle cx="8" cy="19" r="1.6" fill="#DCE8F1" fill-opacity="0.78"></circle><circle cx="16" cy="19" r="1.6" fill="#DCE8F1" fill-opacity="0.78"></circle></svg><svg class="row-geom" viewBox="0 0 24 24" fill="none" stroke="#D8E2EE" stroke-opacity="0.86" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="6.2"></circle></svg><div class="row-name">控制点</div><svg class="row-eye" viewBox="0 0 24 24" fill="none" stroke="#30EADC" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3.2 12s3.3-5.2 8.8-5.2 8.8 5.2 8.8 5.2-3.3 5.2-8.8 5.2S3.2 12 3.2 12Z"></path><circle cx="12" cy="12" r="2.25" fill="#30EADC" stroke="none"></circle></svg><div class="row-count">1,842</div><div class="row-type">Point</div><div class="row-crs">EPSG:4326</div><svg class="row-more" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="5.4" r="1.9" fill="#E8F1F8" fill-opacity="0.84"></circle><circle cx="12" cy="12" r="1.9" fill="#E8F1F8" fill-opacity="0.84"></circle><circle cx="12" cy="18.6" r="1.9" fill="#E8F1F8" fill-opacity="0.84"></circle></svg>
     </div>
-    <div class="row" style="top:442px">
+    <div id="layer-row-rivers" class="row" style="top:442px" data-action="select-layer:layer-row-rivers">
       <svg class="row-drag" viewBox="0 0 24 24" fill="none"><circle cx="8" cy="5" r="1.6" fill="#DCE8F1" fill-opacity="0.78"></circle><circle cx="16" cy="5" r="1.6" fill="#DCE8F1" fill-opacity="0.78"></circle><circle cx="8" cy="12" r="1.6" fill="#DCE8F1" fill-opacity="0.78"></circle><circle cx="16" cy="12" r="1.6" fill="#DCE8F1" fill-opacity="0.78"></circle><circle cx="8" cy="19" r="1.6" fill="#DCE8F1" fill-opacity="0.78"></circle><circle cx="16" cy="19" r="1.6" fill="#DCE8F1" fill-opacity="0.78"></circle></svg><svg class="row-geom" viewBox="0 0 24 24" fill="none" stroke="#D8E2EE" stroke-opacity="0.86" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M3.8 9.4c3.3 2.4 6.1 2.4 9.3 0 2.7-2 5-2.1 7.1-.3"></path><path d="M3.8 14.8c3.3 2.4 6.1 2.4 9.3 0 2.7-2 5-2.1 7.1-.3"></path></svg><div class="row-name">河流</div><svg class="row-eye" viewBox="0 0 24 24" fill="none" stroke="#30EADC" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3.2 12s3.3-5.2 8.8-5.2 8.8 5.2 8.8 5.2-3.3 5.2-8.8 5.2S3.2 12 3.2 12Z"></path><circle cx="12" cy="12" r="2.25" fill="#30EADC" stroke="none"></circle></svg><div class="row-count">312</div><div class="row-type">LineString</div><div class="row-crs">EPSG:4326</div><svg class="row-more" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="5.4" r="1.9" fill="#E8F1F8" fill-opacity="0.84"></circle><circle cx="12" cy="12" r="1.9" fill="#E8F1F8" fill-opacity="0.84"></circle><circle cx="12" cy="18.6" r="1.9" fill="#E8F1F8" fill-opacity="0.84"></circle></svg>
     </div>
-    <div class="row" style="top:496px">
+    <div id="layer-row-buildings" class="row" style="top:496px" data-action="select-layer:layer-row-buildings">
       <svg class="row-drag" viewBox="0 0 24 24" fill="none"><circle cx="8" cy="5" r="1.6" fill="#DCE8F1" fill-opacity="0.78"></circle><circle cx="16" cy="5" r="1.6" fill="#DCE8F1" fill-opacity="0.78"></circle><circle cx="8" cy="12" r="1.6" fill="#DCE8F1" fill-opacity="0.78"></circle><circle cx="16" cy="12" r="1.6" fill="#DCE8F1" fill-opacity="0.78"></circle><circle cx="8" cy="19" r="1.6" fill="#DCE8F1" fill-opacity="0.78"></circle><circle cx="16" cy="19" r="1.6" fill="#DCE8F1" fill-opacity="0.78"></circle></svg><svg class="row-geom" viewBox="0 0 24 24" fill="none" stroke="#D8E2EE" stroke-opacity="0.86" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M5.1 5.1h13.8v13.8H5.1Z"></path></svg><div class="row-name">建筑物</div><svg class="row-eye" viewBox="0 0 24 24" fill="none" stroke="#30EADC" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3.2 12s3.3-5.2 8.8-5.2 8.8 5.2 8.8 5.2-3.3 5.2-8.8 5.2S3.2 12 3.2 12Z"></path><circle cx="12" cy="12" r="2.25" fill="#30EADC" stroke="none"></circle></svg><div class="row-count">164</div><div class="row-type">Polygon</div><div class="row-crs">EPSG:4326</div><svg class="row-more" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="5.4" r="1.9" fill="#E8F1F8" fill-opacity="0.84"></circle><circle cx="12" cy="12" r="1.9" fill="#E8F1F8" fill-opacity="0.84"></circle><circle cx="12" cy="18.6" r="1.9" fill="#E8F1F8" fill-opacity="0.84"></circle></svg>
     </div>
 

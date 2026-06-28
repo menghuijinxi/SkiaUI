@@ -16,6 +16,7 @@
 #include <cmath>
 #include <cstdint>
 #include <memory>
+#include <windowsx.h>
 #include <vector>
 
 namespace skui::win32 {
@@ -63,6 +64,10 @@ public:
         SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE);
         dpi_ = systemDpi();
         backgroundBrush_ = CreateSolidBrush(options_.clearColor);
+
+        if (options_.onRuntimeReady) {
+            options_.onRuntimeReady(runtime_);
+        }
 
         if (!options_.documentPath.empty()) {
             runtime_.loadDocument(options_.documentPath);
@@ -142,6 +147,7 @@ private:
     bool hasPresentedFrame_ = false;
     int presentedWidth_ = 0;
     int presentedHeight_ = 0;
+    bool trackingMouseLeave_ = false;
 
     static Impl* get(HWND hwnd) {
         return reinterpret_cast<Impl*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
@@ -149,6 +155,34 @@ private:
 
     void markFrameDirty() {
         frameDirty_ = true;
+    }
+
+    void sendMouseEvent(HWND hwnd, EventType type, LPARAM lParam, MouseButton button = MouseButton::None) {
+        Event event;
+        event.type = type;
+        event.button = button;
+        if (type != EventType::MouseLeave) {
+            event.x = static_cast<float>(GET_X_LPARAM(lParam));
+            event.y = static_cast<float>(GET_Y_LPARAM(lParam));
+        }
+        runtime_.handleEvent(event);
+        if (runtime_.dirty()) {
+            markFrameDirty();
+            requestRepaint(hwnd, false);
+        }
+    }
+
+    void beginMouseLeaveTracking(HWND hwnd) {
+        if (trackingMouseLeave_) {
+            return;
+        }
+        TRACKMOUSEEVENT track{};
+        track.cbSize = sizeof(track);
+        track.dwFlags = TME_LEAVE;
+        track.hwndTrack = hwnd;
+        if (TrackMouseEvent(&track)) {
+            trackingMouseLeave_ = true;
+        }
     }
 
     void requestRepaint(HWND hwnd, bool immediate) {
@@ -213,6 +247,44 @@ private:
             app->requestRepaint(hwnd, true);
             return 0;
         }
+        case WM_MOUSEMOVE:
+            app->beginMouseLeaveTracking(hwnd);
+            app->sendMouseEvent(hwnd, EventType::MouseMove, lParam);
+            return 0;
+        case WM_MOUSELEAVE:
+            app->trackingMouseLeave_ = false;
+            app->sendMouseEvent(hwnd, EventType::MouseLeave, lParam);
+            return 0;
+        case WM_LBUTTONDOWN:
+            SetCapture(hwnd);
+            app->sendMouseEvent(hwnd, EventType::MouseDown, lParam, MouseButton::Left);
+            return 0;
+        case WM_LBUTTONUP:
+            if (GetCapture() == hwnd) {
+                ReleaseCapture();
+            }
+            app->sendMouseEvent(hwnd, EventType::MouseUp, lParam, MouseButton::Left);
+            return 0;
+        case WM_MBUTTONDOWN:
+            SetCapture(hwnd);
+            app->sendMouseEvent(hwnd, EventType::MouseDown, lParam, MouseButton::Middle);
+            return 0;
+        case WM_MBUTTONUP:
+            if (GetCapture() == hwnd) {
+                ReleaseCapture();
+            }
+            app->sendMouseEvent(hwnd, EventType::MouseUp, lParam, MouseButton::Middle);
+            return 0;
+        case WM_RBUTTONDOWN:
+            SetCapture(hwnd);
+            app->sendMouseEvent(hwnd, EventType::MouseDown, lParam, MouseButton::Right);
+            return 0;
+        case WM_RBUTTONUP:
+            if (GetCapture() == hwnd) {
+                ReleaseCapture();
+            }
+            app->sendMouseEvent(hwnd, EventType::MouseUp, lParam, MouseButton::Right);
+            return 0;
         case WM_KEYDOWN:
             if (wParam == VK_ESCAPE) {
                 DestroyWindow(hwnd);

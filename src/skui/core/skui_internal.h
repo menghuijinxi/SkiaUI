@@ -149,6 +149,7 @@ struct Node {
     std::string text;
     std::string value;
     std::string src;
+    std::string action;
     std::string svgMarkup;
     Style style;
     Style inlineStyle;
@@ -167,7 +168,9 @@ struct StyleRule {
     };
 
     Kind kind = Kind::Tag;
+    std::string tag;
     std::string selector;
+    std::string pseudo;
     Style style;
     unsigned order = 0;
 };
@@ -255,12 +258,12 @@ private:
     void drawBox(SkCanvas& canvas, const Node& node);
     void drawImage(SkCanvas& canvas, const Document& document, const Node& node);
     void drawInlineSvg(SkCanvas& canvas, const Node& node);
-    void drawSvgMarkup(SkCanvas& canvas, const std::string& svg, const Rect& rect);
+    void drawSvgMarkup(SkCanvas& canvas, const std::string& svg, const Rect& rect, SkColor currentColor);
     void drawText(SkCanvas& canvas, const Node& node);
     std::optional<std::string> readSvgAsset(const Document& document, std::string_view src);
     std::string resolveAssetPath(const Document& document, std::string_view src) const;
-    ParsedSvg parseSvg(std::string_view svg) const;
-    const ParsedSvg& parsedSvg(std::string_view svg);
+    ParsedSvg parseSvg(std::string_view svg, SkColor currentColor) const;
+    const ParsedSvg& parsedSvg(std::string_view svg, SkColor currentColor);
     const TextEntry& textEntry(std::string_view value, float size, bool bold);
     float textWidth(std::string_view value, float size, bool bold);
     std::unordered_map<std::string, ParsedSvg> parsedSvgCache_;
@@ -273,5 +276,6 @@ SkColor parseColor(std::string_view value, SkColor fallback);
 float clampf(float value, float lo, float hi);
 std::string trim(std::string_view value);
 std::vector<std::string> splitWhitespace(std::string_view value);
+void recomputeStyles(Document& document, const RuntimeOptions& options);
 
 }  // namespace skui

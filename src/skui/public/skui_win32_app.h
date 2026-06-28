@@ -11,6 +11,7 @@
 
 #include <windows.h>
 
+#include <functional>
 #include <string>
 
 namespace skui::win32 {
@@ -22,6 +23,7 @@ struct WindowOptions {
     COLORREF clearColor = RGB(7, 12, 18);
     std::string documentPath;
     RuntimeOptions runtime;
+    std::function<void(Runtime&)> onRuntimeReady;
 };
 
 class Dx12WindowApp {

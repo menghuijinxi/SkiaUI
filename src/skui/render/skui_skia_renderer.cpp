@@ -138,6 +138,14 @@ bool hasAttr(std::string_view tag, std::string_view name) {
     return false;
 }
 
+bool isCurrentColor(std::string_view raw) {
+    std::string value = trim(raw);
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    return value == "currentcolor";
+}
+
 std::vector<std::string_view> tagsNamed(std::string_view svg, std::string_view name) {
     std::vector<std::string_view> tags;
     std::string open = "<" + std::string(name);
@@ -164,13 +172,19 @@ std::optional<SkPaint> svgPaint(std::string_view tag,
                                 float defaultStrokeWidth,
                                 std::optional<SkColor> inheritedColor = std::nullopt,
                                 float inheritedOpacity = 1.0f,
+                                std::optional<SkColor> currentColor = std::nullopt,
                                 bool defaultFill = true) {
     const std::string raw = attrValue(tag, name);
     if (raw == "none") {
         return std::nullopt;
     }
     SkColor color = SK_ColorTRANSPARENT;
-    if (!raw.empty()) {
+    if (isCurrentColor(raw)) {
+        if (!currentColor) {
+            return std::nullopt;
+        }
+        color = *currentColor;
+    } else if (!raw.empty()) {
         color = parseColor(raw, SK_ColorTRANSPARENT);
     } else if (inheritedColor) {
         color = *inheritedColor;
@@ -377,22 +391,22 @@ void SkiaRenderer::drawImage(SkCanvas& canvas, const Document& document, const N
     if (!svg || svg->empty()) {
         return;
     }
-    drawSvgMarkup(canvas, *svg, node.layout);
+    drawSvgMarkup(canvas, *svg, node.layout, node.style.color);
 }
 
 void SkiaRenderer::drawInlineSvg(SkCanvas& canvas, const Node& node) {
     if (node.tag != "svg" || node.svgMarkup.empty()) {
         return;
     }
-    drawSvgMarkup(canvas, node.svgMarkup, node.layout);
+    drawSvgMarkup(canvas, node.svgMarkup, node.layout, node.style.color);
 }
 
-void SkiaRenderer::drawSvgMarkup(SkCanvas& canvas, const std::string& svg, const Rect& rect) {
+void SkiaRenderer::drawSvgMarkup(SkCanvas& canvas, const std::string& svg, const Rect& rect, SkColor currentColor) {
     if (svg.empty() || rect.w <= 0.0f || rect.h <= 0.0f) {
         return;
     }
 
-    const ParsedSvg& parsed = parsedSvg(svg);
+    const ParsedSvg& parsed = parsedSvg(svg, currentColor);
     if (parsed.shapes.empty() || parsed.viewWidth <= 0.0f || parsed.viewHeight <= 0.0f) {
         return;
     }
@@ -435,7 +449,7 @@ void SkiaRenderer::drawText(SkCanvas& canvas, const Node& node) {
     canvas.drawTextBlob(entry.blob, x, y, fill(node.style.color));
 }
 
-SkiaRenderer::ParsedSvg SkiaRenderer::parseSvg(std::string_view svg) const {
+SkiaRenderer::ParsedSvg SkiaRenderer::parseSvg(std::string_view svg, SkColor currentColor) const {
     ParsedSvg parsed;
     std::optional<SkColor> inheritedFill;
     std::optional<SkColor> inheritedStroke;
@@ -453,8 +467,16 @@ SkiaRenderer::ParsedSvg SkiaRenderer::parseSvg(std::string_view svg) const {
                 parsed.viewWidth = values[2];
                 parsed.viewHeight = values[3];
             }
-            inheritedFill = svgColorAttr(svgTag, "fill");
-            inheritedStroke = svgColorAttr(svgTag, "stroke");
+            if (isCurrentColor(attrValue(svgTag, "fill"))) {
+                inheritedFill = currentColor;
+            } else {
+                inheritedFill = svgColorAttr(svgTag, "fill");
+            }
+            if (isCurrentColor(attrValue(svgTag, "stroke"))) {
+                inheritedStroke = currentColor;
+            } else {
+                inheritedStroke = svgColorAttr(svgTag, "stroke");
+            }
             if (hasAttr(svgTag, "fill") && !inheritedFill) {
                 defaultFill = false;
             }
@@ -476,8 +498,8 @@ SkiaRenderer::ParsedSvg SkiaRenderer::parseSvg(std::string_view svg) const {
         }
         SvgShape shape;
         shape.path = *path;
-        shape.fill = svgPaint(pathTag, "fill", SkPaint::kFill_Style, 1.0f, inheritedFill, inheritedFillOpacity, defaultFill);
-        shape.stroke = svgPaint(pathTag, "stroke", SkPaint::kStroke_Style, 1.0f, inheritedStroke, inheritedStrokeOpacity);
+        shape.fill = svgPaint(pathTag, "fill", SkPaint::kFill_Style, 1.0f, inheritedFill, inheritedFillOpacity, currentColor, defaultFill);
+        shape.stroke = svgPaint(pathTag, "stroke", SkPaint::kStroke_Style, 1.0f, inheritedStroke, inheritedStrokeOpacity, currentColor);
         if (shape.fill || shape.stroke) {
             parsed.shapes.push_back(std::move(shape));
         }
@@ -492,8 +514,8 @@ SkiaRenderer::ParsedSvg SkiaRenderer::parseSvg(std::string_view svg) const {
         }
         SvgShape shape;
         shape.path = SkPathBuilder().addCircle(cx, cy, r).detach();
-        shape.fill = svgPaint(circleTag, "fill", SkPaint::kFill_Style, 1.0f, inheritedFill, inheritedFillOpacity, defaultFill);
-        shape.stroke = svgPaint(circleTag, "stroke", SkPaint::kStroke_Style, 1.0f, inheritedStroke, inheritedStrokeOpacity);
+        shape.fill = svgPaint(circleTag, "fill", SkPaint::kFill_Style, 1.0f, inheritedFill, inheritedFillOpacity, currentColor, defaultFill);
+        shape.stroke = svgPaint(circleTag, "stroke", SkPaint::kStroke_Style, 1.0f, inheritedStroke, inheritedStrokeOpacity, currentColor);
         if (shape.fill || shape.stroke) {
             parsed.shapes.push_back(std::move(shape));
         }
@@ -502,13 +524,19 @@ SkiaRenderer::ParsedSvg SkiaRenderer::parseSvg(std::string_view svg) const {
     return parsed;
 }
 
-const SkiaRenderer::ParsedSvg& SkiaRenderer::parsedSvg(std::string_view svg) {
+const SkiaRenderer::ParsedSvg& SkiaRenderer::parsedSvg(std::string_view svg, SkColor currentColor) {
     std::string key = normalizeSvgMarkup(std::string(svg));
+    if (key.find("currentColor") != std::string::npos || key.find("currentcolor") != std::string::npos ||
+        key.find("CURRENTCOLOR") != std::string::npos) {
+        char colorKey[16];
+        std::snprintf(colorKey, sizeof(colorKey), "|%08X", currentColor);
+        key += colorKey;
+    }
     auto it = parsedSvgCache_.find(key);
     if (it != parsedSvgCache_.end()) {
         return it->second;
     }
-    ParsedSvg parsed = parseSvg(key);
+    ParsedSvg parsed = parseSvg(key, currentColor);
     it = parsedSvgCache_.emplace(std::move(key), std::move(parsed)).first;
     return it->second;
 }
