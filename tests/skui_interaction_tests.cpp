@@ -630,18 +630,29 @@ int main() {
     uint32_t verticalScrolled = 0;
     uint32_t horizontalInitial = 0;
     uint32_t horizontalScrolled = 0;
+    uint32_t verticalScrollbar = 0;
+    uint32_t horizontalScrollbar = 0;
+    uint32_t verticalTrackScrolled = 0;
     ok = renderPixel(scrollRuntime, 20, 20, verticalInitial) && ok;
     ok = renderPixel(scrollRuntime, 20, 45, verticalClipped) && ok;
+    ok = renderPixel(scrollRuntime, 55, 25, verticalScrollbar) && ok;
+    ok = renderPixel(scrollRuntime, 100, 45, horizontalScrollbar) && ok;
     sendWheel(scrollRuntime, 20.0f, 20.0f, -240.0f);
     ok = renderPixel(scrollRuntime, 20, 20, verticalScrolled) && ok;
     ok = renderPixel(scrollRuntime, 90, 20, horizontalInitial) && ok;
     sendWheel(scrollRuntime, 90.0f, 20.0f, -240.0f, true);
     ok = renderPixel(scrollRuntime, 90, 20, horizontalScrolled) && ok;
+    sendMouse(scrollRuntime, skui::EventType::MouseDown, 55.0f, 45.0f);
+    sendMouse(scrollRuntime, skui::EventType::MouseUp, 55.0f, 45.0f);
+    ok = renderPixel(scrollRuntime, 20, 20, verticalTrackScrolled) && ok;
     ok = expect(verticalInitial == solidColor(0x22, 0x33, 0x44), "scroll container should show initial child content") && ok;
     ok = expect(verticalClipped == solidColor(0x11, 0x11, 0x11), "overflow-y container should clip offscreen children") && ok;
+    ok = expect(verticalScrollbar == solidColor(0xB8, 0xC3, 0xD0), "overflow-y container should render a vertical scrollbar thumb") && ok;
+    ok = expect(horizontalScrollbar == solidColor(0xB8, 0xC3, 0xD0), "overflow-x container should render a horizontal scrollbar thumb") && ok;
     ok = expect(verticalScrolled == solidColor(0xAB, 0xCD, 0xEF), "mouse wheel should scroll vertical overflow content") && ok;
     ok = expect(horizontalInitial == solidColor(0x11, 0x11, 0x11), "overflow-x container should clip horizontal children before scrolling") && ok;
     ok = expect(horizontalScrolled == solidColor(0x77, 0x88, 0x99), "Shift+mouse wheel should scroll horizontal overflow content") && ok;
+    ok = expect(verticalTrackScrolled == solidColor(0xAB, 0xCD, 0xEF), "clicking vertical scrollbar track should update scroll position") && ok;
 
     constexpr std::string_view textareaHtml = R"html(
 <!doctype html>

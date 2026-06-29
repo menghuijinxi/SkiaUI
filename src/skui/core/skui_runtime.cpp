@@ -169,6 +169,155 @@ bool canScrollY(const Node& node) {
     return (node.style.overflowY == Overflow::Auto || node.style.overflowY == Overflow::Scroll) && maxScrollY(node) > 0.0f;
 }
 
+enum class ScrollbarAxis {
+    None,
+    Horizontal,
+    Vertical
+};
+
+struct ScrollbarGeometry {
+    float trackStart = 0.0f;
+    float trackCross = 0.0f;
+    float trackLength = 0.0f;
+    float thumbStart = 0.0f;
+    float thumbLength = 0.0f;
+    float maxScroll = 0.0f;
+};
+
+struct ScrollbarHit {
+    Node* node = nullptr;
+    ScrollbarAxis axis = ScrollbarAxis::None;
+    float dragOffset = 0.0f;
+};
+
+constexpr float kScrollbarThickness = 6.0f;
+constexpr float kScrollbarInset = 4.0f;
+constexpr float kScrollbarMinThumb = 24.0f;
+
+bool wantsScrollbarX(const Node& node) {
+    return node.style.overflowX == Overflow::Scroll ||
+           (node.style.overflowX == Overflow::Auto && maxScrollX(node) > 0.0f);
+}
+
+bool wantsScrollbarY(const Node& node) {
+    return node.style.overflowY == Overflow::Scroll ||
+           (node.style.overflowY == Overflow::Auto && maxScrollY(node) > 0.0f);
+}
+
+std::optional<ScrollbarGeometry> scrollbarGeometry(const Node& node, ScrollbarAxis axis) {
+    if (node.layout.w <= 0.0f || node.layout.h <= 0.0f) {
+        return std::nullopt;
+    }
+
+    const bool showX = wantsScrollbarX(node);
+    const bool showY = wantsScrollbarY(node);
+    if ((axis == ScrollbarAxis::Horizontal && !showX) || (axis == ScrollbarAxis::Vertical && !showY)) {
+        return std::nullopt;
+    }
+
+    ScrollbarGeometry geometry;
+    if (axis == ScrollbarAxis::Vertical) {
+        geometry.maxScroll = maxScrollY(node);
+        geometry.trackStart = node.layout.y + kScrollbarInset;
+        geometry.trackCross = node.layout.x + node.layout.w - kScrollbarInset - kScrollbarThickness;
+        geometry.trackLength = node.layout.h - kScrollbarInset * 2.0f - (showX ? kScrollbarThickness + kScrollbarInset : 0.0f);
+        const float ratio = node.scrollContentHeight <= 0.0f ? 1.0f : node.layout.h / node.scrollContentHeight;
+        geometry.thumbLength = clampf(geometry.trackLength * ratio,
+                                      std::min(kScrollbarMinThumb, geometry.trackLength),
+                                      geometry.trackLength);
+        const float travel = std::max(0.0f, geometry.trackLength - geometry.thumbLength);
+        geometry.thumbStart = geometry.trackStart + (geometry.maxScroll <= 0.0f ? 0.0f : node.scrollY / geometry.maxScroll * travel);
+    } else {
+        geometry.maxScroll = maxScrollX(node);
+        geometry.trackStart = node.layout.x + kScrollbarInset;
+        geometry.trackCross = node.layout.y + node.layout.h - kScrollbarInset - kScrollbarThickness;
+        geometry.trackLength = node.layout.w - kScrollbarInset * 2.0f - (showY ? kScrollbarThickness + kScrollbarInset : 0.0f);
+        const float ratio = node.scrollContentWidth <= 0.0f ? 1.0f : node.layout.w / node.scrollContentWidth;
+        geometry.thumbLength = clampf(geometry.trackLength * ratio,
+                                      std::min(kScrollbarMinThumb, geometry.trackLength),
+                                      geometry.trackLength);
+        const float travel = std::max(0.0f, geometry.trackLength - geometry.thumbLength);
+        geometry.thumbStart = geometry.trackStart + (geometry.maxScroll <= 0.0f ? 0.0f : node.scrollX / geometry.maxScroll * travel);
+    }
+
+    if (geometry.trackLength <= 0.0f || geometry.thumbLength <= 0.0f) {
+        return std::nullopt;
+    }
+    return geometry;
+}
+
+std::optional<ScrollbarHit> scrollbarHitSelf(Node& node, float x, float y) {
+    if (std::optional<ScrollbarGeometry> vertical = scrollbarGeometry(node, ScrollbarAxis::Vertical)) {
+        const bool inTrack = x >= vertical->trackCross &&
+                             x <= vertical->trackCross + kScrollbarThickness &&
+                             y >= vertical->trackStart &&
+                             y <= vertical->trackStart + vertical->trackLength;
+        if (inTrack) {
+            const bool inThumb = y >= vertical->thumbStart && y <= vertical->thumbStart + vertical->thumbLength;
+            return ScrollbarHit{&node, ScrollbarAxis::Vertical, inThumb ? y - vertical->thumbStart : vertical->thumbLength * 0.5f};
+        }
+    }
+
+    if (std::optional<ScrollbarGeometry> horizontal = scrollbarGeometry(node, ScrollbarAxis::Horizontal)) {
+        const bool inTrack = x >= horizontal->trackStart &&
+                             x <= horizontal->trackStart + horizontal->trackLength &&
+                             y >= horizontal->trackCross &&
+                             y <= horizontal->trackCross + kScrollbarThickness;
+        if (inTrack) {
+            const bool inThumb = x >= horizontal->thumbStart && x <= horizontal->thumbStart + horizontal->thumbLength;
+            return ScrollbarHit{&node, ScrollbarAxis::Horizontal, inThumb ? x - horizontal->thumbStart : horizontal->thumbLength * 0.5f};
+        }
+    }
+
+    return std::nullopt;
+}
+
+std::optional<ScrollbarHit> scrollbarHitTest(Node& node, float x, float y) {
+    if (!isRenderableNode(node) || !node.layout.contains(x, y)) {
+        return std::nullopt;
+    }
+    if (std::optional<ScrollbarHit> hit = scrollbarHitSelf(node, x, y)) {
+        return hit;
+    }
+
+    const float childX = x + node.scrollX;
+    const float childY = y + node.scrollY;
+    for (auto it = node.children.rbegin(); it != node.children.rend(); ++it) {
+        if (std::optional<ScrollbarHit> hit = scrollbarHitTest(**it, childX, childY)) {
+            return hit;
+        }
+    }
+    return std::nullopt;
+}
+
+bool updateScrollFromScrollbar(Node& node, ScrollbarAxis axis, float pointer, float dragOffset) {
+    std::optional<ScrollbarGeometry> geometry = scrollbarGeometry(node, axis);
+    if (!geometry || geometry->maxScroll <= 0.0f) {
+        return false;
+    }
+
+    const float travel = std::max(0.0f, geometry->trackLength - geometry->thumbLength);
+    if (travel <= 0.0f) {
+        return false;
+    }
+
+    const float thumbStart = clampf(pointer - dragOffset,
+                                    geometry->trackStart,
+                                    geometry->trackStart + travel);
+    const float next = (thumbStart - geometry->trackStart) / travel * geometry->maxScroll;
+    if (axis == ScrollbarAxis::Vertical) {
+        const float clamped = clampf(next, 0.0f, geometry->maxScroll);
+        const bool changed = clamped != node.scrollY;
+        node.scrollY = clamped;
+        return changed;
+    }
+
+    const float clamped = clampf(next, 0.0f, geometry->maxScroll);
+    const bool changed = clamped != node.scrollX;
+    node.scrollX = clamped;
+    return changed;
+}
+
 bool scrollNode(Node& node, float dx, float dy) {
     bool changed = false;
     if (dx != 0.0f && canScrollX(node)) {
@@ -661,6 +810,9 @@ public:
     Node* pressedLeaf = nullptr;
     Node* focusedNode = nullptr;
     Node* selectingInput = nullptr;
+    Node* scrollingNode = nullptr;
+    ScrollbarAxis scrollingAxis = ScrollbarAxis::None;
+    float scrollbarDragOffset = 0.0f;
     std::string lastError;
 };
 
@@ -691,6 +843,9 @@ bool Runtime::loadDocument(const std::string& path) {
     impl_->pressedLeaf = nullptr;
     impl_->focusedNode = nullptr;
     impl_->selectingInput = nullptr;
+    impl_->scrollingNode = nullptr;
+    impl_->scrollingAxis = ScrollbarAxis::None;
+    impl_->scrollbarDragOffset = 0.0f;
     impl_->lastError.clear();
     impl_->recomputeAndLayout();
     return true;
@@ -715,6 +870,9 @@ bool Runtime::loadDocumentFromString(std::string_view html, std::string_view bas
     impl_->pressedLeaf = nullptr;
     impl_->focusedNode = nullptr;
     impl_->selectingInput = nullptr;
+    impl_->scrollingNode = nullptr;
+    impl_->scrollingAxis = ScrollbarAxis::None;
+    impl_->scrollbarDragOffset = 0.0f;
     impl_->lastError.clear();
     impl_->recomputeAndLayout();
     return true;
@@ -747,13 +905,23 @@ bool Runtime::handleEvent(const Event& event) {
     const float y = event.y / scale;
     const bool pointerEvent = isPointerEvent(event.type);
     Node* hit = pointerEvent && event.type != EventType::MouseLeave ? hitTest(*impl_->document.root, x, y) : nullptr;
+    std::optional<ScrollbarHit> scrollbarHit = pointerEvent && event.type != EventType::MouseLeave
+        ? scrollbarHitTest(*impl_->document.root, x, y)
+        : std::nullopt;
     bool consumed = false;
     bool stateChanged = false;
     bool textChanged = false;
 
     switch (event.type) {
     case EventType::MouseMove:
-        if (impl_->selectingInput && impl_->mousePressed) {
+        if (impl_->scrollingNode && impl_->mousePressed) {
+            const float pointer = impl_->scrollingAxis == ScrollbarAxis::Vertical ? y : x;
+            stateChanged = updateScrollFromScrollbar(*impl_->scrollingNode,
+                                                     impl_->scrollingAxis,
+                                                     pointer,
+                                                     impl_->scrollbarDragOffset) || stateChanged;
+            consumed = true;
+        } else if (impl_->selectingInput && impl_->mousePressed) {
             const size_t index = impl_->editableIndexAtPoint(*impl_->selectingInput, x, y);
             setInputSelection(*impl_->selectingInput, impl_->selectingInput->selectionAnchor, index);
             stateChanged = true;
@@ -779,7 +947,18 @@ bool Runtime::handleEvent(const Event& event) {
         impl_->pressedButton = event.button;
         impl_->pressedLeaf = hit;
         impl_->hoveredLeaf = hit;
-        if (Node* input = inputTarget(hit)) {
+        if (scrollbarHit) {
+            impl_->scrollingNode = scrollbarHit->node;
+            impl_->scrollingAxis = scrollbarHit->axis;
+            impl_->scrollbarDragOffset = scrollbarHit->dragOffset;
+            impl_->selectingInput = nullptr;
+            const float pointer = impl_->scrollingAxis == ScrollbarAxis::Vertical ? y : x;
+            stateChanged = updateScrollFromScrollbar(*impl_->scrollingNode,
+                                                     impl_->scrollingAxis,
+                                                     pointer,
+                                                     impl_->scrollbarDragOffset) || stateChanged;
+            consumed = true;
+        } else if (Node* input = inputTarget(hit)) {
             const bool wasFocused = impl_->focusedNode == input;
             const size_t selectionAnchor = wasFocused
                 ? (hasInputSelection(*input) ? input->selectionAnchor : input->cursorIndex)
@@ -841,6 +1020,9 @@ bool Runtime::handleEvent(const Event& event) {
         impl_->mousePressed = false;
         impl_->pressedButton = MouseButton::None;
         impl_->pressedLeaf = nullptr;
+        impl_->scrollingNode = nullptr;
+        impl_->scrollingAxis = ScrollbarAxis::None;
+        impl_->scrollbarDragOffset = 0.0f;
         impl_->hoveredLeaf = hit;
         stateChanged = true;
         break;

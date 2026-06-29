@@ -319,6 +319,7 @@ private:
     void drawProgress(SkCanvas& canvas, const Node& node);
     void drawImage(SkCanvas& canvas, const Document& document, const Node& node);
     void drawInlineSvg(SkCanvas& canvas, const Node& node);
+    void drawScrollbars(SkCanvas& canvas, const Node& node);
     void drawSvgMarkup(SkCanvas& canvas, const std::string& svg, const Rect& rect, SkColor currentColor);
     bool drawSvgDom(SkCanvas& canvas, const std::string& svg, const Rect& rect, SkColor currentColor);
     void drawInputSelection(SkCanvas& canvas, const Node& node);
