@@ -281,6 +281,23 @@ private:
         }
     }
 
+    void sendWheelEvent(HWND hwnd, WPARAM wParam, LPARAM lParam, bool horizontal) {
+        POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+        ScreenToClient(hwnd, &point);
+        Event event;
+        event.type = EventType::MouseWheel;
+        event.x = static_cast<float>(point.x);
+        event.y = static_cast<float>(point.y);
+        event.wheelDelta = static_cast<float>(GET_WHEEL_DELTA_WPARAM(wParam));
+        event.shiftKey = horizontal || (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+        event.ctrlKey = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+        runtime_.handleEvent(event);
+        if (runtime_.dirty()) {
+            markFrameDirty();
+            requestRepaint(hwnd, false);
+        }
+    }
+
     bool sendKeyEvent(HWND hwnd, WPARAM key) {
         Event event;
         event.type = EventType::KeyDown;
@@ -437,6 +454,12 @@ private:
                 ReleaseCapture();
             }
             app->sendMouseEvent(hwnd, EventType::MouseUp, lParam, MouseButton::Right);
+            return 0;
+        case WM_MOUSEWHEEL:
+            app->sendWheelEvent(hwnd, wParam, lParam, false);
+            return 0;
+        case WM_MOUSEHWHEEL:
+            app->sendWheelEvent(hwnd, wParam, lParam, true);
             return 0;
         case WM_KEYDOWN:
             if (app->sendKeyEvent(hwnd, wParam)) {

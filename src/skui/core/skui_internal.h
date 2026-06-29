@@ -64,6 +64,13 @@ enum class BorderStyle {
     Solid
 };
 
+enum class Overflow {
+    Visible,
+    Hidden,
+    Auto,
+    Scroll
+};
+
 enum class LengthUnit {
     Px,
     Percent,
@@ -125,6 +132,8 @@ struct Style {
         bool fontSize = false;
         bool fontBold = false;
         bool backgroundGradient = false;
+        bool overflowX = false;
+        bool overflowY = false;
     };
 
     Flags flags;
@@ -154,6 +163,8 @@ struct Style {
     float fontSize = 16.0f;
     bool fontBold = false;
     Gradient backgroundGradient;
+    Overflow overflowX = Overflow::Visible;
+    Overflow overflowY = Overflow::Visible;
 };
 
 struct Node {
@@ -181,6 +192,10 @@ struct Node {
     Style style;
     Style inlineStyle;
     Rect layout;
+    float scrollX = 0.0f;
+    float scrollY = 0.0f;
+    float scrollContentWidth = 0.0f;
+    float scrollContentHeight = 0.0f;
     bool hovered = false;
     bool active = false;
     bool focused = false;

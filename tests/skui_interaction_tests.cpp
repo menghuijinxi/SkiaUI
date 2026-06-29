@@ -84,6 +84,16 @@ void sendMouse(skui::Runtime& runtime, skui::EventType type, float x, float y, b
     runtime.handleEvent(event);
 }
 
+void sendWheel(skui::Runtime& runtime, float x, float y, float delta, bool shift = false) {
+    skui::Event event;
+    event.type = skui::EventType::MouseWheel;
+    event.x = x;
+    event.y = y;
+    event.wheelDelta = delta;
+    event.shiftKey = shift;
+    runtime.handleEvent(event);
+}
+
 void sendKey(skui::Runtime& runtime, unsigned key, bool shift = false, bool ctrl = false) {
     skui::Event event;
     event.type = skui::EventType::KeyDown;
@@ -536,6 +546,102 @@ int main() {
     ok = expect(halfOutside == solidColor(0x00, 0x00, 0x00), "percentage width should leave remaining parent area") && ok;
     ok = expect(mediaWide == solidColor(0x11, 0x11, 0x11), "media query should not match wide viewport") && ok;
     ok = expect(mediaNarrow == solidColor(0xAB, 0xCD, 0xEF), "media query should recompute after resize") && ok;
+
+    constexpr std::string_view scrollHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      position: relative;
+      width: 140px;
+      height: 90px;
+      background-color: #000000;
+    }
+    .vertical {
+      position: absolute;
+      left: 10px;
+      top: 10px;
+      width: 50px;
+      height: 40px;
+      overflow-y: auto;
+      overflow-x: hidden;
+      background-color: #111111;
+    }
+    .top {
+      position: absolute;
+      left: 0px;
+      top: 0px;
+      width: 50px;
+      height: 20px;
+      background-color: #223344;
+    }
+    .bottom {
+      position: absolute;
+      left: 0px;
+      top: 60px;
+      width: 50px;
+      height: 40px;
+      background-color: #abcdef;
+    }
+    .horizontal {
+      position: absolute;
+      left: 80px;
+      top: 10px;
+      width: 40px;
+      height: 40px;
+      overflow-x: auto;
+      overflow-y: hidden;
+      background-color: #111111;
+    }
+    .wide {
+      position: absolute;
+      left: 70px;
+      top: 0px;
+      width: 40px;
+      height: 40px;
+      background-color: #778899;
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <div class="vertical">
+      <div class="top"></div>
+      <div class="bottom"></div>
+    </div>
+    <div class="horizontal">
+      <div class="wide"></div>
+    </div>
+  </div>
+</body>
+</html>
+)html";
+
+    skui::Runtime scrollRuntime(options);
+    scrollRuntime.resize(kWidth, kHeight, 1.0f);
+    if (!scrollRuntime.loadDocumentFromString(scrollHtml, "")) {
+        std::cerr << "scroll load failed: " << scrollRuntime.lastError() << "\n";
+        return 1;
+    }
+
+    uint32_t verticalInitial = 0;
+    uint32_t verticalClipped = 0;
+    uint32_t verticalScrolled = 0;
+    uint32_t horizontalInitial = 0;
+    uint32_t horizontalScrolled = 0;
+    ok = renderPixel(scrollRuntime, 20, 20, verticalInitial) && ok;
+    ok = renderPixel(scrollRuntime, 20, 45, verticalClipped) && ok;
+    sendWheel(scrollRuntime, 20.0f, 20.0f, -240.0f);
+    ok = renderPixel(scrollRuntime, 20, 20, verticalScrolled) && ok;
+    ok = renderPixel(scrollRuntime, 90, 20, horizontalInitial) && ok;
+    sendWheel(scrollRuntime, 90.0f, 20.0f, -240.0f, true);
+    ok = renderPixel(scrollRuntime, 90, 20, horizontalScrolled) && ok;
+    ok = expect(verticalInitial == solidColor(0x22, 0x33, 0x44), "scroll container should show initial child content") && ok;
+    ok = expect(verticalClipped == solidColor(0x11, 0x11, 0x11), "overflow-y container should clip offscreen children") && ok;
+    ok = expect(verticalScrolled == solidColor(0xAB, 0xCD, 0xEF), "mouse wheel should scroll vertical overflow content") && ok;
+    ok = expect(horizontalInitial == solidColor(0x11, 0x11, 0x11), "overflow-x container should clip horizontal children before scrolling") && ok;
+    ok = expect(horizontalScrolled == solidColor(0x77, 0x88, 0x99), "Shift+mouse wheel should scroll horizontal overflow content") && ok;
 
     constexpr std::string_view textareaHtml = R"html(
 <!doctype html>

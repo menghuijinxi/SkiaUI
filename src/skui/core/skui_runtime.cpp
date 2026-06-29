@@ -33,8 +33,10 @@ Node* hitTest(Node& node, float x, float y) {
     if (!isRenderableNode(node) || !node.layout.contains(x, y)) {
         return nullptr;
     }
+    const float childX = x + node.scrollX;
+    const float childY = y + node.scrollY;
     for (auto it = node.children.rbegin(); it != node.children.rend(); ++it) {
-        if (Node* hit = hitTest(**it, x, y)) {
+        if (Node* hit = hitTest(**it, childX, childY)) {
             return hit;
         }
     }
@@ -149,6 +151,46 @@ Node* actionTarget(Node* leaf) {
         }
     }
     return nullptr;
+}
+
+float maxScrollX(const Node& node) {
+    return std::max(0.0f, node.scrollContentWidth - node.layout.w);
+}
+
+float maxScrollY(const Node& node) {
+    return std::max(0.0f, node.scrollContentHeight - node.layout.h);
+}
+
+bool canScrollX(const Node& node) {
+    return (node.style.overflowX == Overflow::Auto || node.style.overflowX == Overflow::Scroll) && maxScrollX(node) > 0.0f;
+}
+
+bool canScrollY(const Node& node) {
+    return (node.style.overflowY == Overflow::Auto || node.style.overflowY == Overflow::Scroll) && maxScrollY(node) > 0.0f;
+}
+
+bool scrollNode(Node& node, float dx, float dy) {
+    bool changed = false;
+    if (dx != 0.0f && canScrollX(node)) {
+        const float next = clampf(node.scrollX + dx, 0.0f, maxScrollX(node));
+        changed = next != node.scrollX || changed;
+        node.scrollX = next;
+    }
+    if (dy != 0.0f && canScrollY(node)) {
+        const float next = clampf(node.scrollY + dy, 0.0f, maxScrollY(node));
+        changed = next != node.scrollY || changed;
+        node.scrollY = next;
+    }
+    return changed;
+}
+
+bool scrollNearest(Node* leaf, float dx, float dy) {
+    for (Node* current = leaf; current; current = current->parent) {
+        if (scrollNode(*current, dx, dy)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 ElementEvent makeElementEvent(ElementEventType type, const Node& node, const Event& source, float x, float y) {
@@ -567,8 +609,24 @@ public:
         return true;
     }
 
+    static float visualX(const Node& node) {
+        float x = node.layout.x;
+        for (const Node* current = node.parent; current; current = current->parent) {
+            x -= current->scrollX;
+        }
+        return x;
+    }
+
+    static float visualY(const Node& node) {
+        float y = node.layout.y;
+        for (const Node* current = node.parent; current; current = current->parent) {
+            y -= current->scrollY;
+        }
+        return y;
+    }
+
     size_t inputIndexAtX(const Node& input, float x) {
-        const float offset = x - input.layout.x;
+        const float offset = x - visualX(input);
         return renderer.textIndexAtOffset(input.value, input.style.fontSize, input.style.fontBold, offset);
     }
 
@@ -578,12 +636,12 @@ public:
         }
         const std::vector<TextLine> lines = editableLines(input.value);
         const float lineHeight = editableLineHeight(input);
-        const float relativeY = std::max(0.0f, y - input.layout.y);
+        const float relativeY = std::max(0.0f, y - visualY(input));
         const size_t lineIndex = std::min(lines.size() - 1,
                                           static_cast<size_t>(relativeY / std::max(1.0f, lineHeight)));
         const TextLine line = lines[lineIndex];
         const std::string_view text(input.value.data() + line.start, line.end - line.start);
-        const float offset = x - input.layout.x;
+        const float offset = x - visualX(input);
         return line.start + renderer.textIndexAtOffset(text, input.style.fontSize, input.style.fontBold, offset);
     }
 
@@ -785,6 +843,14 @@ bool Runtime::handleEvent(const Event& event) {
         impl_->pressedLeaf = nullptr;
         impl_->hoveredLeaf = hit;
         stateChanged = true;
+        break;
+    }
+    case EventType::MouseWheel: {
+        const float step = event.wheelDelta == 0.0f ? 0.0f : -event.wheelDelta / 120.0f * 48.0f;
+        const float dx = event.shiftKey ? step : 0.0f;
+        const float dy = event.shiftKey ? 0.0f : step;
+        stateChanged = scrollNearest(hit, dx, dy);
+        consumed = stateChanged;
         break;
     }
     case EventType::KeyDown: {

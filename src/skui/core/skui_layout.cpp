@@ -93,6 +93,42 @@ void setEdge(YGNodeRef node,
 
 }  // namespace
 
+void updateScrollMetrics(Node& node) {
+    float minLeft = 0.0f;
+    float minTop = 0.0f;
+    float maxRight = node.layout.w;
+    float maxBottom = node.layout.h;
+    bool hasChild = false;
+
+    for (auto& child : node.children) {
+        if (child->style.display == Display::None) {
+            continue;
+        }
+        updateScrollMetrics(*child);
+        const float childLeft = child->layout.x - node.layout.x;
+        const float childTop = child->layout.y - node.layout.y;
+        const float childRight = childLeft + child->layout.w;
+        const float childBottom = childTop + child->layout.h;
+        if (!hasChild) {
+            minLeft = std::min(0.0f, childLeft);
+            minTop = std::min(0.0f, childTop);
+            maxRight = std::max(node.layout.w, childRight);
+            maxBottom = std::max(node.layout.h, childBottom);
+            hasChild = true;
+        } else {
+            minLeft = std::min(minLeft, childLeft);
+            minTop = std::min(minTop, childTop);
+            maxRight = std::max(maxRight, childRight);
+            maxBottom = std::max(maxBottom, childBottom);
+        }
+    }
+
+    node.scrollContentWidth = std::max(node.layout.w, maxRight - minLeft);
+    node.scrollContentHeight = std::max(node.layout.h, maxBottom - minTop);
+    node.scrollX = clampf(node.scrollX, 0.0f, std::max(0.0f, node.scrollContentWidth - node.layout.w));
+    node.scrollY = clampf(node.scrollY, 0.0f, std::max(0.0f, node.scrollContentHeight - node.layout.h));
+}
+
 void LayoutEngine::layout(Document& document, float width, float height) {
     if (!document.root) {
         return;
@@ -106,6 +142,7 @@ void LayoutEngine::layout(Document& document, float width, float height) {
     YGNodeStyleSetHeight(rootYoga.get(), std::max(1.0f, height));
     YGNodeCalculateLayout(rootYoga.get(), std::max(1.0f, width), std::max(1.0f, height), YGDirectionLTR);
     readYoga(*document.root, rootYoga.get(), 0.0f, 0.0f);
+    updateScrollMetrics(*document.root);
 }
 
 void LayoutEngine::buildYoga(Node& node, YGNodeRef yogaNode) {

@@ -273,10 +273,27 @@
       height: 1px;
       background-color: #dfe6ee;
     }
+    .chat-scroll {
+      position: absolute;
+      left: 0px;
+      right: 0px;
+      top: 177px;
+      bottom: 96px;
+      overflow-y: auto;
+      overflow-x: hidden;
+      background-color: #ffffff;
+    }
+    .chat-content {
+      position: absolute;
+      left: 0px;
+      top: 0px;
+      right: 0px;
+      height: 680px;
+    }
     .day-pill {
       position: absolute;
       left: 376px;
-      top: 195px;
+      top: 18px;
       width: 66px;
       height: 30px;
       border-radius: 7px;
@@ -316,54 +333,54 @@
       color: #17202a;
     }
     .msg-q2 {
-      top: 240px;
+      top: 63px;
       width: 285px;
       height: 54px;
     }
     .time-q2 {
       left: 340px;
-      top: 258px;
+      top: 81px;
     }
     .msg-upload {
-      top: 308px;
+      top: 131px;
       width: 210px;
       height: 54px;
     }
     .time-upload {
       right: 34px;
-      top: 326px;
+      top: 149px;
     }
     .mark-upload {
       right: 18px;
-      top: 322px;
+      top: 145px;
     }
     .card-upload {
-      top: 368px;
+      top: 191px;
     }
     .msg-spec {
-      top: 530px;
+      top: 353px;
       width: 275px;
       height: 54px;
     }
     .time-spec {
       left: 322px;
-      top: 548px;
+      top: 371px;
     }
     .card-download {
-      top: 596px;
+      top: 419px;
     }
     .msg-latest {
-      top: 754px;
+      top: 577px;
       width: 255px;
       height: 54px;
     }
     .time-latest {
       right: 34px;
-      top: 772px;
+      top: 595px;
     }
     .mark-latest {
       right: 18px;
-      top: 768px;
+      top: 591px;
     }
     .time-label {
       position: absolute;
@@ -384,8 +401,8 @@
       position: absolute;
       right: 6px;
       top: 194px;
+      bottom: 112px;
       width: 6px;
-      height: 360px;
       border-radius: 3px;
       background-color: #b8c3d0;
     }
@@ -841,48 +858,13 @@
       }
     }
     @media (max-height: 820px) {
-      .msg-q2 {
-        top: 220px;
-      }
-      .time-q2 {
-        top: 238px;
-      }
-      .msg-upload {
-        top: 288px;
-      }
-      .time-upload {
-        top: 306px;
-      }
-      .mark-upload {
-        top: 302px;
-      }
-      .card-upload {
-        top: 348px;
-      }
-      .msg-spec {
-        top: 508px;
-      }
-      .time-spec {
-        top: 526px;
-      }
-      .card-download {
-        top: 574px;
-      }
-      .card-download {
-        display: none;
-      }
-      .msg-latest,
-      .time-latest,
-      .mark-latest {
-        display: none;
+      .chat-scroll {
+        bottom: 92px;
       }
     }
     @media (max-height: 740px) {
-      .msg-spec {
-        top: 528px;
-      }
-      .time-spec {
-        top: 546px;
+      .chat-scroll {
+        bottom: 88px;
       }
     }
   </style>
@@ -943,8 +925,9 @@
       <div id="tab-history" class="tab tab-history" data-action="tab:tab-history">历史</div>
       <div id="tab-transfer" class="tab tab-transfer" data-action="tab:tab-transfer">传输</div>
       <div class="timeline-line"></div>
+      <div class="chat-scroll">
+        <div class="chat-content">
       <div class="day-pill">今天</div>
-      <div class="chat-scrollbar"></div>
       <div class="bubble bubble-left msg-q2">能把最新的 Q2 报告发我吗?</div>
       <div class="time-label time-q2">09:21</div>
       <div class="bubble bubble-right msg-upload">可以，正在上传。</div>
@@ -961,6 +944,9 @@
       <div class="bubble bubble-right msg-latest">是的，这是最新版本。</div>
       <div class="time-label time-latest">09:25</div>
       <svg class="read-mark mark-latest" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2 13.5 6 17.5 15 8.5"></path><path d="M9 15.5 11 17.5 22 6.5"></path></svg>
+        </div>
+      </div>
+      <div class="chat-scrollbar"></div>
       <div class="composer-wrap">
         <textarea id="composer" class="composer" placeholder="给 Alex-PC 发送消息"></textarea>
         <svg class="compose-icon emoji-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><path d="M8 14s1.5 2 4 2 4-2 4-2"></path><path d="M9 9h.01"></path><path d="M15 9h.01"></path></svg>

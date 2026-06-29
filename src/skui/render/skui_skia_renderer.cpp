@@ -252,8 +252,21 @@ void SkiaRenderer::drawNode(SkCanvas& canvas, const Document& document, const No
     drawText(canvas, node);
     drawInputCompositionUnderline(canvas, node);
     drawInputCaret(canvas, node);
+
+    const bool clipsChildren = node.style.overflowX != Overflow::Visible ||
+                               node.style.overflowY != Overflow::Visible ||
+                               node.scrollX > 0.0f ||
+                               node.scrollY > 0.0f;
+    if (clipsChildren) {
+        canvas.save();
+        canvas.clipRect(node.layout.sk(), SkClipOp::kIntersect, true);
+        canvas.translate(-node.scrollX, -node.scrollY);
+    }
     for (const auto& child : node.children) {
         drawNode(canvas, document, *child);
+    }
+    if (clipsChildren) {
+        canvas.restore();
     }
 }
 

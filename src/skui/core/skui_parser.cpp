@@ -447,6 +447,14 @@ void mergeStyle(Style& target, const Style& source) {
         target.backgroundGradient = source.backgroundGradient;
         target.flags.backgroundGradient = true;
     }
+    if (f.overflowX) {
+        target.overflowX = source.overflowX;
+        target.flags.overflowX = true;
+    }
+    if (f.overflowY) {
+        target.overflowY = source.overflowY;
+        target.flags.overflowY = true;
+    }
 }
 
 Style defaultStyleForNode(const Node& node) {
@@ -724,6 +732,23 @@ void parseGradient(std::string_view raw, Style& style) {
     style.flags.backgroundGradient = true;
 }
 
+std::optional<Overflow> parseOverflow(std::string_view raw) {
+    const std::string value = lower(trim(raw));
+    if (value == "hidden") {
+        return Overflow::Hidden;
+    }
+    if (value == "auto") {
+        return Overflow::Auto;
+    }
+    if (value == "scroll") {
+        return Overflow::Scroll;
+    }
+    if (value == "visible") {
+        return Overflow::Visible;
+    }
+    return std::nullopt;
+}
+
 struct MediaContext {
     std::optional<float> minViewportWidth;
     std::optional<float> maxViewportWidth;
@@ -911,6 +936,23 @@ void applyDeclaration(Style& style, std::string_view rawName, std::string_view r
     } else if (name == "font-weight") {
         style.fontBold = lower(value) == "bold" || value == "600" || value == "700";
         style.flags.fontBold = true;
+    } else if (name == "overflow") {
+        if (std::optional<Overflow> overflow = parseOverflow(value)) {
+            style.overflowX = *overflow;
+            style.overflowY = *overflow;
+            style.flags.overflowX = true;
+            style.flags.overflowY = true;
+        }
+    } else if (name == "overflow-x") {
+        if (std::optional<Overflow> overflow = parseOverflow(value)) {
+            style.overflowX = *overflow;
+            style.flags.overflowX = true;
+        }
+    } else if (name == "overflow-y") {
+        if (std::optional<Overflow> overflow = parseOverflow(value)) {
+            style.overflowY = *overflow;
+            style.flags.overflowY = true;
+        }
     }
 }
 
