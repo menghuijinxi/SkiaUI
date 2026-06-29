@@ -248,6 +248,7 @@ void SkiaRenderer::drawNode(SkCanvas& canvas, const Document& document, const No
     drawProgress(canvas, node);
     drawImage(canvas, document, node);
     drawInlineSvg(canvas, node);
+    drawSelectableSelection(canvas, node);
     drawInputSelection(canvas, node);
     drawText(canvas, node);
     drawInputCompositionUnderline(canvas, node);
@@ -501,6 +502,37 @@ void SkiaRenderer::drawInputSelection(SkCanvas& canvas, const Node& node) {
     canvas.restore();
 }
 
+void SkiaRenderer::drawSelectableSelection(SkCanvas& canvas, const Node& node) {
+    if (node.tag != "selectable" || node.selectionStart == node.selectionEnd) {
+        return;
+    }
+
+    const std::string& value = !node.value.empty() ? node.value : node.text;
+    const size_t start = std::min(node.selectionStart, value.size());
+    const size_t end = std::min(node.selectionEnd, value.size());
+    if (start >= end) {
+        return;
+    }
+
+    const float before = start == 0 ? 0.0f : textWidth(std::string_view(value.data(), start), node.style.fontSize, node.style.fontBold);
+    const float selected = textWidth(std::string_view(value.data() + start, end - start), node.style.fontSize, node.style.fontBold);
+    const SkRect content = contentRectForText(node);
+    const float x = std::max(content.left(), textStartX(node, value) + before);
+    const float right = std::min(content.right(), x + selected);
+    if (right <= x) {
+        return;
+    }
+
+    const TextEntry& entry = textEntry(value, node.style.fontSize, node.style.fontBold);
+    const float selectionHeight = std::max(12.0f, node.style.fontSize * 1.35f);
+    const float y = content.top() + content.height() * 0.5f - selectionHeight * 0.5f;
+    (void)entry;
+    canvas.save();
+    canvas.clipRect(node.layout.sk(), SkClipOp::kIntersect, true);
+    canvas.drawRect(SkRect::MakeXYWH(x, y, right - x, selectionHeight), fill(SkColorSetARGB(96, 36, 232, 219)));
+    canvas.restore();
+}
+
 void SkiaRenderer::drawText(SkCanvas& canvas, const Node& node) {
     if (node.tag == "progress") {
         return;
@@ -555,13 +587,7 @@ void SkiaRenderer::drawText(SkCanvas& canvas, const Node& node) {
     const TextEntry& entry = textEntry(value, node.style.fontSize, node.style.fontBold);
     const SkRect content = contentRectForText(node);
     const float availableWidth = std::max(0.0f, content.width());
-    float x = content.left();
-    if (node.style.justifyContent == YGJustifyCenter) {
-        x = content.left() + (availableWidth - entry.width) * 0.5f;
-    } else if (node.style.justifyContent == YGJustifyFlexEnd) {
-        x = content.right() - entry.width;
-    }
-    x = std::max(content.left(), x);
+    const float x = textStartX(node, value);
     const float y = content.top() + content.height() * 0.5f - (entry.metrics.fAscent + entry.metrics.fDescent) * 0.5f;
     SkColor textColor = node.style.color;
     if (inputPlaceholder) {
@@ -723,6 +749,19 @@ const SkiaRenderer::TextEntry& SkiaRenderer::textEntry(std::string_view value, f
 
 float SkiaRenderer::textWidth(std::string_view value, float size, bool bold) {
     return textEntry(value, size, bold).width;
+}
+
+float SkiaRenderer::textStartX(const Node& node, std::string_view value) {
+    const SkRect content = contentRectForText(node);
+    const float availableWidth = std::max(0.0f, content.width());
+    const float width = textWidth(value, node.style.fontSize, node.style.fontBold);
+    float x = content.left();
+    if (node.style.justifyContent == YGJustifyCenter) {
+        x = content.left() + (availableWidth - width) * 0.5f;
+    } else if (node.style.justifyContent == YGJustifyFlexEnd) {
+        x = content.right() - width;
+    }
+    return std::max(content.left(), x);
 }
 
 size_t SkiaRenderer::textIndexAtOffset(std::string_view value, float size, bool bold, float offset) {

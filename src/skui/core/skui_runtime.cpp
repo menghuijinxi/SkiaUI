@@ -131,6 +131,10 @@ bool isEditableNode(const Node* node) {
     return node && (node->tag == "input" || node->tag == "textarea");
 }
 
+bool isSelectableTextNode(const Node* node) {
+    return node && node->tag == "selectable";
+}
+
 bool isTextareaNode(const Node* node) {
     return node && node->tag == "textarea";
 }
@@ -138,6 +142,15 @@ bool isTextareaNode(const Node* node) {
 Node* inputTarget(Node* leaf) {
     for (Node* current = leaf; current; current = current->parent) {
         if (isEditableNode(current)) {
+            return current;
+        }
+    }
+    return nullptr;
+}
+
+Node* selectableTextTarget(Node* leaf) {
+    for (Node* current = leaf; current; current = current->parent) {
+        if (isSelectableTextNode(current)) {
             return current;
         }
     }
@@ -577,6 +590,25 @@ std::string selectedInputText(const Node& node) {
     return node.value.substr(node.selectionStart, node.selectionEnd - node.selectionStart);
 }
 
+const std::string& selectableTextValue(const Node& node) {
+    return !node.value.empty() ? node.value : node.text;
+}
+
+bool hasSelectableSelection(const Node& node) {
+    const std::string& value = selectableTextValue(node);
+    return isSelectableTextNode(&node) &&
+           node.selectionStart < node.selectionEnd &&
+           node.selectionEnd <= value.size();
+}
+
+std::string selectedSelectableText(const Node& node) {
+    if (!hasSelectableSelection(node)) {
+        return {};
+    }
+    const std::string& value = selectableTextValue(node);
+    return value.substr(node.selectionStart, node.selectionEnd - node.selectionStart);
+}
+
 bool selectAllInput(Node& node) {
     if (!isEditableNode(&node) || node.value.empty()) {
         return false;
@@ -585,6 +617,49 @@ bool selectAllInput(Node& node) {
     node.selectionStart = 0;
     node.selectionEnd = node.value.size();
     node.cursorIndex = node.value.size();
+    return true;
+}
+
+bool clearSelectableSelection(Node& node) {
+    if (!isSelectableTextNode(&node) ||
+        (node.cursorIndex == 0 && node.selectionAnchor == 0 && node.selectionStart == 0 && node.selectionEnd == 0)) {
+        return false;
+    }
+    node.cursorIndex = 0;
+    node.selectionAnchor = 0;
+    node.selectionStart = 0;
+    node.selectionEnd = 0;
+    return true;
+}
+
+void setSelectableCursor(Node& node, size_t index) {
+    const std::string& value = selectableTextValue(node);
+    node.cursorIndex = clampUtf8Index(value, index);
+    node.selectionAnchor = node.cursorIndex;
+    node.selectionStart = node.cursorIndex;
+    node.selectionEnd = node.cursorIndex;
+}
+
+void setSelectableSelection(Node& node, size_t anchor, size_t cursor) {
+    const std::string& value = selectableTextValue(node);
+    node.selectionAnchor = clampUtf8Index(value, anchor);
+    node.cursorIndex = clampUtf8Index(value, cursor);
+    node.selectionStart = std::min(node.selectionAnchor, node.cursorIndex);
+    node.selectionEnd = std::max(node.selectionAnchor, node.cursorIndex);
+}
+
+bool selectAllSelectable(Node& node) {
+    if (!isSelectableTextNode(&node)) {
+        return false;
+    }
+    const std::string& value = selectableTextValue(node);
+    if (value.empty()) {
+        return false;
+    }
+    node.selectionAnchor = 0;
+    node.selectionStart = 0;
+    node.selectionEnd = value.size();
+    node.cursorIndex = value.size();
     return true;
 }
 
@@ -641,6 +716,54 @@ void selectInputWordAt(Node& node, size_t index) {
         }
     }
     setInputSelection(node, start, end);
+}
+
+void selectSelectableWordAt(Node& node, size_t index) {
+    const std::string& value = selectableTextValue(node);
+    if (!isSelectableTextNode(&node) || value.empty()) {
+        return;
+    }
+    index = clampUtf8Index(value, index);
+    if (index == value.size() && index > 0) {
+        index = previousUtf8Index(value, index);
+    }
+    const unsigned char ch = static_cast<unsigned char>(value[index]);
+    size_t start = index;
+    size_t end = nextUtf8Index(value, index);
+    if (ch < 0x80 && isAsciiWordByte(ch)) {
+        while (start > 0) {
+            const size_t previous = previousUtf8Index(value, start);
+            const unsigned char prev = static_cast<unsigned char>(value[previous]);
+            if (prev >= 0x80 || !isAsciiWordByte(prev)) {
+                break;
+            }
+            start = previous;
+        }
+        while (end < value.size()) {
+            const unsigned char next = static_cast<unsigned char>(value[end]);
+            if (next >= 0x80 || !isAsciiWordByte(next)) {
+                break;
+            }
+            end = nextUtf8Index(value, end);
+        }
+    } else if (ch < 0x80 && isAsciiSpaceByte(ch)) {
+        while (start > 0) {
+            const size_t previous = previousUtf8Index(value, start);
+            const unsigned char prev = static_cast<unsigned char>(value[previous]);
+            if (prev >= 0x80 || !isAsciiSpaceByte(prev)) {
+                break;
+            }
+            start = previous;
+        }
+        while (end < value.size()) {
+            const unsigned char next = static_cast<unsigned char>(value[end]);
+            if (next >= 0x80 || !isAsciiSpaceByte(next)) {
+                break;
+            }
+            end = nextUtf8Index(value, end);
+        }
+    }
+    setSelectableSelection(node, start, end);
 }
 
 std::string singleLineText(std::string text) {
@@ -775,8 +898,14 @@ public:
     }
 
     size_t inputIndexAtX(const Node& input, float x) {
-        const float offset = x - visualX(input);
-        return renderer.textIndexAtOffset(input.value, input.style.fontSize, input.style.fontBold, offset);
+        const float textStart = renderer.textStartX(input, input.value) - input.layout.x + visualX(input);
+        return renderer.textIndexAtOffset(input.value, input.style.fontSize, input.style.fontBold, x - textStart);
+    }
+
+    size_t selectableIndexAtX(const Node& node, float x) {
+        const std::string& value = selectableTextValue(node);
+        const float textStart = renderer.textStartX(node, value) - node.layout.x + visualX(node);
+        return renderer.textIndexAtOffset(value, node.style.fontSize, node.style.fontBold, x - textStart);
     }
 
     size_t editableIndexAtPoint(const Node& input, float x, float y) {
@@ -810,6 +939,8 @@ public:
     Node* pressedLeaf = nullptr;
     Node* focusedNode = nullptr;
     Node* selectingInput = nullptr;
+    Node* selectingText = nullptr;
+    Node* selectedText = nullptr;
     Node* scrollingNode = nullptr;
     ScrollbarAxis scrollingAxis = ScrollbarAxis::None;
     float scrollbarDragOffset = 0.0f;
@@ -843,6 +974,8 @@ bool Runtime::loadDocument(const std::string& path) {
     impl_->pressedLeaf = nullptr;
     impl_->focusedNode = nullptr;
     impl_->selectingInput = nullptr;
+    impl_->selectingText = nullptr;
+    impl_->selectedText = nullptr;
     impl_->scrollingNode = nullptr;
     impl_->scrollingAxis = ScrollbarAxis::None;
     impl_->scrollbarDragOffset = 0.0f;
@@ -870,6 +1003,8 @@ bool Runtime::loadDocumentFromString(std::string_view html, std::string_view bas
     impl_->pressedLeaf = nullptr;
     impl_->focusedNode = nullptr;
     impl_->selectingInput = nullptr;
+    impl_->selectingText = nullptr;
+    impl_->selectedText = nullptr;
     impl_->scrollingNode = nullptr;
     impl_->scrollingAxis = ScrollbarAxis::None;
     impl_->scrollbarDragOffset = 0.0f;
@@ -926,6 +1061,11 @@ bool Runtime::handleEvent(const Event& event) {
             setInputSelection(*impl_->selectingInput, impl_->selectingInput->selectionAnchor, index);
             stateChanged = true;
             consumed = true;
+        } else if (impl_->selectingText && impl_->mousePressed) {
+            const size_t index = impl_->selectableIndexAtX(*impl_->selectingText, x);
+            setSelectableSelection(*impl_->selectingText, impl_->selectingText->selectionAnchor, index);
+            stateChanged = true;
+            consumed = true;
         }
         if (hit != impl_->hoveredLeaf) {
             impl_->hoveredLeaf = hit;
@@ -952,6 +1092,7 @@ bool Runtime::handleEvent(const Event& event) {
             impl_->scrollingAxis = scrollbarHit->axis;
             impl_->scrollbarDragOffset = scrollbarHit->dragOffset;
             impl_->selectingInput = nullptr;
+            impl_->selectingText = nullptr;
             const float pointer = impl_->scrollingAxis == ScrollbarAxis::Vertical ? y : x;
             stateChanged = updateScrollFromScrollbar(*impl_->scrollingNode,
                                                      impl_->scrollingAxis,
@@ -971,9 +1112,37 @@ bool Runtime::handleEvent(const Event& event) {
                 setInputCursor(*input, index);
             }
             impl_->selectingInput = input;
+            impl_->selectingText = nullptr;
+            if (impl_->selectedText) {
+                stateChanged = clearSelectableSelection(*impl_->selectedText) || stateChanged;
+                impl_->selectedText = nullptr;
+            }
+            stateChanged = true;
+        } else if (Node* selectable = selectableTextTarget(hit)) {
+            stateChanged = impl_->setFocusedNode(nullptr) || stateChanged;
+            if (impl_->selectedText && impl_->selectedText != selectable) {
+                stateChanged = clearSelectableSelection(*impl_->selectedText) || stateChanged;
+            }
+            const size_t selectionAnchor = (event.shiftKey && hasSelectableSelection(*selectable))
+                ? selectable->selectionAnchor
+                : impl_->selectableIndexAtX(*selectable, x);
+            const size_t index = impl_->selectableIndexAtX(*selectable, x);
+            if (event.shiftKey) {
+                setSelectableSelection(*selectable, selectionAnchor, index);
+            } else {
+                setSelectableCursor(*selectable, index);
+            }
+            impl_->selectingInput = nullptr;
+            impl_->selectingText = selectable;
+            impl_->selectedText = selectable;
             stateChanged = true;
         } else {
             impl_->selectingInput = nullptr;
+            impl_->selectingText = nullptr;
+            if (impl_->selectedText) {
+                stateChanged = clearSelectableSelection(*impl_->selectedText) || stateChanged;
+                impl_->selectedText = nullptr;
+            }
             stateChanged = impl_->setFocusedNode(nullptr) || stateChanged;
         }
         if (Node* target = actionTarget(hit); target && impl_->options.onElementEvent) {
@@ -988,6 +1157,19 @@ bool Runtime::handleEvent(const Event& event) {
             const size_t index = impl_->editableIndexAtPoint(*input, x, y);
             selectInputWordAt(*input, index);
             impl_->selectingInput = nullptr;
+            impl_->selectingText = nullptr;
+            consumed = true;
+            stateChanged = true;
+        } else if (Node* selectable = selectableTextTarget(hit)) {
+            stateChanged = impl_->setFocusedNode(nullptr) || stateChanged;
+            if (impl_->selectedText && impl_->selectedText != selectable) {
+                stateChanged = clearSelectableSelection(*impl_->selectedText) || stateChanged;
+            }
+            const size_t index = impl_->selectableIndexAtX(*selectable, x);
+            selectSelectableWordAt(*selectable, index);
+            impl_->selectingInput = nullptr;
+            impl_->selectingText = nullptr;
+            impl_->selectedText = selectable;
             consumed = true;
             stateChanged = true;
         } else {
@@ -1008,6 +1190,12 @@ bool Runtime::handleEvent(const Event& event) {
             impl_->selectingInput = nullptr;
             stateChanged = true;
         }
+        if (impl_->selectingText) {
+            const size_t index = impl_->selectableIndexAtX(*impl_->selectingText, x);
+            setSelectableSelection(*impl_->selectingText, impl_->selectingText->selectionAnchor, index);
+            impl_->selectingText = nullptr;
+            stateChanged = true;
+        }
         if (Node* target = releasedAction ? releasedAction : pressedAction; target && impl_->options.onElementEvent) {
             impl_->options.onElementEvent(makeElementEvent(ElementEventType::MouseUp, *target, event, x, y));
         }
@@ -1020,6 +1208,7 @@ bool Runtime::handleEvent(const Event& event) {
         impl_->mousePressed = false;
         impl_->pressedButton = MouseButton::None;
         impl_->pressedLeaf = nullptr;
+        impl_->selectingText = nullptr;
         impl_->scrollingNode = nullptr;
         impl_->scrollingAxis = ScrollbarAxis::None;
         impl_->scrollbarDragOffset = 0.0f;
@@ -1038,6 +1227,23 @@ bool Runtime::handleEvent(const Event& event) {
     case EventType::KeyDown: {
         Node* input = impl_->focusedNode;
         if (!isEditableNode(input)) {
+            if (event.ctrlKey && impl_->selectedText) {
+                switch (event.key) {
+                case 'A':
+                    stateChanged = selectAllSelectable(*impl_->selectedText) || stateChanged;
+                    consumed = stateChanged;
+                    break;
+                case 'C':
+                    if (impl_->options.writeClipboardText && hasSelectableSelection(*impl_->selectedText)) {
+                        impl_->options.writeClipboardText(selectedSelectableText(*impl_->selectedText));
+                    }
+                    consumed = hasSelectableSelection(*impl_->selectedText);
+                    break;
+                default:
+                    break;
+                }
+                break;
+            }
             return false;
         }
 

@@ -290,6 +290,7 @@ public:
     void draw(Document& document, SkCanvas& canvas, int width, int height, float dpiScale);
     void clearCaches();
     size_t textIndexAtOffset(std::string_view value, float size, bool bold, float offset);
+    float textStartX(const Node& node, std::string_view value);
 
 private:
     struct TextEntry {
@@ -320,6 +321,7 @@ private:
     void drawImage(SkCanvas& canvas, const Document& document, const Node& node);
     void drawInlineSvg(SkCanvas& canvas, const Node& node);
     void drawScrollbars(SkCanvas& canvas, const Node& node);
+    void drawSelectableSelection(SkCanvas& canvas, const Node& node);
     void drawSvgMarkup(SkCanvas& canvas, const std::string& svg, const Rect& rect, SkColor currentColor);
     bool drawSvgDom(SkCanvas& canvas, const std::string& svg, const Rect& rect, SkColor currentColor);
     void drawInputSelection(SkCanvas& canvas, const Node& node);

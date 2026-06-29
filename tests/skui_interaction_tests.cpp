@@ -439,6 +439,80 @@ int main() {
     ok = expect(inputEvents == 17, "input text changes and undo should emit Input events") && ok;
     ok = expect(inputValue == "ax ok中", "single-line input should handle selection, clipboard, double-click, and IME commit") && ok;
 
+    constexpr std::string_view selectableHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      position: relative;
+      width: 140px;
+      height: 90px;
+      background-color: #000000;
+    }
+    .normal {
+      position: absolute;
+      left: 10px;
+      top: 10px;
+      width: 90px;
+      height: 24px;
+      color: #ffffff;
+      font-size: 16px;
+    }
+    selectable {
+      position: absolute;
+      left: 10px;
+      top: 45px;
+      width: 90px;
+      height: 24px;
+      color: #ffffff;
+      font-size: 16px;
+    }
+    .padded {
+      position: absolute;
+      left: 10px;
+      top: 68px;
+      width: 120px;
+      height: 20px;
+      padding-left: 18px;
+      color: #ffffff;
+      font-size: 16px;
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <div class="normal">plain copy</div>
+    <selectable>hello copy</selectable>
+    <selectable class="padded">能把最新的</selectable>
+  </div>
+</body>
+</html>
+)html";
+
+    std::string selectableClipboard;
+    skui::RuntimeOptions selectableOptions;
+    selectableOptions.writeClipboardText = [&](std::string_view text) { selectableClipboard = std::string(text); };
+    skui::Runtime selectableRuntime(selectableOptions);
+    selectableRuntime.resize(kWidth, kHeight, 1.0f);
+    if (!selectableRuntime.loadDocumentFromString(selectableHtml, "")) {
+        std::cerr << "selectable load failed: " << selectableRuntime.lastError() << "\n";
+        return 1;
+    }
+    sendMouse(selectableRuntime, skui::EventType::MouseDown, 10.0f, 20.0f);
+    sendMouse(selectableRuntime, skui::EventType::MouseMove, 100.0f, 20.0f);
+    sendMouse(selectableRuntime, skui::EventType::MouseUp, 100.0f, 20.0f);
+    sendKey(selectableRuntime, 'C', false, true);
+    ok = expect(selectableClipboard.empty(), "plain div text should not be selectable or copied") && ok;
+    sendMouse(selectableRuntime, skui::EventType::MouseDown, 10.0f, 55.0f);
+    sendMouse(selectableRuntime, skui::EventType::MouseMove, 100.0f, 55.0f);
+    sendMouse(selectableRuntime, skui::EventType::MouseUp, 100.0f, 55.0f);
+    sendKey(selectableRuntime, 'C', false, true);
+    ok = expect(selectableClipboard == "hello copy", "selectable tag should support drag selection and Ctrl+C") && ok;
+    sendMouse(selectableRuntime, skui::EventType::MouseDoubleClick, 78.0f, 78.0f);
+    sendKey(selectableRuntime, 'C', false, true);
+    ok = expect(selectableClipboard == "新", "selectable hit testing should account for text padding") && ok;
+
     constexpr std::string_view progressHtml = R"html(
 <!doctype html>
 <html>
