@@ -62,6 +62,7 @@ foreach(app_target IN ITEMS SkiaRelayDesk SkiaLayerDesk)
         d3d12
         dxgi
         dxguid
+        d3dcompiler
         dbghelp
         usp10
     )
@@ -118,6 +119,7 @@ target_link_libraries(SkuiWin32Dx12 PRIVATE
     d3d12
     dxgi
     dxguid
+    d3dcompiler
     dbghelp
     ole32
     imm32
@@ -147,6 +149,7 @@ target_link_libraries(SkiaUiDesk PRIVATE
     d3d12
     dxgi
     dxguid
+    d3dcompiler
     dbghelp
     usp10
 )
@@ -188,7 +191,9 @@ target_link_libraries(RmlLayerDesk PRIVATE
     d3d12
     dxgi
     dxguid
+    d3dcompiler
     dbghelp
+    usp10
 )
 
 target_compile_definitions(RmlLayerDesk PRIVATE

@@ -326,9 +326,12 @@ int main() {
     sendIme(inputRuntime, skui::EventType::ImeComposition, "zhong");
     sendText(inputRuntime, "中");
     sendIme(inputRuntime, skui::EventType::ImeEnd);
+    sendKey(inputRuntime, 'Z', false, true);
+    ok = expect(inputValue == "ax ok", "Ctrl+Z should undo the previous single-line input edit") && ok;
+    sendText(inputRuntime, "中");
 
     ok = expect(inputNormal != inputFocused, "input:focus should change rendered output") && ok;
-    ok = expect(inputEvents == 15, "input text changes should emit Input events") && ok;
+    ok = expect(inputEvents == 17, "input text changes and undo should emit Input events") && ok;
     ok = expect(inputValue == "ax ok中", "single-line input should handle selection, clipboard, double-click, and IME commit") && ok;
 
     return ok ? 0 : 1;

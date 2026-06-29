@@ -143,6 +143,14 @@ struct Style {
 };
 
 struct Node {
+    struct InputSnapshot {
+        std::string value;
+        size_t cursorIndex = 0;
+        size_t selectionAnchor = 0;
+        size_t selectionStart = 0;
+        size_t selectionEnd = 0;
+    };
+
     std::string tag;
     std::string id;
     std::vector<std::string> classes;
@@ -164,6 +172,7 @@ struct Node {
     size_t selectionAnchor = 0;
     size_t selectionStart = 0;
     size_t selectionEnd = 0;
+    std::vector<InputSnapshot> undoStack;
     Node* parent = nullptr;
     std::vector<std::unique_ptr<Node>> children;
 };

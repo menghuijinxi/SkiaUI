@@ -211,6 +211,40 @@ bool hasInputSelection(const Node& node) {
     return node.selectionStart != node.selectionEnd;
 }
 
+void pushInputUndo(Node& node) {
+    if (!isInputNode(&node)) {
+        return;
+    }
+    constexpr size_t kMaxUndoSteps = 128;
+    clampInputCursor(node);
+    Node::InputSnapshot snapshot;
+    snapshot.value = node.value;
+    snapshot.cursorIndex = node.cursorIndex;
+    snapshot.selectionAnchor = node.selectionAnchor;
+    snapshot.selectionStart = node.selectionStart;
+    snapshot.selectionEnd = node.selectionEnd;
+    node.undoStack.push_back(std::move(snapshot));
+    if (node.undoStack.size() > kMaxUndoSteps) {
+        node.undoStack.erase(node.undoStack.begin());
+    }
+}
+
+bool restoreInputUndo(Node& node) {
+    if (!isInputNode(&node) || node.undoStack.empty()) {
+        return false;
+    }
+    Node::InputSnapshot snapshot = std::move(node.undoStack.back());
+    node.undoStack.pop_back();
+    node.value = std::move(snapshot.value);
+    node.cursorIndex = snapshot.cursorIndex;
+    node.selectionAnchor = snapshot.selectionAnchor;
+    node.selectionStart = snapshot.selectionStart;
+    node.selectionEnd = snapshot.selectionEnd;
+    node.compositionText.clear();
+    clampInputCursor(node);
+    return true;
+}
+
 void clearInputSelection(Node& node) {
     clampInputCursor(node);
     node.selectionAnchor = node.cursorIndex;
@@ -238,6 +272,7 @@ bool eraseInputSelection(Node& node) {
     if (!hasInputSelection(node)) {
         return false;
     }
+    pushInputUndo(node);
     node.value.erase(node.selectionStart, node.selectionEnd - node.selectionStart);
     node.cursorIndex = node.selectionStart;
     node.compositionText.clear();
@@ -250,8 +285,11 @@ bool insertInputText(Node& node, std::string_view text) {
         return false;
     }
     clampInputCursor(node);
+    pushInputUndo(node);
     if (hasInputSelection(node)) {
-        eraseInputSelection(node);
+        node.value.erase(node.selectionStart, node.selectionEnd - node.selectionStart);
+        node.cursorIndex = node.selectionStart;
+        clearInputSelection(node);
     }
     node.compositionText.clear();
     node.value.insert(node.cursorIndex, text.data(), text.size());
@@ -272,6 +310,7 @@ bool erasePreviousInputChar(Node& node) {
     if (previous == node.cursorIndex) {
         return false;
     }
+    pushInputUndo(node);
     node.value.erase(previous, node.cursorIndex - previous);
     node.cursorIndex = previous;
     node.compositionText.clear();
@@ -291,6 +330,7 @@ bool eraseNextInputChar(Node& node) {
     if (next == node.cursorIndex) {
         return false;
     }
+    pushInputUndo(node);
     node.value.erase(node.cursorIndex, next - node.cursorIndex);
     node.compositionText.clear();
     clearInputSelection(node);
@@ -394,6 +434,7 @@ void syncNodeAttribute(Node& node, const std::string& name) {
         node.selectionAnchor = std::min(node.selectionAnchor, node.value.size());
         node.selectionStart = std::min(node.selectionStart, node.value.size());
         node.selectionEnd = std::min(node.selectionEnd, node.value.size());
+        node.undoStack.clear();
         clampInputCursor(node);
     } else if (name == "placeholder") {
         node.placeholder = value;
@@ -684,6 +725,10 @@ bool Runtime::handleEvent(const Event& event) {
                     const std::string text = singleLineText(impl_->options.readClipboardText());
                     textChanged = insertInputText(*input, text);
                 }
+                consumed = true;
+                break;
+            case 'Z':
+                textChanged = restoreInputUndo(*input);
                 consumed = true;
                 break;
             default:
