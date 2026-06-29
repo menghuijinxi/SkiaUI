@@ -46,12 +46,36 @@ bool parseFloat(std::string_view raw, float& out) {
     return result.ec == std::errc{} && result.ptr == end;
 }
 
-std::optional<float> parseLength(std::string_view raw) {
+std::optional<float> parseNumberOrPx(std::string_view raw) {
     float value = 0.0f;
     if (!parseFloat(raw, value)) {
         return std::nullopt;
     }
     return value;
+}
+
+std::optional<Length> parseLength(std::string_view raw) {
+    std::string value = lower(trim(raw));
+    if (value == "auto") {
+        return Length{0.0f, LengthUnit::Auto};
+    }
+
+    LengthUnit unit = LengthUnit::Px;
+    if (value.ends_with("%")) {
+        value.resize(value.size() - 1);
+        unit = LengthUnit::Percent;
+    } else if (value.ends_with("px")) {
+        value.resize(value.size() - 2);
+    }
+
+    float number = 0.0f;
+    const char* begin = value.data();
+    const char* end = value.data() + value.size();
+    const auto result = std::from_chars(begin, end, number);
+    if (result.ec != std::errc{} || result.ptr != end) {
+        return std::nullopt;
+    }
+    return Length{number, unit};
 }
 
 std::string attr(lxb_dom_element_t* element, const char* name) {
@@ -171,7 +195,7 @@ void setEdges(EdgeValues& edges,
               bool Style::Flags::*topFlag,
               bool Style::Flags::*rightFlag,
               bool Style::Flags::*bottomFlag,
-              float value) {
+              Length value) {
     edges.left = value;
     edges.top = value;
     edges.right = value;
@@ -185,8 +209,8 @@ void setEdges(EdgeValues& edges,
 void setEdgeByName(EdgeValues& edges,
                    Style::Flags& flags,
                    bool Style::Flags::*flag,
-                   std::optional<float> EdgeValues::*field,
-                   float value) {
+                   std::optional<Length> EdgeValues::*field,
+                   Length value) {
     edges.*field = value;
     flags.*flag = true;
 }
@@ -225,9 +249,9 @@ bool applyEdgeShorthand(EdgeValues& edges,
                         bool Style::Flags::*rightFlag,
                         bool Style::Flags::*bottomFlag,
                         std::string_view raw) {
-    std::vector<float> values;
+    std::vector<Length> values;
     for (const std::string& token : splitCssTokens(raw)) {
-        std::optional<float> length = parseLength(token);
+        std::optional<Length> length = parseLength(token);
         if (!length) {
             return false;
         }
@@ -237,10 +261,10 @@ bool applyEdgeShorthand(EdgeValues& edges,
         return false;
     }
 
-    const float top = values[0];
-    const float right = values.size() >= 2 ? values[1] : values[0];
-    const float bottom = values.size() >= 3 ? values[2] : values[0];
-    const float left = values.size() >= 4 ? values[3] : right;
+    const Length top = values[0];
+    const Length right = values.size() >= 2 ? values[1] : values[0];
+    const Length bottom = values.size() >= 3 ? values[2] : values[0];
+    const Length left = values.size() >= 4 ? values[3] : right;
     setEdgeByName(edges, flags, leftFlag, &EdgeValues::left, left);
     setEdgeByName(edges, flags, topFlag, &EdgeValues::top, top);
     setEdgeByName(edges, flags, rightFlag, &EdgeValues::right, right);
@@ -262,7 +286,7 @@ std::optional<BorderStyle> parseBorderStyleValue(std::string_view raw) {
 void applyBorderShorthand(Style& style, std::string_view rawValue) {
     const SkColor colorSentinel = SkColorSetARGB(1, 2, 3, 4);
     for (const std::string& token : splitCssTokens(rawValue)) {
-        if (std::optional<float> width = parseLength(token)) {
+        if (std::optional<float> width = parseNumberOrPx(token)) {
             style.borderWidth = *width;
             style.flags.borderWidth = true;
             continue;
@@ -562,10 +586,32 @@ bool matchesRule(const Node& node, const StyleRule& rule) {
     return !rule.selector.empty() && matchesSelectorAt(node, rule.selector, rule.selector.size() - 1);
 }
 
-void applyRules(Node& node, const std::vector<StyleRule>& rules) {
+bool matchesMedia(const StyleRule& rule, float viewportWidth, float viewportHeight) {
+    if ((rule.minViewportWidth || rule.maxViewportWidth) && viewportWidth <= 0.0f) {
+        return false;
+    }
+    if ((rule.minViewportHeight || rule.maxViewportHeight) && viewportHeight <= 0.0f) {
+        return false;
+    }
+    if (rule.minViewportWidth && viewportWidth < *rule.minViewportWidth) {
+        return false;
+    }
+    if (rule.maxViewportWidth && viewportWidth > *rule.maxViewportWidth) {
+        return false;
+    }
+    if (rule.minViewportHeight && viewportHeight < *rule.minViewportHeight) {
+        return false;
+    }
+    if (rule.maxViewportHeight && viewportHeight > *rule.maxViewportHeight) {
+        return false;
+    }
+    return true;
+}
+
+void applyRules(Node& node, const std::vector<StyleRule>& rules, float viewportWidth, float viewportHeight) {
     std::vector<const StyleRule*> matched;
     for (const StyleRule& rule : rules) {
-        if (matchesRule(node, rule)) {
+        if (matchesMedia(rule, viewportWidth, viewportHeight) && matchesRule(node, rule)) {
             matched.push_back(&rule);
         }
     }
@@ -579,7 +625,7 @@ void applyRules(Node& node, const std::vector<StyleRule>& rules) {
         mergeStyle(node.style, rule->style);
     }
     for (auto& child : node.children) {
-        applyRules(*child, rules);
+        applyRules(*child, rules, viewportWidth, viewportHeight);
     }
 }
 
@@ -678,7 +724,14 @@ void parseGradient(std::string_view raw, Style& style) {
     style.flags.backgroundGradient = true;
 }
 
-void parseStyleSheet(std::string_view css, std::vector<StyleRule>& rules);
+struct MediaContext {
+    std::optional<float> minViewportWidth;
+    std::optional<float> maxViewportWidth;
+    std::optional<float> minViewportHeight;
+    std::optional<float> maxViewportHeight;
+};
+
+void parseStyleSheet(std::string_view css, std::vector<StyleRule>& rules, MediaContext media = {});
 
 void collectStyleSheets(lxb_dom_node_t* root, std::vector<StyleRule>& rules) {
     if (!root) {
@@ -712,6 +765,7 @@ void applyDeclaration(Style& style, std::string_view rawName, std::string_view r
     }
 
     auto length = parseLength(value);
+    auto number = parseNumberOrPx(value);
     if (name == "display") {
         style.display = lower(value) == "none" ? Display::None : Display::Flex;
         style.flags.display = true;
@@ -760,11 +814,11 @@ void applyDeclaration(Style& style, std::string_view rawName, std::string_view r
             style.justifyContent = YGJustifyFlexStart;
         }
         style.flags.justifyContent = true;
-    } else if (name == "flex-grow" && length) {
-        style.flexGrow = *length;
+    } else if (name == "flex-grow" && number) {
+        style.flexGrow = *number;
         style.flags.flexGrow = true;
-    } else if (name == "flex-shrink" && length) {
-        style.flexShrink = *length;
+    } else if (name == "flex-shrink" && number) {
+        style.flexShrink = *number;
         style.flags.flexShrink = true;
     } else if (name == "width" && length) {
         style.width = *length;
@@ -841,18 +895,18 @@ void applyDeclaration(Style& style, std::string_view rawName, std::string_view r
     } else if (name == "border-color") {
         style.borderColor = parseColor(value, style.borderColor);
         style.flags.borderColor = true;
-    } else if (name == "border-width" && length) {
-        style.borderWidth = *length;
+    } else if (name == "border-width" && number) {
+        style.borderWidth = *number;
         style.flags.borderWidth = true;
     } else if (name == "border-style") {
         const std::string v = lower(value);
         style.borderStyle = v == "solid" ? BorderStyle::Solid : BorderStyle::None;
         style.flags.borderStyle = true;
-    } else if (name == "border-radius" && length) {
-        style.borderRadius = *length;
+    } else if (name == "border-radius" && number) {
+        style.borderRadius = *number;
         style.flags.borderRadius = true;
-    } else if (name == "font-size" && length) {
-        style.fontSize = *length;
+    } else if (name == "font-size" && number) {
+        style.fontSize = *number;
         style.flags.fontSize = true;
     } else if (name == "font-weight") {
         style.fontBold = lower(value) == "bold" || value == "600" || value == "700";
@@ -1081,22 +1135,91 @@ std::optional<StyleRule> parseSelector(std::string_view selectorText) {
     return rule;
 }
 
-void parseStyleSheet(std::string_view css, std::vector<StyleRule>& rules) {
+std::optional<size_t> findMatchingBrace(std::string_view css, size_t open) {
+    int depth = 0;
+    for (size_t i = open; i < css.size(); ++i) {
+        if (css[i] == '{') {
+            ++depth;
+        } else if (css[i] == '}') {
+            --depth;
+            if (depth == 0) {
+                return i;
+            }
+        }
+    }
+    return std::nullopt;
+}
+
+bool parseMediaFeature(std::string_view feature, MediaContext& context) {
+    std::string body = lower(trim(feature));
+    if (body.size() >= 2 && body.front() == '(' && body.back() == ')') {
+        body = trim(std::string_view(body).substr(1, body.size() - 2));
+    }
+    const size_t colon = body.find(':');
+    if (colon == std::string::npos) {
+        return true;
+    }
+    const std::string name = trim(std::string_view(body).substr(0, colon));
+    const std::string value = trim(std::string_view(body).substr(colon + 1));
+    std::optional<float> number = parseNumberOrPx(value);
+    if (!number) {
+        return false;
+    }
+    if (name == "min-width") {
+        context.minViewportWidth = std::max(context.minViewportWidth.value_or(*number), *number);
+    } else if (name == "max-width") {
+        context.maxViewportWidth = std::min(context.maxViewportWidth.value_or(*number), *number);
+    } else if (name == "min-height") {
+        context.minViewportHeight = std::max(context.minViewportHeight.value_or(*number), *number);
+    } else if (name == "max-height") {
+        context.maxViewportHeight = std::min(context.maxViewportHeight.value_or(*number), *number);
+    }
+    return true;
+}
+
+MediaContext parseMediaCondition(std::string_view header, MediaContext inherited) {
+    std::string condition = trim(header);
+    constexpr std::string_view mediaPrefix = "@media";
+    if (lower(condition).rfind(mediaPrefix, 0) == 0) {
+        condition = trim(std::string_view(condition).substr(mediaPrefix.size()));
+    }
+
+    size_t start = 0;
+    while (start < condition.size()) {
+        const std::string remainingLower = lower(std::string(std::string_view(condition).substr(start)));
+        const size_t found = remainingLower.find(" and ");
+        const size_t andPos = found == std::string::npos ? std::string::npos : start + found;
+        const std::string_view part = condition.substr(start,
+                                                       andPos == std::string::npos ? condition.size() - start : andPos - start);
+        parseMediaFeature(part, inherited);
+        if (andPos == std::string::npos) {
+            break;
+        }
+        start = andPos + 5;
+    }
+    return inherited;
+}
+
+void parseStyleSheet(std::string_view css, std::vector<StyleRule>& rules, MediaContext media) {
     const std::string cleanedCss = stripCssComments(css);
     css = cleanedCss;
     size_t start = 0;
-    unsigned order = static_cast<unsigned>(rules.size());
     while (start < css.size()) {
         const size_t open = css.find('{', start);
         if (open == std::string_view::npos) {
             break;
         }
-        const size_t close = css.find('}', open + 1);
-        if (close == std::string_view::npos) {
+        const std::optional<size_t> close = findMatchingBrace(css, open);
+        if (!close) {
             break;
         }
         const std::string selectorText = trim(css.substr(start, open - start));
-        const std::string block = trim(css.substr(open + 1, close - open - 1));
+        const std::string block = trim(css.substr(open + 1, *close - open - 1));
+        if (lower(selectorText).rfind("@media", 0) == 0) {
+            parseStyleSheet(block, rules, parseMediaCondition(selectorText, media));
+            start = *close + 1;
+            continue;
+        }
         for (const std::string& selector : splitSelectorList(selectorText)) {
             if (selector.empty()) {
                 continue;
@@ -1106,11 +1229,15 @@ void parseStyleSheet(std::string_view css, std::vector<StyleRule>& rules) {
                 continue;
             }
             StyleRule rule = std::move(*parsed);
-            rule.order = order++;
+            rule.minViewportWidth = media.minViewportWidth;
+            rule.maxViewportWidth = media.maxViewportWidth;
+            rule.minViewportHeight = media.minViewportHeight;
+            rule.maxViewportHeight = media.maxViewportHeight;
+            rule.order = static_cast<unsigned>(rules.size());
             parseDeclarations(block, rule.style);
             rules.push_back(std::move(rule));
         }
-        start = close + 1;
+        start = *close + 1;
     }
 }
 
@@ -1254,13 +1381,13 @@ bool DocumentParser::loadString(std::string_view html,
     return true;
 }
 
-void recomputeStyles(Document& document, const RuntimeOptions& options) {
+void recomputeStyles(Document& document, const RuntimeOptions& options, float viewportWidth, float viewportHeight) {
     if (!document.root) {
         return;
     }
     resetStyles(*document.root);
     applyInheritedStyle(*document.root, options);
-    applyRules(*document.root, document.rules);
+    applyRules(*document.root, document.rules, viewportWidth, viewportHeight);
     applyInheritedStyle(*document.root, options);
     applyInlineStyles(*document.root);
     applyInheritedStyle(*document.root, options);

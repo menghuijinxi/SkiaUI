@@ -58,18 +58,36 @@ YGSize measureTextNode(YGNodeConstRef node,
     return {std::max(0.0f, measuredWidth), std::max(0.0f, measuredHeight)};
 }
 
-void setOptional(YGNodeRef node, void (*setter)(YGNodeRef, float), const std::optional<float>& value) {
+void setOptional(YGNodeRef node,
+                 void (*setter)(YGNodeRef, float),
+                 void (*percentSetter)(YGNodeRef, float),
+                 void (*autoSetter)(YGNodeRef),
+                 const std::optional<Length>& value) {
     if (value) {
-        setter(node, *value);
+        if (value->unit == LengthUnit::Percent && percentSetter) {
+            percentSetter(node, value->value);
+        } else if (value->unit == LengthUnit::Auto && autoSetter) {
+            autoSetter(node);
+        } else if (value->unit == LengthUnit::Px) {
+            setter(node, value->value);
+        }
     }
 }
 
 void setEdge(YGNodeRef node,
              void (*setter)(YGNodeRef, YGEdge, float),
+             void (*percentSetter)(YGNodeRef, YGEdge, float),
+             void (*autoSetter)(YGNodeRef, YGEdge),
              YGEdge edge,
-             const std::optional<float>& value) {
+             const std::optional<Length>& value) {
     if (value) {
-        setter(node, edge, *value);
+        if (value->unit == LengthUnit::Percent && percentSetter) {
+            percentSetter(node, edge, value->value);
+        } else if (value->unit == LengthUnit::Auto && autoSetter) {
+            autoSetter(node, edge);
+        } else if (value->unit == LengthUnit::Px) {
+            setter(node, edge, value->value);
+        }
     }
 }
 
@@ -107,25 +125,25 @@ void LayoutEngine::buildYoga(Node& node, YGNodeRef yogaNode) {
     YGNodeStyleSetFlexShrink(yogaNode, s.flexShrink);
     YGNodeStyleSetPositionType(yogaNode, s.position == Position::Absolute ? YGPositionTypeAbsolute : YGPositionTypeRelative);
 
-    setOptional(yogaNode, YGNodeStyleSetWidth, s.width);
-    setOptional(yogaNode, YGNodeStyleSetHeight, s.height);
-    setOptional(yogaNode, YGNodeStyleSetMinWidth, s.minWidth);
-    setOptional(yogaNode, YGNodeStyleSetMinHeight, s.minHeight);
-    setOptional(yogaNode, YGNodeStyleSetMaxWidth, s.maxWidth);
-    setOptional(yogaNode, YGNodeStyleSetMaxHeight, s.maxHeight);
+    setOptional(yogaNode, YGNodeStyleSetWidth, YGNodeStyleSetWidthPercent, YGNodeStyleSetWidthAuto, s.width);
+    setOptional(yogaNode, YGNodeStyleSetHeight, YGNodeStyleSetHeightPercent, YGNodeStyleSetHeightAuto, s.height);
+    setOptional(yogaNode, YGNodeStyleSetMinWidth, YGNodeStyleSetMinWidthPercent, nullptr, s.minWidth);
+    setOptional(yogaNode, YGNodeStyleSetMinHeight, YGNodeStyleSetMinHeightPercent, nullptr, s.minHeight);
+    setOptional(yogaNode, YGNodeStyleSetMaxWidth, YGNodeStyleSetMaxWidthPercent, nullptr, s.maxWidth);
+    setOptional(yogaNode, YGNodeStyleSetMaxHeight, YGNodeStyleSetMaxHeightPercent, nullptr, s.maxHeight);
 
-    setEdge(yogaNode, YGNodeStyleSetMargin, YGEdgeLeft, s.margin.left);
-    setEdge(yogaNode, YGNodeStyleSetMargin, YGEdgeTop, s.margin.top);
-    setEdge(yogaNode, YGNodeStyleSetMargin, YGEdgeRight, s.margin.right);
-    setEdge(yogaNode, YGNodeStyleSetMargin, YGEdgeBottom, s.margin.bottom);
-    setEdge(yogaNode, YGNodeStyleSetPadding, YGEdgeLeft, s.padding.left);
-    setEdge(yogaNode, YGNodeStyleSetPadding, YGEdgeTop, s.padding.top);
-    setEdge(yogaNode, YGNodeStyleSetPadding, YGEdgeRight, s.padding.right);
-    setEdge(yogaNode, YGNodeStyleSetPadding, YGEdgeBottom, s.padding.bottom);
-    setEdge(yogaNode, YGNodeStyleSetPosition, YGEdgeLeft, s.inset.left);
-    setEdge(yogaNode, YGNodeStyleSetPosition, YGEdgeTop, s.inset.top);
-    setEdge(yogaNode, YGNodeStyleSetPosition, YGEdgeRight, s.inset.right);
-    setEdge(yogaNode, YGNodeStyleSetPosition, YGEdgeBottom, s.inset.bottom);
+    setEdge(yogaNode, YGNodeStyleSetMargin, YGNodeStyleSetMarginPercent, YGNodeStyleSetMarginAuto, YGEdgeLeft, s.margin.left);
+    setEdge(yogaNode, YGNodeStyleSetMargin, YGNodeStyleSetMarginPercent, YGNodeStyleSetMarginAuto, YGEdgeTop, s.margin.top);
+    setEdge(yogaNode, YGNodeStyleSetMargin, YGNodeStyleSetMarginPercent, YGNodeStyleSetMarginAuto, YGEdgeRight, s.margin.right);
+    setEdge(yogaNode, YGNodeStyleSetMargin, YGNodeStyleSetMarginPercent, YGNodeStyleSetMarginAuto, YGEdgeBottom, s.margin.bottom);
+    setEdge(yogaNode, YGNodeStyleSetPadding, YGNodeStyleSetPaddingPercent, nullptr, YGEdgeLeft, s.padding.left);
+    setEdge(yogaNode, YGNodeStyleSetPadding, YGNodeStyleSetPaddingPercent, nullptr, YGEdgeTop, s.padding.top);
+    setEdge(yogaNode, YGNodeStyleSetPadding, YGNodeStyleSetPaddingPercent, nullptr, YGEdgeRight, s.padding.right);
+    setEdge(yogaNode, YGNodeStyleSetPadding, YGNodeStyleSetPaddingPercent, nullptr, YGEdgeBottom, s.padding.bottom);
+    setEdge(yogaNode, YGNodeStyleSetPosition, YGNodeStyleSetPositionPercent, YGNodeStyleSetPositionAuto, YGEdgeLeft, s.inset.left);
+    setEdge(yogaNode, YGNodeStyleSetPosition, YGNodeStyleSetPositionPercent, YGNodeStyleSetPositionAuto, YGEdgeTop, s.inset.top);
+    setEdge(yogaNode, YGNodeStyleSetPosition, YGNodeStyleSetPositionPercent, YGNodeStyleSetPositionAuto, YGEdgeRight, s.inset.right);
+    setEdge(yogaNode, YGNodeStyleSetPosition, YGNodeStyleSetPositionPercent, YGNodeStyleSetPositionAuto, YGEdgeBottom, s.inset.bottom);
 
     const bool hasText = !node.text.empty() || !node.value.empty() || (node.tag == "input" && !node.placeholder.empty());
     if (node.children.empty() && hasText && !s.width && !s.height) {

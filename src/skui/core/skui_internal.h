@@ -64,6 +64,17 @@ enum class BorderStyle {
     Solid
 };
 
+enum class LengthUnit {
+    Px,
+    Percent,
+    Auto
+};
+
+struct Length {
+    float value = 0.0f;
+    LengthUnit unit = LengthUnit::Px;
+};
+
 struct Gradient {
     GradientKind kind = GradientKind::None;
     std::vector<SkColor> colors;
@@ -71,10 +82,10 @@ struct Gradient {
 };
 
 struct EdgeValues {
-    std::optional<float> left;
-    std::optional<float> top;
-    std::optional<float> right;
-    std::optional<float> bottom;
+    std::optional<Length> left;
+    std::optional<Length> top;
+    std::optional<Length> right;
+    std::optional<Length> bottom;
 };
 
 struct Style {
@@ -125,12 +136,12 @@ struct Style {
     YGAlign alignSelf = YGAlignAuto;
     float flexGrow = 0.0f;
     float flexShrink = 1.0f;
-    std::optional<float> width;
-    std::optional<float> height;
-    std::optional<float> minWidth;
-    std::optional<float> minHeight;
-    std::optional<float> maxWidth;
-    std::optional<float> maxHeight;
+    std::optional<Length> width;
+    std::optional<Length> height;
+    std::optional<Length> minWidth;
+    std::optional<Length> minHeight;
+    std::optional<Length> maxWidth;
+    std::optional<Length> maxHeight;
     EdgeValues margin;
     EdgeValues padding;
     EdgeValues inset;
@@ -209,6 +220,10 @@ struct SelectorPart {
 struct StyleRule {
     std::vector<SelectorPart> selector;
     Style style;
+    std::optional<float> minViewportWidth;
+    std::optional<float> maxViewportWidth;
+    std::optional<float> minViewportHeight;
+    std::optional<float> maxViewportHeight;
     unsigned order = 0;
     unsigned specificity = 0;
 };
@@ -310,6 +325,6 @@ float clampf(float value, float lo, float hi);
 std::string trim(std::string_view value);
 std::vector<std::string> splitWhitespace(std::string_view value);
 void parseInlineStyle(std::string_view declarations, Style& style);
-void recomputeStyles(Document& document, const RuntimeOptions& options);
+void recomputeStyles(Document& document, const RuntimeOptions& options, float viewportWidth = 0.0f, float viewportHeight = 0.0f);
 
 }  // namespace skui

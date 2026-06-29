@@ -168,7 +168,7 @@
       left: 402px;
       top: 0px;
       bottom: 0px;
-      width: 798px;
+      right: 400px;
       background-color: #ffffff;
       border-color: #dbe3eb;
       border-width: 1px;
@@ -216,6 +216,24 @@
       height: 38px;
       color: #050913;
     }
+    .tool-call {
+      right: 190px;
+    }
+    .tool-search {
+      right: 112px;
+    }
+    .tool-menu {
+      right: 34px;
+    }
+    .tab-chat {
+      left: 35px;
+    }
+    .tab-history {
+      left: 223px;
+    }
+    .tab-transfer {
+      left: 411px;
+    }
     .tabbar {
       position: absolute;
       left: 34px;
@@ -251,7 +269,7 @@
       position: absolute;
       left: 0px;
       top: 176px;
-      width: 798px;
+      right: 0px;
       height: 1px;
       background-color: #dfe6ee;
     }
@@ -292,9 +310,60 @@
       color: #1f2937;
     }
     .bubble-right {
+      right: 88px;
       background-color: #dff8f6;
       border-color: #98dfdc;
       color: #17202a;
+    }
+    .msg-q2 {
+      top: 240px;
+      width: 285px;
+      height: 54px;
+    }
+    .time-q2 {
+      left: 340px;
+      top: 258px;
+    }
+    .msg-upload {
+      top: 308px;
+      width: 210px;
+      height: 54px;
+    }
+    .time-upload {
+      right: 34px;
+      top: 326px;
+    }
+    .mark-upload {
+      right: 18px;
+      top: 322px;
+    }
+    .card-upload {
+      top: 368px;
+    }
+    .msg-spec {
+      top: 530px;
+      width: 275px;
+      height: 54px;
+    }
+    .time-spec {
+      left: 322px;
+      top: 548px;
+    }
+    .card-download {
+      top: 596px;
+    }
+    .msg-latest {
+      top: 754px;
+      width: 255px;
+      height: 54px;
+    }
+    .time-latest {
+      right: 34px;
+      top: 772px;
+    }
+    .mark-latest {
+      right: 18px;
+      top: 768px;
     }
     .time-label {
       position: absolute;
@@ -313,7 +382,7 @@
     }
     .chat-scrollbar {
       position: absolute;
-      left: 786px;
+      right: 6px;
       top: 194px;
       width: 6px;
       height: 360px;
@@ -322,8 +391,8 @@
     }
     .transfer-card {
       position: absolute;
-      left: 142px;
-      width: 628px;
+      right: 36px;
+      width: 640px;
       height: 152px;
       border-radius: 8px;
       border-width: 1px;
@@ -346,7 +415,7 @@
       position: absolute;
       left: 96px;
       top: 23px;
-      width: 390px;
+      right: 150px;
       height: 26px;
       font-size: 16px;
       font-weight: bold;
@@ -356,7 +425,7 @@
       position: absolute;
       left: 96px;
       top: 62px;
-      width: 130px;
+      right: 430px;
       height: 20px;
       font-size: 14px;
       font-weight: bold;
@@ -366,7 +435,7 @@
       position: absolute;
       left: 96px;
       top: 92px;
-      width: 516px;
+      right: 30px;
       height: 7px;
       border-radius: 4px;
       background-color: #cbd5df;
@@ -377,7 +446,7 @@
     }
     .transfer-percent {
       position: absolute;
-      left: 518px;
+      right: 86px;
       top: 62px;
       width: 46px;
       height: 20px;
@@ -393,7 +462,7 @@
       position: absolute;
       left: 96px;
       top: 117px;
-      width: 430px;
+      right: 150px;
       height: 20px;
       font-size: 13px;
       font-weight: bold;
@@ -423,7 +492,7 @@
       position: absolute;
       left: 28px;
       bottom: 20px;
-      width: 744px;
+      right: 28px;
       height: 68px;
       background-color: #ffffff;
       border-color: #d6dee8;
@@ -435,7 +504,7 @@
       position: absolute;
       left: 16px;
       top: 12px;
-      width: 498px;
+      right: 236px;
       height: 44px;
       color: #1f2937;
       background-color: rgba(255,255,255,0);
@@ -447,6 +516,22 @@
       width: 32px;
       height: 32px;
       color: #050913;
+    }
+    .emoji-icon {
+      right: 192px;
+    }
+    .attach-icon {
+      right: 150px;
+    }
+    .folder-icon {
+      right: 108px;
+    }
+    .right-ip {
+      top: 198px;
+      left: 184px;
+      width: 150px;
+      text-align: left;
+      font-size: 15px;
     }
     .send-button {
       position: absolute;
@@ -467,7 +552,7 @@
     }
     .rightbar {
       position: absolute;
-      left: 1200px;
+      right: 0px;
       top: 0px;
       bottom: 0px;
       width: 400px;
@@ -623,6 +708,183 @@
       font-weight: bold;
       color: #0aa39e;
     }
+    @media (max-width: 1599px) {
+      .rightbar {
+        display: none;
+      }
+      .main {
+        right: 0px;
+      }
+      .transfer-card {
+        left: 122px;
+        right: 64px;
+        width: auto;
+      }
+      .bubble-right {
+        right: 118px;
+      }
+      .time-upload,
+      .time-latest {
+        right: 62px;
+      }
+      .mark-upload,
+      .mark-latest {
+        right: 30px;
+      }
+    }
+    @media (max-width: 940px) {
+      .sidebar {
+        width: 96px;
+      }
+      .main {
+        left: 96px;
+      }
+      .profile-name,
+      .profile-sub,
+      .settings,
+      .search-text,
+      .section-title,
+      .device-name,
+      .device-ip {
+        display: none;
+      }
+      .search-box {
+        left: 18px;
+        width: 60px;
+      }
+      .search-icon {
+        left: 34px;
+      }
+      .device {
+        left: 12px;
+        width: 72px;
+        height: 72px;
+      }
+      .status-dot {
+        left: 8px;
+        top: 31px;
+      }
+      .device-icon {
+        left: 28px;
+        top: 18px;
+      }
+    }
+    @media (max-width: 720px) {
+      .sidebar,
+      .profile-avatar,
+      .search-box,
+      .search-icon,
+      .device {
+        display: none;
+      }
+      .main {
+        left: 0px;
+      }
+      .tool-call,
+      .tool-search {
+        display: none;
+      }
+      .tool-menu {
+        right: 24px;
+      }
+      .tabbar {
+        left: 24px;
+        right: 24px;
+        width: auto;
+      }
+      .transfer-card {
+        left: 24px;
+        right: 24px;
+        width: auto;
+      }
+      .bubble-left {
+        left: 24px;
+      }
+      .bubble-right {
+        right: 72px;
+      }
+      .time-q2,
+      .time-spec {
+        left: auto;
+        right: 18px;
+      }
+      .time-upload,
+      .time-latest {
+        right: 38px;
+      }
+      .mark-upload,
+      .mark-latest {
+        right: 12px;
+      }
+      .file-icon {
+        left: 18px;
+      }
+      .file-name,
+      .file-size,
+      .progress-main,
+      .transfer-meta {
+        left: 78px;
+      }
+      .composer-wrap {
+        left: 18px;
+        right: 18px;
+      }
+      .composer {
+        right: 128px;
+      }
+      .emoji-icon,
+      .attach-icon {
+        display: none;
+      }
+      .folder-icon {
+        right: 100px;
+      }
+    }
+    @media (max-height: 820px) {
+      .msg-q2 {
+        top: 220px;
+      }
+      .time-q2 {
+        top: 238px;
+      }
+      .msg-upload {
+        top: 288px;
+      }
+      .time-upload {
+        top: 306px;
+      }
+      .mark-upload {
+        top: 302px;
+      }
+      .card-upload {
+        top: 348px;
+      }
+      .msg-spec {
+        top: 508px;
+      }
+      .time-spec {
+        top: 526px;
+      }
+      .card-download {
+        top: 574px;
+      }
+      .card-download {
+        display: none;
+      }
+      .msg-latest,
+      .time-latest,
+      .mark-latest {
+        display: none;
+      }
+    }
+    @media (max-height: 740px) {
+      .msg-spec {
+        top: 528px;
+      }
+      .time-spec {
+        top: 546px;
+      }
+    }
   </style>
 </head>
 <body>
@@ -673,37 +935,37 @@
       <svg class="header-icon" viewBox="0 0 24 24" fill="none"><rect x="3" y="4.71" width="18" height="11.76" rx="1.56" fill="currentColor"></rect><rect x="5.88" y="7.06" width="12.24" height="6.47" fill="#ffffff"></rect><rect x="10.56" y="16" width="2.88" height="3.84" fill="currentColor"></rect><rect x="5.4" y="19.41" width="13.2" height="1.92" rx="0.96" fill="currentColor"></rect></svg>
       <div class="header-title">Alex-PC</div>
       <div class="green-dot"></div><div class="header-ip">192.168.1.24</div>
-      <svg class="toolbar-icon" style="left:572px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.9" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1 1 .3 1.9.7 2.8a2 2 0 0 1-.5 2.1L8.1 9.9a16 16 0 0 0 6 6l1.3-1.2a2 2 0 0 1 2.1-.5c.9.3 1.8.6 2.8.7a2 2 0 0 1 1.7 2Z"></path></svg>
-      <svg class="toolbar-icon" style="left:650px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"></circle><path d="M16.5 16.5 21 21"></path></svg>
-      <svg class="toolbar-icon" style="left:728px" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="5" r="2.1" fill="currentColor"></circle><circle cx="12" cy="12" r="2.1" fill="currentColor"></circle><circle cx="12" cy="19" r="2.1" fill="currentColor"></circle></svg>
+      <svg class="toolbar-icon tool-call" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.9" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1 1 .3 1.9.7 2.8a2 2 0 0 1-.5 2.1L8.1 9.9a16 16 0 0 0 6 6l1.3-1.2a2 2 0 0 1 2.1-.5c.9.3 1.8.6 2.8.7a2 2 0 0 1 1.7 2Z"></path></svg>
+      <svg class="toolbar-icon tool-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"></circle><path d="M16.5 16.5 21 21"></path></svg>
+      <svg class="toolbar-icon tool-menu" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="5" r="2.1" fill="currentColor"></circle><circle cx="12" cy="12" r="2.1" fill="currentColor"></circle><circle cx="12" cy="19" r="2.1" fill="currentColor"></circle></svg>
       <div class="tabbar"></div>
-      <div id="tab-chat" class="tab tab-active" style="left:35px" data-action="tab:tab-chat">聊天</div>
-      <div id="tab-history" class="tab" style="left:223px" data-action="tab:tab-history">历史</div>
-      <div id="tab-transfer" class="tab" style="left:411px" data-action="tab:tab-transfer">传输</div>
+      <div id="tab-chat" class="tab tab-chat tab-active" data-action="tab:tab-chat">聊天</div>
+      <div id="tab-history" class="tab tab-history" data-action="tab:tab-history">历史</div>
+      <div id="tab-transfer" class="tab tab-transfer" data-action="tab:tab-transfer">传输</div>
       <div class="timeline-line"></div>
       <div class="day-pill">今天</div>
       <div class="chat-scrollbar"></div>
-      <div class="bubble bubble-left" style="top:240px;width:285px;height:54px">能把最新的 Q2 报告发我吗?</div>
-      <div class="time-label" style="left:340px;top:258px">09:21</div>
-      <div class="bubble bubble-right" style="left:500px;top:308px;width:210px;height:54px">可以，正在上传。</div>
-      <div class="time-label" style="left:724px;top:326px">09:21</div>
-      <svg class="read-mark" style="left:758px;top:322px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2 13.5 6 17.5 15 8.5"></path><path d="M9 15.5 11 17.5 22 6.5"></path></svg>
-      <div class="transfer-card" style="left:122px;top:368px;width:640px">
+      <div class="bubble bubble-left msg-q2">能把最新的 Q2 报告发我吗?</div>
+      <div class="time-label time-q2">09:21</div>
+      <div class="bubble bubble-right msg-upload">可以，正在上传。</div>
+      <div class="time-label time-upload">09:21</div>
+      <svg class="read-mark mark-upload" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2 13.5 6 17.5 15 8.5"></path><path d="M9 15.5 11 17.5 22 6.5"></path></svg>
+      <div class="transfer-card card-upload">
         <img class="file-icon" src="icons/file_type_pdf.svg"><div class="file-name">Q2_Report_2024.pdf</div><div class="file-size">24.8 MB</div><div id="upload-percent" class="transfer-percent">78%</div><progress id="upload-progress" class="progress-main" value="78" max="100"></progress><div class="transfer-meta">19.4 MB / 24.8 MB · 5.2 MB/s · 剩余 00:00:01</div><div class="card-time">09:22</div><svg class="card-mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2 13.5 6 17.5 15 8.5"></path><path d="M9 15.5 11 17.5 22 6.5"></path></svg>
       </div>
-      <div class="bubble bubble-left" style="top:530px;width:275px;height:54px">谢谢! 设计说明也在吗?</div>
-      <div class="time-label" style="left:322px;top:548px">09:23</div>
-      <div class="transfer-card warning" style="left:122px;top:596px;width:640px" data-action="finish-transfer">
+      <div class="bubble bubble-left msg-spec">谢谢! 设计说明也在吗?</div>
+      <div class="time-label time-spec">09:23</div>
+      <div class="transfer-card card-download warning" data-action="finish-transfer">
         <img class="file-icon" src="icons/file_type_zip.svg"><div class="file-name">Design_Specs_v2.zip</div><div class="file-size">112.6 MB</div><div id="download-percent" class="transfer-percent">45%</div><progress id="download-progress" class="progress-main warning" value="45" max="100"></progress><div class="transfer-meta">50.7 MB / 112.6 MB · 4.1 MB/s · 剩余 00:00:15</div><div class="card-time">09:24</div><svg class="card-mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2 13.5 6 17.5 15 8.5"></path><path d="M9 15.5 11 17.5 22 6.5"></path></svg>
       </div>
-      <div class="bubble bubble-right" style="left:448px;top:754px;width:255px;height:54px">是的，这是最新版本。</div>
-      <div class="time-label" style="left:722px;top:772px">09:25</div>
-      <svg class="read-mark" style="left:760px;top:768px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2 13.5 6 17.5 15 8.5"></path><path d="M9 15.5 11 17.5 22 6.5"></path></svg>
+      <div class="bubble bubble-right msg-latest">是的，这是最新版本。</div>
+      <div class="time-label time-latest">09:25</div>
+      <svg class="read-mark mark-latest" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2 13.5 6 17.5 15 8.5"></path><path d="M9 15.5 11 17.5 22 6.5"></path></svg>
       <div class="composer-wrap">
         <textarea id="composer" class="composer" placeholder="给 Alex-PC 发送消息"></textarea>
-        <svg class="compose-icon" style="left:520px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><path d="M8 14s1.5 2 4 2 4-2 4-2"></path><path d="M9 9h.01"></path><path d="M15 9h.01"></path></svg>
-        <svg class="compose-icon" style="left:562px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.4 11.1-8.9 8.9a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5"></path></svg>
-        <svg class="compose-icon" style="left:604px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h6l2 2h10v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"></path></svg>
+        <svg class="compose-icon emoji-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><path d="M8 14s1.5 2 4 2 4-2 4-2"></path><path d="M9 9h.01"></path><path d="M15 9h.01"></path></svg>
+        <svg class="compose-icon attach-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.4 11.1-8.9 8.9a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5"></path></svg>
+        <svg class="compose-icon folder-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h6l2 2h10v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"></path></svg>
         <div class="send-button" data-action="send-message">发送</div>
       </div>
     </div>
@@ -713,7 +975,7 @@
       <svg class="close-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"></path><path d="M6 6l12 12"></path></svg>
       <svg class="device-large" viewBox="0 0 24 24" fill="none"><rect x="3" y="4.71" width="18" height="11.76" rx="1.56" fill="currentColor"></rect><rect x="5.88" y="7.06" width="12.24" height="6.47" fill="#ffffff"></rect><rect x="10.56" y="16" width="2.88" height="3.84" fill="currentColor"></rect><rect x="5.4" y="19.41" width="13.2" height="1.92" rx="0.96" fill="currentColor"></rect></svg>
       <div class="online-dot"></div><div class="online-text">在线</div>
-      <div class="kv-value" style="top:198px;left:184px;width:150px;text-align:left;font-size:15px">192.168.1.24</div>
+      <div class="kv-value right-ip">192.168.1.24</div>
       <div class="info-line" style="top:248px"></div>
       <div class="panel-title" style="top:290px">设备信息</div>
       <div class="kv-label" style="top:338px">电脑名</div><div class="kv-value" style="top:338px">Alex-PC</div>

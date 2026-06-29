@@ -15,6 +15,10 @@ uint32_t pixelAt(const std::vector<uint32_t>& pixels, int x, int y) {
     return pixels[static_cast<size_t>(y) * kWidth + static_cast<size_t>(x)];
 }
 
+uint32_t pixelAt(const std::vector<uint32_t>& pixels, int width, int x, int y) {
+    return pixels[static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x)];
+}
+
 constexpr uint32_t solidColor(unsigned r, unsigned g, unsigned b) {
     return 0xFF000000u | (r << 16u) | (g << 8u) | b;
 }
@@ -27,6 +31,17 @@ bool renderPixel(skui::Runtime& runtime, int x, int y, uint32_t& out) {
         return false;
     }
     out = pixelAt(pixels, x, y);
+    return true;
+}
+
+bool renderPixelAt(skui::Runtime& runtime, int width, int height, int x, int y, uint32_t& out) {
+    std::vector<uint32_t> pixels;
+    pixels.assign(static_cast<size_t>(width) * static_cast<size_t>(height), 0);
+    if (!runtime.renderToBgraPixels(pixels.data(), width, height, static_cast<size_t>(width) * sizeof(uint32_t), 1.0f)) {
+        std::cerr << "render failed: " << runtime.lastError() << "\n";
+        return false;
+    }
+    out = pixelAt(pixels, width, x, y);
     return true;
 }
 
@@ -457,6 +472,70 @@ int main() {
     ok = renderPixel(progressRuntime, 80, 15, progressTrack) && ok;
     ok = expect(progressFill == solidColor(0x10, 0xC0, 0xB0), "progress value should render filled track") && ok;
     ok = expect(progressTrack == solidColor(0x20, 0x30, 0x40), "progress max range should leave unfilled track") && ok;
+
+    constexpr std::string_view responsiveHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      position: relative;
+      width: 100%;
+      height: 90px;
+      background-color: #000000;
+    }
+    .half {
+      position: absolute;
+      left: 0px;
+      top: 0px;
+      width: 50%;
+      height: 30px;
+      background-color: #224466;
+    }
+    .media-box {
+      position: absolute;
+      left: 0px;
+      top: 40px;
+      width: 100%;
+      height: 30px;
+      background-color: #111111;
+    }
+    @media (max-width: 100px) {
+      .media-box {
+        background-color: #abcdef;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <div class="half"></div>
+    <div class="media-box"></div>
+  </div>
+</body>
+</html>
+)html";
+
+    skui::Runtime responsiveRuntime(options);
+    responsiveRuntime.resize(140, 90, 1.0f);
+    if (!responsiveRuntime.loadDocumentFromString(responsiveHtml, "")) {
+        std::cerr << "responsive load failed: " << responsiveRuntime.lastError() << "\n";
+        return 1;
+    }
+
+    uint32_t halfInside = 0;
+    uint32_t halfOutside = 0;
+    uint32_t mediaWide = 0;
+    uint32_t mediaNarrow = 0;
+    ok = renderPixelAt(responsiveRuntime, 140, 90, 60, 15, halfInside) && ok;
+    ok = renderPixelAt(responsiveRuntime, 140, 90, 90, 15, halfOutside) && ok;
+    ok = renderPixelAt(responsiveRuntime, 140, 90, 20, 55, mediaWide) && ok;
+    responsiveRuntime.resize(80, 90, 1.0f);
+    ok = renderPixelAt(responsiveRuntime, 80, 90, 20, 55, mediaNarrow) && ok;
+    ok = expect(halfInside == solidColor(0x22, 0x44, 0x66), "percentage width should resolve against parent width") && ok;
+    ok = expect(halfOutside == solidColor(0x00, 0x00, 0x00), "percentage width should leave remaining parent area") && ok;
+    ok = expect(mediaWide == solidColor(0x11, 0x11, 0x11), "media query should not match wide viewport") && ok;
+    ok = expect(mediaNarrow == solidColor(0xAB, 0xCD, 0xEF), "media query should recompute after resize") && ok;
 
     constexpr std::string_view textareaHtml = R"html(
 <!doctype html>

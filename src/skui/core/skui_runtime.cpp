@@ -533,6 +533,21 @@ public:
     explicit Impl(RuntimeOptions runtimeOptions)
         : options(std::move(runtimeOptions)), parser(options), renderer(options) {}
 
+    float logicalWidth() const {
+        return static_cast<float>(width) / std::max(0.1f, dpiScale);
+    }
+
+    float logicalHeight() const {
+        return static_cast<float>(height) / std::max(0.1f, dpiScale);
+    }
+
+    void recomputeAndLayout() {
+        const float viewportWidth = logicalWidth();
+        const float viewportHeight = logicalHeight();
+        recomputeStyles(document, options, viewportWidth, viewportHeight);
+        layoutEngine.layout(document, viewportWidth, viewportHeight);
+    }
+
     bool setFocusedNode(Node* next) {
         if (focusedNode == next) {
             return false;
@@ -619,9 +634,7 @@ bool Runtime::loadDocument(const std::string& path) {
     impl_->focusedNode = nullptr;
     impl_->selectingInput = nullptr;
     impl_->lastError.clear();
-    impl_->layoutEngine.layout(impl_->document,
-                               static_cast<float>(impl_->width) / std::max(0.1f, impl_->dpiScale),
-                               static_cast<float>(impl_->height) / std::max(0.1f, impl_->dpiScale));
+    impl_->recomputeAndLayout();
     return true;
 }
 
@@ -645,9 +658,7 @@ bool Runtime::loadDocumentFromString(std::string_view html, std::string_view bas
     impl_->focusedNode = nullptr;
     impl_->selectingInput = nullptr;
     impl_->lastError.clear();
-    impl_->layoutEngine.layout(impl_->document,
-                               static_cast<float>(impl_->width) / std::max(0.1f, impl_->dpiScale),
-                               static_cast<float>(impl_->height) / std::max(0.1f, impl_->dpiScale));
+    impl_->recomputeAndLayout();
     return true;
 }
 
@@ -664,9 +675,7 @@ void Runtime::resize(int width, int height, float dpiScale) {
     impl_->dpiScale = dpiScale;
     impl_->dirty = true;
     if (impl_->hasDocument) {
-        impl_->layoutEngine.layout(impl_->document,
-                                   static_cast<float>(impl_->width) / impl_->dpiScale,
-                                   static_cast<float>(impl_->height) / impl_->dpiScale);
+        impl_->recomputeAndLayout();
     }
 }
 
@@ -960,10 +969,7 @@ bool Runtime::handleEvent(const Event& event) {
         impl_->options.onElementEvent(makeElementEvent(ElementEventType::Input, *impl_->focusedNode, event, x, y));
     }
     if (stateChanged || textChanged) {
-        recomputeStyles(impl_->document, impl_->options);
-        impl_->layoutEngine.layout(impl_->document,
-                                   static_cast<float>(impl_->width) / impl_->dpiScale,
-                                   static_cast<float>(impl_->height) / impl_->dpiScale);
+        impl_->recomputeAndLayout();
         impl_->dirty = true;
     }
     return consumed || stateChanged;
@@ -991,10 +997,7 @@ bool Runtime::addClassById(std::string_view id, std::string_view className) {
     }
     node->classes.emplace_back(className);
     node->attributes["class"] = classAttributeValue(node->classes);
-    recomputeStyles(impl_->document, impl_->options);
-    impl_->layoutEngine.layout(impl_->document,
-                               static_cast<float>(impl_->width) / impl_->dpiScale,
-                               static_cast<float>(impl_->height) / impl_->dpiScale);
+    impl_->recomputeAndLayout();
     impl_->dirty = true;
     return true;
 }
@@ -1017,10 +1020,7 @@ bool Runtime::removeClassById(std::string_view id, std::string_view className) {
     } else {
         node->attributes["class"] = classAttributeValue(node->classes);
     }
-    recomputeStyles(impl_->document, impl_->options);
-    impl_->layoutEngine.layout(impl_->document,
-                               static_cast<float>(impl_->width) / impl_->dpiScale,
-                               static_cast<float>(impl_->height) / impl_->dpiScale);
+    impl_->recomputeAndLayout();
     impl_->dirty = true;
     return true;
 }
@@ -1036,10 +1036,7 @@ bool Runtime::setStyleById(std::string_view id, std::string_view declarations) {
     node->inlineStyle = {};
     parseInlineStyle(declarations, node->inlineStyle);
     node->attributes["style"] = std::string(declarations);
-    recomputeStyles(impl_->document, impl_->options);
-    impl_->layoutEngine.layout(impl_->document,
-                               static_cast<float>(impl_->width) / impl_->dpiScale,
-                               static_cast<float>(impl_->height) / impl_->dpiScale);
+    impl_->recomputeAndLayout();
     impl_->dirty = true;
     return true;
 }
@@ -1058,10 +1055,7 @@ bool Runtime::setAttributeById(std::string_view id, std::string_view name, std::
     }
     node->attributes[normalizedName] = std::string(value);
     syncNodeAttribute(*node, normalizedName);
-    recomputeStyles(impl_->document, impl_->options);
-    impl_->layoutEngine.layout(impl_->document,
-                               static_cast<float>(impl_->width) / impl_->dpiScale,
-                               static_cast<float>(impl_->height) / impl_->dpiScale);
+    impl_->recomputeAndLayout();
     impl_->dirty = true;
     return true;
 }
@@ -1083,10 +1077,7 @@ bool Runtime::removeAttributeById(std::string_view id, std::string_view name) {
         return false;
     }
     syncNodeAttribute(*node, normalizedName);
-    recomputeStyles(impl_->document, impl_->options);
-    impl_->layoutEngine.layout(impl_->document,
-                               static_cast<float>(impl_->width) / impl_->dpiScale,
-                               static_cast<float>(impl_->height) / impl_->dpiScale);
+    impl_->recomputeAndLayout();
     impl_->dirty = true;
     return true;
 }

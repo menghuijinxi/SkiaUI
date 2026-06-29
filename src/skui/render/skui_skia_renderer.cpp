@@ -93,8 +93,11 @@ float lineHeightForNode(const Node& node) {
     return std::max(12.0f, node.style.fontSize * 1.38f);
 }
 
-float edgeOrZero(const std::optional<float>& value) {
-    return value.value_or(0.0f);
+float edgeOrZero(const std::optional<Length>& value) {
+    if (!value || value->unit != LengthUnit::Px) {
+        return 0.0f;
+    }
+    return value->value;
 }
 
 SkRect contentRectForText(const Node& node) {
@@ -174,8 +177,7 @@ sk_sp<SkTypeface> SkiaRenderer::pickTypeface(bool bold) {
 
 SkFont SkiaRenderer::font(float size, bool bold) const {
     SkFont f(bold ? bold_ : regular_, size);
-    f.setEdging(SkFont::Edging::kSubpixelAntiAlias);
-    f.setHinting(SkFontHinting::kNormal);
+    f.setEdging(SkFont::Edging::kAntiAlias);
     f.setSubpixel(true);
     return f;
 }
