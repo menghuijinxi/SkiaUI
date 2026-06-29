@@ -368,27 +368,30 @@
     }
     .compass {
       position: absolute;
-      right: 22px;
-      bottom: 64px;
-      width: 120px;
-      height: 150px;
+      right: 12px;
+      bottom: 78px;
+      width: 161px;
+      height: 165px;
       color: rgba(237,245,251,0.90);
     }
-    .compass-ring {
+    .compass-face {
       position: absolute;
-      left: 35px;
-      top: 42px;
-      width: 52px;
-      height: 52px;
-      border-color: rgba(197,213,224,0.56);
-      border-width: 1.1px;
-      border-style: solid;
-      border-radius: 51px;
+      left: 26px;
+      top: 26px;
+      width: 102px;
+      height: 102px;
     }
-    .compass-n { position: absolute; left: 54px; top: 0px; width: 20px; height: 24px; font-size: 17px; font-weight: bold; }
-    .compass-e { position: absolute; left: 100px; top: 66px; width: 20px; height: 24px; font-size: 16px; }
-    .compass-s { position: absolute; left: 54px; top: 122px; width: 20px; height: 24px; font-size: 16px; }
-    .compass-w { position: absolute; left: 0px; top: 66px; width: 20px; height: 24px; font-size: 16px; }
+    .compass-label {
+      position: absolute;
+      width: 20px;
+      height: 24px;
+      color: rgba(237,245,251,0.90);
+      text-align: center;
+    }
+    .compass-n { left: 71px; top: 0px; font-size: 17px; font-weight: bold; }
+    .compass-e { left: 141px; top: 73px; font-size: 16px; }
+    .compass-s { left: 71px; top: 145px; font-size: 16px; }
+    .compass-w { left: 0px; top: 73px; font-size: 16px; }
   </style>
 </head>
 <body>
@@ -512,11 +515,20 @@
     <div class="info" style="left:451px;top:774px"><span class="info-label">最后编辑:</span><span class="info-value">2024-05-16 15:47:09</span></div>
 
     <div class="compass">
-      <div class="compass-ring"></div>
-      <div class="compass-n">N</div>
-      <div class="compass-e">E</div>
-      <div class="compass-s">S</div>
-      <div class="compass-w">W</div>
+      <svg class="compass-face" viewBox="0 0 102 102" fill="none">
+        <circle cx="51" cy="51" r="50.2" stroke="#C5D5E0" stroke-opacity="0.57" stroke-width="1.1"></circle>
+        <circle cx="51" cy="51" r="37.7" stroke="#C5D5E0" stroke-opacity="0.18" stroke-width="1"></circle>
+        <path d="M51 11.8 L51 0.8 M90.2 51 L101.2 51 M51 90.2 L51 101.2 M11.8 51 L0.8 51" stroke="#CFDCE6" stroke-opacity="0.59" stroke-width="1"></path>
+        <path d="M62.44 8.306 L63.993 2.511 M73.1 12.722 L76.1 7.526 M82.254 19.746 L86.497 15.503 M89.278 28.9 L94.474 25.9 M93.694 39.56 L99.489 38.007 M93.694 62.44 L99.489 63.993 M89.278 73.1 L94.474 76.1 M82.254 82.254 L86.497 86.497 M73.1 89.278 L76.1 94.474 M62.44 93.694 L63.993 99.489 M39.56 93.694 L38.007 99.489 M28.9 89.278 L25.9 94.474 M19.746 82.254 L15.503 86.497 M12.722 73.1 L7.526 76.1 M8.306 62.44 L2.511 63.993 M8.306 39.56 L2.511 38.007 M12.722 28.9 L7.526 25.9 M19.746 19.746 L15.503 15.503 M28.9 12.722 L25.9 7.526 M39.56 8.306 L38.007 2.511" stroke="#CFDCE6" stroke-opacity="0.37" stroke-width="1"></path>
+        <path d="M51 12 60 50 51 43 42 50Z" fill="#E34A52"></path>
+        <path d="M51 89 60 52 51 59 42 52Z" fill="#E0E8EF" fill-opacity="0.90"></path>
+        <circle cx="51" cy="51" r="6.5" fill="#0B141E" fill-opacity="0.94"></circle>
+        <circle cx="51" cy="51" r="3" fill="#BED2DE" fill-opacity="0.84"></circle>
+      </svg>
+      <div class="compass-label compass-n">N</div>
+      <div class="compass-label compass-e">E</div>
+      <div class="compass-label compass-s">S</div>
+      <div class="compass-label compass-w">W</div>
     </div>
 
     <div class="status">
