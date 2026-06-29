@@ -101,6 +101,12 @@ std::string attributeValue(const std::unordered_map<std::string, std::string>& a
     return it == attributes.end() ? std::string{} : it->second;
 }
 
+float attributeFloat(const std::unordered_map<std::string, std::string>& attributes, std::string_view name, float fallback) {
+    float out = fallback;
+    const std::string value = attributeValue(attributes, name);
+    return parseFloat(value, out) ? out : fallback;
+}
+
 std::string nodeName(lxb_dom_element_t* element) {
     size_t len = 0;
     const lxb_char_t* value = lxb_dom_element_local_name(element, &len);
@@ -603,7 +609,7 @@ void applyInheritedStyle(Node& node, const RuntimeOptions& options) {
     }
 
     if (node.tag == "text" || node.tag == "span" || node.tag == "label" || node.tag == "button" ||
-        node.tag == "input" ||
+        node.tag == "input" || node.tag == "textarea" || node.tag == "progress" ||
         node.tag == "img" || node.tag == "svg") {
         node.style.flexShrink = 0.0f;
     }
@@ -1140,6 +1146,8 @@ std::unique_ptr<Node> convertElement(lxb_dom_element_t* element, Node* parent, s
     node->placeholder = attributeValue(node->attributes, "placeholder");
     node->src = attributeValue(node->attributes, "src");
     node->action = attributeValue(node->attributes, "data-action");
+    node->numericValue = attributeFloat(node->attributes, "value", 0.0f);
+    node->numericMax = std::max(0.0001f, attributeFloat(node->attributes, "max", 1.0f));
 
     const std::string inlineStyle = attributeValue(node->attributes, "style");
     if (!inlineStyle.empty()) {
@@ -1155,7 +1163,12 @@ std::unique_ptr<Node> convertElement(lxb_dom_element_t* element, Node* parent, s
         if (child->type == LXB_DOM_NODE_TYPE_TEXT) {
             auto* data = lxb_dom_interface_character_data(child);
             if (data && data->data.data && data->data.length > 0) {
-                appendText(*node, std::string_view(reinterpret_cast<const char*>(data->data.data), data->data.length));
+                std::string_view text(reinterpret_cast<const char*>(data->data.data), data->data.length);
+                if (tag == "textarea" && node->value.empty()) {
+                    node->value += trim(text);
+                } else {
+                    appendText(*node, text);
+                }
             }
         } else if (child->type == LXB_DOM_NODE_TYPE_ELEMENT) {
             std::unique_ptr<Node> childNode = convertElement(lxb_dom_interface_element(child), node.get(), rules);

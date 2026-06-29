@@ -20,13 +20,41 @@ constexpr uint32_t solidColor(unsigned r, unsigned g, unsigned b) {
 }
 
 bool renderPixel(skui::Runtime& runtime, int x, int y, uint32_t& out) {
-    std::vector<uint32_t> pixels(static_cast<size_t>(kWidth) * kHeight, 0);
+    std::vector<uint32_t> pixels;
+    pixels.assign(static_cast<size_t>(kWidth) * kHeight, 0);
     if (!runtime.renderToBgraPixels(pixels.data(), kWidth, kHeight, static_cast<size_t>(kWidth) * sizeof(uint32_t), 1.0f)) {
         std::cerr << "render failed: " << runtime.lastError() << "\n";
         return false;
     }
     out = pixelAt(pixels, x, y);
     return true;
+}
+
+bool renderPixels(skui::Runtime& runtime, std::vector<uint32_t>& pixels) {
+    pixels.assign(static_cast<size_t>(kWidth) * kHeight, 0);
+    if (!runtime.renderToBgraPixels(pixels.data(), kWidth, kHeight, static_cast<size_t>(kWidth) * sizeof(uint32_t), 1.0f)) {
+        std::cerr << "render failed: " << runtime.lastError() << "\n";
+        return false;
+    }
+    return true;
+}
+
+bool isBrightPixel(uint32_t color) {
+    return ((color >> 16u) & 0xffu) > 180u &&
+           ((color >> 8u) & 0xffu) > 180u &&
+           (color & 0xffu) > 180u;
+}
+
+int countBrightPixels(const std::vector<uint32_t>& pixels, int left, int top, int right, int bottom) {
+    int count = 0;
+    for (int y = std::max(0, top); y < std::min(kHeight, bottom); ++y) {
+        for (int x = std::max(0, left); x < std::min(kWidth, right); ++x) {
+            if (isBrightPixel(pixelAt(pixels, x, y))) {
+                ++count;
+            }
+        }
+    }
+    return count;
 }
 
 void sendMouse(skui::Runtime& runtime, skui::EventType type, float x, float y, bool shift = false) {
@@ -146,7 +174,6 @@ int main() {
     ok = renderPixel(runtime, 20, 20, active) && ok;
     sendMouse(runtime, skui::EventType::MouseUp, 20.0f, 20.0f);
     ok = renderPixel(runtime, 20, 20, selected) && ok;
-
     ok = expect(normal != hover, "div:hover should change rendered output") && ok;
     ok = expect(hover != active, "div:active should change rendered output") && ok;
     ok = expect(clickCount == 1, "click should be emitted for data-action div") && ok;
@@ -225,6 +252,59 @@ int main() {
     ok = expect(selectorHover == solidColor(0x55, 0x66, 0x77), "child selector with :hover should apply") && ok;
     ok = expect(selectorAttribute == solidColor(0x77, 0x88, 0x99), "attribute selector should apply after setAttributeById") && ok;
     ok = expect(selectorInline == solidColor(0xAB, 0xCD, 0xEF), "setStyleById should update inline style") && ok;
+
+    constexpr std::string_view textOverflowHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      position: relative;
+      width: 140px;
+      height: 90px;
+      background-color: #000000;
+    }
+    .button {
+      position: absolute;
+      left: 10px;
+      top: 10px;
+      width: 110px;
+      height: 44px;
+      background-color: #112233;
+      flex-direction: row;
+      align-items: center;
+      justify-content: center;
+    }
+    .label {
+      width: 80px;
+      height: 1px;
+      color: #ffffff;
+      font-size: 24px;
+      font-weight: bold;
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <div class="button">
+      <span class="label">TEXT</span>
+    </div>
+  </div>
+</body>
+</html>
+)html";
+
+    skui::Runtime textOverflowRuntime(options);
+    textOverflowRuntime.resize(kWidth, kHeight, 1.0f);
+    if (!textOverflowRuntime.loadDocumentFromString(textOverflowHtml, "")) {
+        std::cerr << "text overflow load failed: " << textOverflowRuntime.lastError() << "\n";
+        return 1;
+    }
+
+    std::vector<uint32_t> textOverflowPixels;
+    ok = renderPixels(textOverflowRuntime, textOverflowPixels) && ok;
+    ok = expect(countBrightPixels(textOverflowPixels, 20, 12, 120, 30) > 20,
+                "ordinary text should not be clipped by its own layout box") && ok;
 
     constexpr std::string_view inputHtml = R"html(
 <!doctype html>
@@ -333,6 +413,123 @@ int main() {
     ok = expect(inputNormal != inputFocused, "input:focus should change rendered output") && ok;
     ok = expect(inputEvents == 17, "input text changes and undo should emit Input events") && ok;
     ok = expect(inputValue == "ax ok中", "single-line input should handle selection, clipboard, double-click, and IME commit") && ok;
+
+    constexpr std::string_view progressHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      position: relative;
+      width: 140px;
+      height: 90px;
+      background-color: #000000;
+    }
+    .bar {
+      position: absolute;
+      left: 10px;
+      top: 10px;
+      width: 100px;
+      height: 10px;
+      background-color: #203040;
+      color: #10c0b0;
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <progress id="bar" class="bar" value="40" max="100"></progress>
+  </div>
+</body>
+</html>
+)html";
+
+    skui::Runtime progressRuntime(options);
+    progressRuntime.resize(kWidth, kHeight, 1.0f);
+    if (!progressRuntime.loadDocumentFromString(progressHtml, "")) {
+        std::cerr << "progress load failed: " << progressRuntime.lastError() << "\n";
+        return 1;
+    }
+
+    uint32_t progressFill = 0;
+    uint32_t progressTrack = 0;
+    ok = renderPixel(progressRuntime, 20, 15, progressFill) && ok;
+    ok = renderPixel(progressRuntime, 80, 15, progressTrack) && ok;
+    ok = expect(progressFill == solidColor(0x10, 0xC0, 0xB0), "progress value should render filled track") && ok;
+    ok = expect(progressTrack == solidColor(0x20, 0x30, 0x40), "progress max range should leave unfilled track") && ok;
+
+    constexpr std::string_view textareaHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      position: relative;
+      width: 140px;
+      height: 90px;
+      background-color: #000000;
+    }
+    .notes {
+      position: absolute;
+      left: 10px;
+      top: 10px;
+      width: 120px;
+      height: 64px;
+      background-color: #112233;
+      color: #ffffff;
+      font-size: 14px;
+    }
+    .notes:focus {
+      background-color: #334455;
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <textarea id="notes" class="notes" placeholder="notes"></textarea>
+  </div>
+</body>
+</html>
+)html";
+
+    std::string textareaClipboard;
+    skui::RuntimeOptions textareaOptions = options;
+    textareaOptions.readClipboardText = [&] { return textareaClipboard; };
+    textareaOptions.writeClipboardText = [&](std::string_view text) { textareaClipboard = std::string(text); };
+    skui::Runtime textareaRuntime(textareaOptions);
+    textareaRuntime.resize(kWidth, kHeight, 1.0f);
+
+    std::string textareaValue;
+    textareaRuntime.setElementEventCallback([&](const skui::ElementEvent& event) {
+        if (event.type == skui::ElementEventType::Input) {
+            textareaValue = event.value;
+        }
+    });
+
+    if (!textareaRuntime.loadDocumentFromString(textareaHtml, "")) {
+        std::cerr << "textarea load failed: " << textareaRuntime.lastError() << "\n";
+        return 1;
+    }
+
+    sendMouse(textareaRuntime, skui::EventType::MouseDown, 20.0f, 20.0f);
+    sendMouse(textareaRuntime, skui::EventType::MouseUp, 20.0f, 20.0f);
+    sendText(textareaRuntime, "one");
+    sendKey(textareaRuntime, 0x0D);
+    sendText(textareaRuntime, "two");
+    ok = expect(textareaValue == "one\ntwo", "textarea should accept Enter and preserve line breaks") && ok;
+    sendKey(textareaRuntime, 'A', false, true);
+    sendKey(textareaRuntime, 'C', false, true);
+    ok = expect(textareaClipboard == "one\ntwo", "Ctrl+C should copy multiline textarea selection") && ok;
+    textareaClipboard = "red\r\nblue";
+    sendKey(textareaRuntime, 'V', false, true);
+    ok = expect(textareaValue == "red\nblue", "Ctrl+V should normalize CRLF text for textarea") && ok;
+    sendKey(textareaRuntime, 'Z', false, true);
+    ok = expect(textareaValue == "one\ntwo", "Ctrl+Z should undo textarea edits") && ok;
+    sendMouse(textareaRuntime, skui::EventType::MouseDown, 80.0f, 36.0f);
+    sendMouse(textareaRuntime, skui::EventType::MouseUp, 80.0f, 36.0f);
+    sendKey(textareaRuntime, 0x24);
+    sendText(textareaRuntime, "2-");
+    ok = expect(textareaValue == "one\n2-two", "textarea Home should move to the current line start") && ok;
 
     return ok ? 0 : 1;
 }

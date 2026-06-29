@@ -1,0 +1,737 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    .screen {
+      flex-grow: 1;
+      flex-shrink: 1;
+      position: relative;
+      background-color: #f8fafc;
+      color: #111827;
+      font-size: 16px;
+    }
+    .sidebar {
+      position: absolute;
+      left: 0px;
+      top: 0px;
+      bottom: 0px;
+      width: 402px;
+      background-color: #fcfeff;
+      border-color: #d9e2ea;
+      border-width: 1px;
+      border-style: solid;
+    }
+    .profile-avatar {
+      position: absolute;
+      left: 24px;
+      top: 22px;
+      width: 52px;
+      height: 52px;
+      border-radius: 10px;
+      background-color: #0aa39e;
+      color: #ffffff;
+      font-size: 20px;
+      font-weight: bold;
+      align-items: center;
+      justify-content: center;
+    }
+    .profile-name {
+      position: absolute;
+      left: 102px;
+      top: 28px;
+      width: 150px;
+      height: 26px;
+      font-size: 17px;
+      font-weight: bold;
+      color: #111827;
+    }
+    .profile-sub {
+      position: absolute;
+      left: 102px;
+      top: 56px;
+      width: 190px;
+      height: 24px;
+      font-size: 13px;
+      color: #5d6b7c;
+    }
+    .settings {
+      position: absolute;
+      left: 354px;
+      top: 33px;
+      width: 28px;
+      height: 28px;
+      color: #516070;
+    }
+    .search-box {
+      position: absolute;
+      left: 24px;
+      top: 110px;
+      width: 354px;
+      height: 42px;
+      background-color: #ffffff;
+      border-color: #d4dde7;
+      border-width: 1px;
+      border-style: solid;
+      border-radius: 7px;
+    }
+    .search-icon {
+      position: absolute;
+      left: 36px;
+      top: 116px;
+      width: 28px;
+      height: 28px;
+      color: #1f2937;
+    }
+    .search-text {
+      position: absolute;
+      left: 80px;
+      top: 119px;
+      width: 150px;
+      height: 24px;
+      font-size: 14px;
+      color: #9aa7b5;
+    }
+    .section-title {
+      position: absolute;
+      left: 42px;
+      width: 200px;
+      height: 24px;
+      font-size: 15px;
+      font-weight: bold;
+      color: #111827;
+    }
+    .device {
+      position: absolute;
+      left: 24px;
+      width: 354px;
+      height: 86px;
+      border-radius: 8px;
+      background-color: rgba(255,255,255,0);
+      border-color: rgba(255,255,255,0);
+      border-width: 1px;
+      border-style: solid;
+    }
+    .device:hover {
+      background-color: #edf8f8;
+      border-color: #b8e5e2;
+    }
+    .device:active {
+      background-color: #ddf4f3;
+      border-color: #88d8d3;
+    }
+    .device-selected {
+      background-color: #e7fafa;
+      border-color: #81dcd8;
+    }
+    .status-dot {
+      position: absolute;
+      left: 18px;
+      top: 35px;
+      width: 9px;
+      height: 9px;
+      border-radius: 5px;
+      background-color: #26bd31;
+    }
+    .status-dot.offline {
+      background-color: #a8b3c0;
+    }
+    .device-icon {
+      position: absolute;
+      left: 48px;
+      top: 20px;
+      width: 35px;
+      height: 35px;
+      color: #111827;
+    }
+    .device-name {
+      position: absolute;
+      left: 92px;
+      top: 18px;
+      width: 175px;
+      height: 24px;
+      font-size: 15px;
+      font-weight: bold;
+      color: #1f2937;
+    }
+    .device-ip {
+      position: absolute;
+      left: 92px;
+      top: 43px;
+      width: 150px;
+      height: 22px;
+      font-size: 13px;
+      color: #4b5a6c;
+    }
+    .main {
+      position: absolute;
+      left: 402px;
+      top: 0px;
+      bottom: 0px;
+      width: 798px;
+      background-color: #ffffff;
+      border-color: #dbe3eb;
+      border-width: 1px;
+      border-style: solid;
+    }
+    .header-icon {
+      position: absolute;
+      left: 38px;
+      top: 24px;
+      width: 38px;
+      height: 38px;
+      color: #050913;
+    }
+    .header-title {
+      position: absolute;
+      left: 96px;
+      top: 17px;
+      width: 180px;
+      height: 26px;
+      font-size: 18px;
+      font-weight: bold;
+    }
+    .header-ip {
+      position: absolute;
+      left: 112px;
+      top: 43px;
+      width: 160px;
+      height: 22px;
+      font-size: 13px;
+      color: #5d6b7c;
+    }
+    .green-dot {
+      position: absolute;
+      left: 96px;
+      top: 50px;
+      width: 10px;
+      height: 10px;
+      border-radius: 5px;
+      background-color: #26bd31;
+    }
+    .toolbar-icon {
+      position: absolute;
+      top: 36px;
+      width: 38px;
+      height: 38px;
+      color: #050913;
+    }
+    .tabbar {
+      position: absolute;
+      left: 34px;
+      top: 118px;
+      width: 565px;
+      height: 42px;
+      border-color: #d3dce6;
+      border-width: 1px;
+      border-style: solid;
+      border-radius: 7px;
+      background-color: #ffffff;
+    }
+    .tab {
+      position: absolute;
+      top: 119px;
+      width: 188px;
+      height: 40px;
+      align-items: center;
+      justify-content: center;
+      color: #374151;
+      font-size: 13px;
+      font-weight: bold;
+    }
+    .tab:hover {
+      background-color: #f4fafb;
+    }
+    .tab-active {
+      background-color: #0aa39e;
+      color: #ffffff;
+      border-radius: 6px;
+    }
+    .timeline-line {
+      position: absolute;
+      left: 0px;
+      top: 176px;
+      width: 798px;
+      height: 1px;
+      background-color: #dfe6ee;
+    }
+    .day-pill {
+      position: absolute;
+      left: 376px;
+      top: 195px;
+      width: 66px;
+      height: 30px;
+      border-radius: 7px;
+      border-color: #d4dde7;
+      border-width: 1px;
+      border-style: solid;
+      color: #657386;
+      background-color: #ffffff;
+      align-items: center;
+      justify-content: center;
+      font-weight: bold;
+      font-size: 13px;
+    }
+    .bubble {
+      position: absolute;
+      border-radius: 8px;
+      border-width: 1px;
+      border-style: solid;
+      font-size: 15px;
+      font-weight: bold;
+      align-items: center;
+      padding-left: 18px;
+      padding-top: 12px;
+      padding-right: 18px;
+      padding-bottom: 12px;
+    }
+    .bubble-left {
+      left: 32px;
+      background-color: #ffffff;
+      border-color: #d6dee8;
+      color: #1f2937;
+    }
+    .bubble-right {
+      background-color: #dff8f6;
+      border-color: #98dfdc;
+      color: #17202a;
+    }
+    .time-label {
+      position: absolute;
+      width: 52px;
+      height: 22px;
+      font-size: 13px;
+      color: #718094;
+    }
+    .read-mark {
+      position: absolute;
+      width: 22px;
+      height: 22px;
+      color: #0aa39e;
+      font-size: 20px;
+      font-weight: bold;
+    }
+    .chat-scrollbar {
+      position: absolute;
+      left: 786px;
+      top: 194px;
+      width: 6px;
+      height: 360px;
+      border-radius: 3px;
+      background-color: #b8c3d0;
+    }
+    .transfer-card {
+      position: absolute;
+      left: 142px;
+      width: 628px;
+      height: 152px;
+      border-radius: 8px;
+      border-width: 1px;
+      border-style: solid;
+      background-color: #e9fbfa;
+      border-color: #8addd9;
+    }
+    .transfer-card.warning {
+      background-color: #fff7e8;
+      border-color: #ffbd69;
+    }
+    .file-icon {
+      position: absolute;
+      left: 16px;
+      top: 32px;
+      width: 48px;
+      height: 48px;
+    }
+    .file-name {
+      position: absolute;
+      left: 96px;
+      top: 23px;
+      width: 390px;
+      height: 26px;
+      font-size: 16px;
+      font-weight: bold;
+      color: #1f2937;
+    }
+    .file-size {
+      position: absolute;
+      left: 96px;
+      top: 62px;
+      width: 130px;
+      height: 20px;
+      font-size: 14px;
+      font-weight: bold;
+      color: #5d6b7c;
+    }
+    .progress-main {
+      position: absolute;
+      left: 96px;
+      top: 92px;
+      width: 516px;
+      height: 7px;
+      border-radius: 4px;
+      background-color: #cbd5df;
+      color: #0aa39e;
+    }
+    .progress-main.warning {
+      color: #ec8d00;
+    }
+    .transfer-percent {
+      position: absolute;
+      left: 518px;
+      top: 62px;
+      width: 46px;
+      height: 20px;
+      text-align: right;
+      font-size: 14px;
+      font-weight: bold;
+      color: #1f2937;
+    }
+    .transfer-percent.done {
+      color: #0aa39e;
+    }
+    .transfer-meta {
+      position: absolute;
+      left: 96px;
+      top: 117px;
+      width: 430px;
+      height: 20px;
+      font-size: 13px;
+      font-weight: bold;
+      color: #5d6b7c;
+    }
+    .card-time {
+      position: absolute;
+      right: 56px;
+      top: 117px;
+      width: 48px;
+      height: 22px;
+      text-align: right;
+      font-size: 13px;
+      color: #718094;
+    }
+    .card-mark {
+      position: absolute;
+      right: 24px;
+      top: 114px;
+      width: 22px;
+      height: 22px;
+      color: #0aa39e;
+      font-size: 20px;
+      font-weight: bold;
+    }
+    .composer-wrap {
+      position: absolute;
+      left: 28px;
+      bottom: 20px;
+      width: 744px;
+      height: 68px;
+      background-color: #ffffff;
+      border-color: #d6dee8;
+      border-width: 1px;
+      border-style: solid;
+      border-radius: 9px;
+    }
+    .composer {
+      position: absolute;
+      left: 16px;
+      top: 12px;
+      width: 498px;
+      height: 44px;
+      color: #1f2937;
+      background-color: rgba(255,255,255,0);
+      font-size: 14px;
+    }
+    .compose-icon {
+      position: absolute;
+      top: 18px;
+      width: 32px;
+      height: 32px;
+      color: #050913;
+    }
+    .send-button {
+      position: absolute;
+      right: 14px;
+      top: 13px;
+      width: 88px;
+      height: 42px;
+      background-color: #0aa39e;
+      color: #ffffff;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: bold;
+      align-items: center;
+      justify-content: center;
+    }
+    .send-button:hover {
+      background-color: #0bb1ac;
+    }
+    .rightbar {
+      position: absolute;
+      left: 1200px;
+      top: 0px;
+      bottom: 0px;
+      width: 400px;
+      background-color: #ffffff;
+    }
+    .right-title {
+      position: absolute;
+      left: 40px;
+      top: 32px;
+      width: 200px;
+      height: 30px;
+      font-size: 18px;
+      font-weight: bold;
+      color: #111827;
+    }
+    .close-icon {
+      position: absolute;
+      right: 30px;
+      top: 36px;
+      width: 28px;
+      height: 28px;
+      color: #050913;
+    }
+    .device-large {
+      position: absolute;
+      left: 68px;
+      top: 144px;
+      width: 86px;
+      height: 86px;
+      color: #050913;
+    }
+    .online-dot {
+      position: absolute;
+      left: 156px;
+      top: 166px;
+      width: 12px;
+      height: 12px;
+      border-radius: 6px;
+      background-color: #26bd31;
+    }
+    .online-text {
+      position: absolute;
+      left: 184px;
+      top: 154px;
+      width: 80px;
+      height: 28px;
+      color: #26bd31;
+      font-size: 18px;
+      font-weight: bold;
+    }
+    .info-line {
+      position: absolute;
+      left: 0px;
+      width: 400px;
+      height: 1px;
+      background-color: #dfe6ee;
+    }
+    .panel-title {
+      position: absolute;
+      left: 40px;
+      width: 180px;
+      height: 26px;
+      font-size: 15px;
+      font-weight: bold;
+      color: #111827;
+    }
+    .kv-label {
+      position: absolute;
+      left: 40px;
+      width: 120px;
+      height: 22px;
+      color: #667487;
+      font-size: 13px;
+      font-weight: bold;
+    }
+    .kv-value {
+      position: absolute;
+      right: 28px;
+      width: 210px;
+      height: 22px;
+      text-align: right;
+      color: #111827;
+      font-size: 13px;
+      font-weight: bold;
+    }
+    .mini-file {
+      position: absolute;
+      left: 40px;
+      width: 320px;
+      height: 88px;
+    }
+    .mini-icon {
+      position: absolute;
+      left: 0px;
+      top: 6px;
+      width: 32px;
+      height: 32px;
+    }
+    .mini-name {
+      position: absolute;
+      left: 48px;
+      top: 2px;
+      width: 190px;
+      height: 24px;
+      font-size: 13px;
+      font-weight: bold;
+      color: #1f2937;
+    }
+    .mini-sub {
+      position: absolute;
+      left: 48px;
+      top: 30px;
+      width: 140px;
+      height: 22px;
+      font-size: 12px;
+      font-weight: bold;
+      color: #657386;
+    }
+    .mini-percent {
+      position: absolute;
+      right: 0px;
+      top: 26px;
+      width: 50px;
+      height: 22px;
+      text-align: right;
+      font-size: 12px;
+      font-weight: bold;
+      color: #0aa39e;
+    }
+    .mini-percent.warning {
+      color: #ec8d00;
+    }
+    .mini-progress {
+      position: absolute;
+      left: 0px;
+      top: 62px;
+      width: 320px;
+      height: 5px;
+      border-radius: 3px;
+      background-color: #d5dde7;
+      color: #0aa39e;
+    }
+    .mini-progress.warning {
+      color: #ec8d00;
+    }
+    .view-all {
+      position: absolute;
+      left: 40px;
+      bottom: 34px;
+      width: 160px;
+      height: 28px;
+      font-size: 13px;
+      font-weight: bold;
+      color: #0aa39e;
+    }
+  </style>
+</head>
+<body>
+  <div class="screen">
+    <div class="sidebar"></div>
+    <div class="profile-avatar">林</div>
+    <div class="profile-name">林一凡</div>
+    <div class="profile-sub">本机 · 192.168.1.8</div>
+    <svg class="settings" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.2a2 2 0 0 1-1 1.7l-.4.2a2 2 0 0 1-2 0l-.2-.1a2 2 0 0 0-2.7.7l-.2.4a2 2 0 0 0 .7 2.7l.2.1a2 2 0 0 1 1 1.7v.6a2 2 0 0 1-1 1.7l-.2.1a2 2 0 0 0-.7 2.7l.2.4a2 2 0 0 0 2.7.7l.2-.1a2 2 0 0 1 2 0l.4.2a2 2 0 0 1 1 1.7v.2a2 2 0 0 0 2 2h.4a2 2 0 0 0 2-2v-.2a2 2 0 0 1 1-1.7l.4-.2a2 2 0 0 1 2 0l.2.1a2 2 0 0 0 2.7-.7l.2-.4a2 2 0 0 0-.7-2.7l-.2-.1a2 2 0 0 1-1-1.7v-.6a2 2 0 0 1 1-1.7l.2-.1a2 2 0 0 0 .7-2.7l-.2-.4a2 2 0 0 0-2.7-.7l-.2.1a2 2 0 0 1-2 0l-.4-.2a2 2 0 0 1-1-1.7V4a2 2 0 0 0-2-2Z"></path>
+      <circle cx="12" cy="12" r="3"></circle>
+    </svg>
+
+    <div class="search-box"></div>
+    <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="11" cy="11" r="7"></circle><path d="M16.5 16.5 21 21"></path>
+    </svg>
+    <div class="search-text">搜索设备</div>
+
+    <div class="section-title" style="top:196px">在线设备 (5)</div>
+    <div id="device-alex" class="device device-selected" style="top:236px" data-action="select-device:device-alex">
+      <div class="status-dot"></div><svg class="device-icon" viewBox="0 0 24 24" fill="none"><rect x="3" y="4.71" width="18" height="11.76" rx="1.56" fill="currentColor"></rect><rect x="5.88" y="7.06" width="12.24" height="6.47" fill="#ffffff"></rect><rect x="10.56" y="16" width="2.88" height="3.84" fill="currentColor"></rect><rect x="5.4" y="19.41" width="13.2" height="1.92" rx="0.96" fill="currentColor"></rect></svg><div class="device-name">Alex-PC</div><div class="device-ip">192.168.1.24</div>
+    </div>
+    <div id="device-desktop" class="device" style="top:324px" data-action="select-device:device-desktop">
+      <div class="status-dot"></div><svg class="device-icon" viewBox="0 0 24 24" fill="none"><rect x="3" y="4.71" width="18" height="11.76" rx="1.56" fill="currentColor"></rect><rect x="5.88" y="7.06" width="12.24" height="6.47" fill="#ffffff"></rect><rect x="10.56" y="16" width="2.88" height="3.84" fill="currentColor"></rect><rect x="5.4" y="19.41" width="13.2" height="1.92" rx="0.96" fill="currentColor"></rect></svg><div class="device-name">DESKTOP-J8K2TQ</div><div class="device-ip">192.168.1.31</div>
+    </div>
+    <div id="device-laptop" class="device" style="top:412px" data-action="select-device:device-laptop">
+      <div class="status-dot"></div><svg class="device-icon" viewBox="0 0 24 24" fill="none"><rect x="3" y="4.71" width="18" height="11.76" rx="1.56" fill="currentColor"></rect><rect x="5.88" y="7.06" width="12.24" height="6.47" fill="#ffffff"></rect><rect x="10.56" y="16" width="2.88" height="3.84" fill="currentColor"></rect><rect x="5.4" y="19.41" width="13.2" height="1.92" rx="0.96" fill="currentColor"></rect></svg><div class="device-name">LAPTOP-9F3V2M</div><div class="device-ip">192.168.1.42</div>
+    </div>
+    <div id="device-server" class="device" style="top:500px" data-action="select-device:device-server">
+      <div class="status-dot"></div><svg class="device-icon" viewBox="0 0 24 24" fill="none"><rect x="3" y="4.71" width="18" height="11.76" rx="1.56" fill="currentColor"></rect><rect x="5.88" y="7.06" width="12.24" height="6.47" fill="#ffffff"></rect><rect x="10.56" y="16" width="2.88" height="3.84" fill="currentColor"></rect><rect x="5.4" y="19.41" width="13.2" height="1.92" rx="0.96" fill="currentColor"></rect></svg><div class="device-name">DEV-SERVER</div><div class="device-ip">192.168.1.10</div>
+    </div>
+    <div id="device-mark" class="device" style="top:588px" data-action="select-device:device-mark">
+      <div class="status-dot"></div><svg class="device-icon" viewBox="0 0 24 24" fill="none"><rect x="3" y="4.71" width="18" height="11.76" rx="1.56" fill="currentColor"></rect><rect x="5.88" y="7.06" width="12.24" height="6.47" fill="#ffffff"></rect><rect x="10.56" y="16" width="2.88" height="3.84" fill="currentColor"></rect><rect x="5.4" y="19.41" width="13.2" height="1.92" rx="0.96" fill="currentColor"></rect></svg><div class="device-name">MARK-PC</div><div class="device-ip">192.168.1.77</div>
+    </div>
+    <div class="section-title" style="top:708px">离线设备 (3)</div>
+    <div class="device" style="top:750px">
+      <div class="status-dot offline"></div><svg class="device-icon" viewBox="0 0 24 24" fill="none"><rect x="3" y="4.71" width="18" height="11.76" rx="1.56" fill="currentColor"></rect><rect x="5.88" y="7.06" width="12.24" height="6.47" fill="#ffffff"></rect><rect x="10.56" y="16" width="2.88" height="3.84" fill="currentColor"></rect><rect x="5.4" y="19.41" width="13.2" height="1.92" rx="0.96" fill="currentColor"></rect></svg><div class="device-name">FINANCE-PC</div><div class="device-ip">192.168.1.15</div>
+    </div>
+    <div class="device" style="top:838px">
+      <div class="status-dot offline"></div><svg class="device-icon" viewBox="0 0 24 24" fill="none"><rect x="3" y="4.71" width="18" height="11.76" rx="1.56" fill="currentColor"></rect><rect x="5.88" y="7.06" width="12.24" height="6.47" fill="#ffffff"></rect><rect x="10.56" y="16" width="2.88" height="3.84" fill="currentColor"></rect><rect x="5.4" y="19.41" width="13.2" height="1.92" rx="0.96" fill="currentColor"></rect></svg><div class="device-name">HR-LAPTOP</div><div class="device-ip">192.168.1.28</div>
+    </div>
+    <div class="device" style="top:926px">
+      <div class="status-dot offline"></div><svg class="device-icon" viewBox="0 0 24 24" fill="none"><rect x="3" y="4.71" width="18" height="11.76" rx="1.56" fill="currentColor"></rect><rect x="5.88" y="7.06" width="12.24" height="6.47" fill="#ffffff"></rect><rect x="10.56" y="16" width="2.88" height="3.84" fill="currentColor"></rect><rect x="5.4" y="19.41" width="13.2" height="1.92" rx="0.96" fill="currentColor"></rect></svg><div class="device-name">OLD-PC</div><div class="device-ip">192.168.1.55</div>
+    </div>
+
+    <div class="main">
+      <svg class="header-icon" viewBox="0 0 24 24" fill="none"><rect x="3" y="4.71" width="18" height="11.76" rx="1.56" fill="currentColor"></rect><rect x="5.88" y="7.06" width="12.24" height="6.47" fill="#ffffff"></rect><rect x="10.56" y="16" width="2.88" height="3.84" fill="currentColor"></rect><rect x="5.4" y="19.41" width="13.2" height="1.92" rx="0.96" fill="currentColor"></rect></svg>
+      <div class="header-title">Alex-PC</div>
+      <div class="green-dot"></div><div class="header-ip">192.168.1.24</div>
+      <svg class="toolbar-icon" style="left:572px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.9" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1 1 .3 1.9.7 2.8a2 2 0 0 1-.5 2.1L8.1 9.9a16 16 0 0 0 6 6l1.3-1.2a2 2 0 0 1 2.1-.5c.9.3 1.8.6 2.8.7a2 2 0 0 1 1.7 2Z"></path></svg>
+      <svg class="toolbar-icon" style="left:650px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"></circle><path d="M16.5 16.5 21 21"></path></svg>
+      <svg class="toolbar-icon" style="left:728px" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="5" r="2.1" fill="currentColor"></circle><circle cx="12" cy="12" r="2.1" fill="currentColor"></circle><circle cx="12" cy="19" r="2.1" fill="currentColor"></circle></svg>
+      <div class="tabbar"></div>
+      <div id="tab-chat" class="tab tab-active" style="left:35px" data-action="tab:tab-chat">聊天</div>
+      <div id="tab-history" class="tab" style="left:223px" data-action="tab:tab-history">历史</div>
+      <div id="tab-transfer" class="tab" style="left:411px" data-action="tab:tab-transfer">传输</div>
+      <div class="timeline-line"></div>
+      <div class="day-pill">今天</div>
+      <div class="chat-scrollbar"></div>
+      <div class="bubble bubble-left" style="top:240px;width:285px;height:54px">能把最新的 Q2 报告发我吗?</div>
+      <div class="time-label" style="left:340px;top:258px">09:21</div>
+      <div class="bubble bubble-right" style="left:500px;top:308px;width:210px;height:54px">可以，正在上传。</div>
+      <div class="time-label" style="left:724px;top:326px">09:21</div>
+      <svg class="read-mark" style="left:758px;top:322px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2 13.5 6 17.5 15 8.5"></path><path d="M9 15.5 11 17.5 22 6.5"></path></svg>
+      <div class="transfer-card" style="left:122px;top:368px;width:640px">
+        <img class="file-icon" src="icons/file_type_pdf.svg"><div class="file-name">Q2_Report_2024.pdf</div><div class="file-size">24.8 MB</div><div id="upload-percent" class="transfer-percent">78%</div><progress id="upload-progress" class="progress-main" value="78" max="100"></progress><div class="transfer-meta">19.4 MB / 24.8 MB · 5.2 MB/s · 剩余 00:00:01</div><div class="card-time">09:22</div><svg class="card-mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2 13.5 6 17.5 15 8.5"></path><path d="M9 15.5 11 17.5 22 6.5"></path></svg>
+      </div>
+      <div class="bubble bubble-left" style="top:530px;width:275px;height:54px">谢谢! 设计说明也在吗?</div>
+      <div class="time-label" style="left:322px;top:548px">09:23</div>
+      <div class="transfer-card warning" style="left:122px;top:596px;width:640px" data-action="finish-transfer">
+        <img class="file-icon" src="icons/file_type_zip.svg"><div class="file-name">Design_Specs_v2.zip</div><div class="file-size">112.6 MB</div><div id="download-percent" class="transfer-percent">45%</div><progress id="download-progress" class="progress-main warning" value="45" max="100"></progress><div class="transfer-meta">50.7 MB / 112.6 MB · 4.1 MB/s · 剩余 00:00:15</div><div class="card-time">09:24</div><svg class="card-mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2 13.5 6 17.5 15 8.5"></path><path d="M9 15.5 11 17.5 22 6.5"></path></svg>
+      </div>
+      <div class="bubble bubble-right" style="left:448px;top:754px;width:255px;height:54px">是的，这是最新版本。</div>
+      <div class="time-label" style="left:722px;top:772px">09:25</div>
+      <svg class="read-mark" style="left:760px;top:768px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2 13.5 6 17.5 15 8.5"></path><path d="M9 15.5 11 17.5 22 6.5"></path></svg>
+      <div class="composer-wrap">
+        <textarea id="composer" class="composer" placeholder="给 Alex-PC 发送消息"></textarea>
+        <svg class="compose-icon" style="left:520px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><path d="M8 14s1.5 2 4 2 4-2 4-2"></path><path d="M9 9h.01"></path><path d="M15 9h.01"></path></svg>
+        <svg class="compose-icon" style="left:562px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.4 11.1-8.9 8.9a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5"></path></svg>
+        <svg class="compose-icon" style="left:604px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h6l2 2h10v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"></path></svg>
+        <div class="send-button" data-action="send-message">发送</div>
+      </div>
+    </div>
+
+    <div class="rightbar">
+      <div class="right-title">Alex-PC</div>
+      <svg class="close-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"></path><path d="M6 6l12 12"></path></svg>
+      <svg class="device-large" viewBox="0 0 24 24" fill="none"><rect x="3" y="4.71" width="18" height="11.76" rx="1.56" fill="currentColor"></rect><rect x="5.88" y="7.06" width="12.24" height="6.47" fill="#ffffff"></rect><rect x="10.56" y="16" width="2.88" height="3.84" fill="currentColor"></rect><rect x="5.4" y="19.41" width="13.2" height="1.92" rx="0.96" fill="currentColor"></rect></svg>
+      <div class="online-dot"></div><div class="online-text">在线</div>
+      <div class="kv-value" style="top:198px;left:184px;width:150px;text-align:left;font-size:15px">192.168.1.24</div>
+      <div class="info-line" style="top:248px"></div>
+      <div class="panel-title" style="top:290px">设备信息</div>
+      <div class="kv-label" style="top:338px">电脑名</div><div class="kv-value" style="top:338px">Alex-PC</div>
+      <div class="kv-label" style="top:376px">用户名</div><div class="kv-value" style="top:376px">Alex</div>
+      <div class="kv-label" style="top:414px">系统</div><div class="kv-value" style="top:414px">Windows 11 Pro 23H2</div>
+      <div class="kv-label" style="top:452px">IP 地址</div><div class="kv-value" style="top:452px">192.168.1.24</div>
+      <div class="kv-label" style="top:490px">MAC 地址</div><div class="kv-value" style="top:490px">00-15-5D-8E-2A-7C</div>
+      <div class="kv-label" style="top:528px">在线时长</div><div class="kv-value" style="top:528px">2天 4时 18分</div>
+      <div class="info-line" style="top:572px"></div>
+      <div class="panel-title" style="top:612px">活跃传输 (2)</div>
+      <div class="mini-file" style="top:656px">
+        <img class="mini-icon" src="icons/file_type_pdf.svg"><div class="mini-name">Q2_Report_2024.pdf</div><div class="mini-sub">发给 Alex-PC</div><div class="mini-percent">78%</div><progress class="mini-progress" value="78" max="100"></progress>
+      </div>
+      <div class="mini-file" style="top:750px">
+        <img class="mini-icon" src="icons/file_type_zip.svg"><div class="mini-name">Design_Specs_v2.zip</div><div class="mini-sub">来自 Alex-PC</div><div class="mini-percent warning">45%</div><progress class="mini-progress warning" value="45" max="100"></progress>
+      </div>
+      <div class="view-all">查看全部传输</div>
+    </div>
+  </div>
+</body>
+</html>

@@ -5,6 +5,7 @@
 #include "include/core/SkColor.h"
 #include "include/core/SkFont.h"
 #include "include/core/SkFontMgr.h"
+#include "include/core/SkFontMetrics.h"
 #include "include/core/SkFontStyle.h"
 #include "include/core/SkPaint.h"
 #include "include/core/SkPath.h"
@@ -21,6 +22,8 @@
 #include <string_view>
 #include <unordered_map>
 #include <vector>
+
+class SkSVGDOM;
 
 namespace skui {
 
@@ -161,6 +164,8 @@ struct Node {
     std::string src;
     std::string action;
     std::string svgMarkup;
+    float numericValue = 0.0f;
+    float numericMax = 1.0f;
     std::unordered_map<std::string, std::string> attributes;
     Style style;
     Style inlineStyle;
@@ -261,20 +266,11 @@ private:
         sk_sp<SkTextBlob> blob;
         float width = 0.0f;
         SkRect bounds = SkRect::MakeEmpty();
+        SkFontMetrics metrics{};
     };
 
-    struct SvgShape {
-        SkPath path;
-        std::optional<SkPaint> fill;
-        std::optional<SkPaint> stroke;
-    };
-
-    struct ParsedSvg {
-        float viewX = 0.0f;
-        float viewY = 0.0f;
-        float viewWidth = 24.0f;
-        float viewHeight = 24.0f;
-        std::vector<SvgShape> shapes;
+    struct SvgDomEntry {
+        sk_sp<SkSVGDOM> dom;
     };
 
     RuntimeOptions options_;
@@ -290,20 +286,20 @@ private:
     SkPaint backgroundPaint(const Node& node) const;
     void drawNode(SkCanvas& canvas, const Document& document, const Node& node);
     void drawBox(SkCanvas& canvas, const Node& node);
+    void drawProgress(SkCanvas& canvas, const Node& node);
     void drawImage(SkCanvas& canvas, const Document& document, const Node& node);
     void drawInlineSvg(SkCanvas& canvas, const Node& node);
     void drawSvgMarkup(SkCanvas& canvas, const std::string& svg, const Rect& rect, SkColor currentColor);
+    bool drawSvgDom(SkCanvas& canvas, const std::string& svg, const Rect& rect, SkColor currentColor);
     void drawInputSelection(SkCanvas& canvas, const Node& node);
     void drawText(SkCanvas& canvas, const Node& node);
     void drawInputCompositionUnderline(SkCanvas& canvas, const Node& node);
     void drawInputCaret(SkCanvas& canvas, const Node& node);
     std::optional<std::string> readSvgAsset(const Document& document, std::string_view src);
     std::string resolveAssetPath(const Document& document, std::string_view src) const;
-    ParsedSvg parseSvg(std::string_view svg, SkColor currentColor) const;
-    const ParsedSvg& parsedSvg(std::string_view svg, SkColor currentColor);
     const TextEntry& textEntry(std::string_view value, float size, bool bold);
     float textWidth(std::string_view value, float size, bool bold);
-    std::unordered_map<std::string, ParsedSvg> parsedSvgCache_;
+    std::unordered_map<std::string, SvgDomEntry> svgDomCache_;
     std::unordered_map<std::string, std::string> svgFileCache_;
 };
 

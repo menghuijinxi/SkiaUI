@@ -8,6 +8,7 @@
 #include "include/core/SkSurface.h"
 
 #include <algorithm>
+#include <charconv>
 #include <cctype>
 #include <cstdint>
 #include <string>
@@ -124,13 +125,17 @@ bool isPointerEvent(EventType type) {
            type == EventType::MouseWheel;
 }
 
-bool isInputNode(const Node* node) {
-    return node && node->tag == "input";
+bool isEditableNode(const Node* node) {
+    return node && (node->tag == "input" || node->tag == "textarea");
+}
+
+bool isTextareaNode(const Node* node) {
+    return node && node->tag == "textarea";
 }
 
 Node* inputTarget(Node* leaf) {
     for (Node* current = leaf; current; current = current->parent) {
-        if (isInputNode(current)) {
+        if (isEditableNode(current)) {
             return current;
         }
     }
@@ -197,6 +202,43 @@ size_t nextUtf8Index(const std::string& value, size_t index) {
     return index;
 }
 
+struct TextLine {
+    size_t start = 0;
+    size_t end = 0;
+};
+
+std::vector<TextLine> editableLines(std::string_view value) {
+    std::vector<TextLine> lines;
+    size_t start = 0;
+    for (size_t i = 0; i < value.size(); ++i) {
+        if (value[i] == '\n') {
+            lines.push_back({start, i});
+            start = i + 1;
+        }
+    }
+    lines.push_back({start, value.size()});
+    return lines;
+}
+
+float editableLineHeight(const Node& node) {
+    return std::max(12.0f, node.style.fontSize * 1.38f);
+}
+
+size_t currentLineStart(const std::string& value, size_t cursor) {
+    cursor = clampUtf8Index(value, cursor);
+    if (cursor == 0) {
+        return 0;
+    }
+    const size_t newline = value.rfind('\n', cursor - 1);
+    return newline == std::string::npos ? 0 : newline + 1;
+}
+
+size_t currentLineEnd(const std::string& value, size_t cursor) {
+    cursor = clampUtf8Index(value, cursor);
+    const size_t newline = value.find('\n', cursor);
+    return newline == std::string::npos ? value.size() : newline;
+}
+
 void clampInputCursor(Node& node) {
     node.cursorIndex = clampUtf8Index(node.value, node.cursorIndex);
     node.selectionAnchor = clampUtf8Index(node.value, node.selectionAnchor);
@@ -212,7 +254,7 @@ bool hasInputSelection(const Node& node) {
 }
 
 void pushInputUndo(Node& node) {
-    if (!isInputNode(&node)) {
+    if (!isEditableNode(&node)) {
         return;
     }
     constexpr size_t kMaxUndoSteps = 128;
@@ -230,7 +272,7 @@ void pushInputUndo(Node& node) {
 }
 
 bool restoreInputUndo(Node& node) {
-    if (!isInputNode(&node) || node.undoStack.empty()) {
+    if (!isEditableNode(&node) || node.undoStack.empty()) {
         return false;
     }
     Node::InputSnapshot snapshot = std::move(node.undoStack.back());
@@ -265,7 +307,7 @@ void setInputSelection(Node& node, size_t anchor, size_t cursor) {
 }
 
 bool eraseInputSelection(Node& node) {
-    if (!isInputNode(&node)) {
+    if (!isEditableNode(&node)) {
         return false;
     }
     clampInputCursor(node);
@@ -281,7 +323,7 @@ bool eraseInputSelection(Node& node) {
 }
 
 bool insertInputText(Node& node, std::string_view text) {
-    if (!isInputNode(&node) || text.empty()) {
+    if (!isEditableNode(&node) || text.empty()) {
         return false;
     }
     clampInputCursor(node);
@@ -299,7 +341,7 @@ bool insertInputText(Node& node, std::string_view text) {
 }
 
 bool erasePreviousInputChar(Node& node) {
-    if (!isInputNode(&node) || node.value.empty()) {
+    if (!isEditableNode(&node) || node.value.empty()) {
         return false;
     }
     clampInputCursor(node);
@@ -319,7 +361,7 @@ bool erasePreviousInputChar(Node& node) {
 }
 
 bool eraseNextInputChar(Node& node) {
-    if (!isInputNode(&node) || node.value.empty()) {
+    if (!isEditableNode(&node) || node.value.empty()) {
         return false;
     }
     clampInputCursor(node);
@@ -338,14 +380,14 @@ bool eraseNextInputChar(Node& node) {
 }
 
 std::string selectedInputText(const Node& node) {
-    if (!isInputNode(&node) || node.selectionStart >= node.selectionEnd || node.selectionEnd > node.value.size()) {
+    if (!isEditableNode(&node) || node.selectionStart >= node.selectionEnd || node.selectionEnd > node.value.size()) {
         return {};
     }
     return node.value.substr(node.selectionStart, node.selectionEnd - node.selectionStart);
 }
 
 bool selectAllInput(Node& node) {
-    if (!isInputNode(&node) || node.value.empty()) {
+    if (!isEditableNode(&node) || node.value.empty()) {
         return false;
     }
     node.selectionAnchor = 0;
@@ -364,7 +406,7 @@ bool isAsciiSpaceByte(unsigned char ch) {
 }
 
 void selectInputWordAt(Node& node, size_t index) {
-    if (!isInputNode(&node) || node.value.empty()) {
+    if (!isEditableNode(&node) || node.value.empty()) {
         return;
     }
     index = clampUtf8Index(node.value, index);
@@ -419,17 +461,45 @@ std::string singleLineText(std::string text) {
     return text;
 }
 
+std::string multilineText(std::string text) {
+    std::string out;
+    out.reserve(text.size());
+    for (size_t i = 0; i < text.size(); ++i) {
+        const char ch = text[i];
+        if (ch == '\r') {
+            if (i + 1 < text.size() && text[i + 1] == '\n') {
+                continue;
+            }
+            out.push_back('\n');
+        } else if (ch == '\t') {
+            out.push_back(' ');
+        } else {
+            out.push_back(ch);
+        }
+    }
+    return out;
+}
+
+std::string editableText(Node& node, std::string text) {
+    return isTextareaNode(&node) ? multilineText(std::move(text)) : singleLineText(std::move(text));
+}
+
 void syncNodeAttribute(Node& node, const std::string& name) {
     auto it = node.attributes.find(name);
     const bool hasValue = it != node.attributes.end();
-    const std::string value = hasValue ? it->second : std::string{};
+    std::string value = hasValue ? it->second : std::string{};
 
     if (name == "id") {
         node.id = value;
     } else if (name == "class") {
         node.classes = splitWhitespace(value);
     } else if (name == "value") {
+        value = editableText(node, std::move(value));
         node.value = value;
+        node.numericValue = 0.0f;
+        const char* begin = value.data();
+        const char* end = value.data() + value.size();
+        std::from_chars(begin, end, node.numericValue);
         node.cursorIndex = std::min(node.cursorIndex, node.value.size());
         node.selectionAnchor = std::min(node.selectionAnchor, node.value.size());
         node.selectionStart = std::min(node.selectionStart, node.value.size());
@@ -438,6 +508,12 @@ void syncNodeAttribute(Node& node, const std::string& name) {
         clampInputCursor(node);
     } else if (name == "placeholder") {
         node.placeholder = value;
+    } else if (name == "max") {
+        node.numericMax = 1.0f;
+        const char* begin = value.data();
+        const char* end = value.data() + value.size();
+        std::from_chars(begin, end, node.numericMax);
+        node.numericMax = std::max(0.0001f, node.numericMax);
     } else if (name == "src") {
         node.src = value;
     } else if (name == "data-action") {
@@ -479,6 +555,21 @@ public:
     size_t inputIndexAtX(const Node& input, float x) {
         const float offset = x - input.layout.x;
         return renderer.textIndexAtOffset(input.value, input.style.fontSize, input.style.fontBold, offset);
+    }
+
+    size_t editableIndexAtPoint(const Node& input, float x, float y) {
+        if (!isTextareaNode(&input)) {
+            return inputIndexAtX(input, x);
+        }
+        const std::vector<TextLine> lines = editableLines(input.value);
+        const float lineHeight = editableLineHeight(input);
+        const float relativeY = std::max(0.0f, y - input.layout.y);
+        const size_t lineIndex = std::min(lines.size() - 1,
+                                          static_cast<size_t>(relativeY / std::max(1.0f, lineHeight)));
+        const TextLine line = lines[lineIndex];
+        const std::string_view text(input.value.data() + line.start, line.end - line.start);
+        const float offset = x - input.layout.x;
+        return line.start + renderer.textIndexAtOffset(text, input.style.fontSize, input.style.fontBold, offset);
     }
 
     RuntimeOptions options;
@@ -596,7 +687,7 @@ bool Runtime::handleEvent(const Event& event) {
     switch (event.type) {
     case EventType::MouseMove:
         if (impl_->selectingInput && impl_->mousePressed) {
-            const size_t index = impl_->inputIndexAtX(*impl_->selectingInput, x);
+            const size_t index = impl_->editableIndexAtPoint(*impl_->selectingInput, x, y);
             setInputSelection(*impl_->selectingInput, impl_->selectingInput->selectionAnchor, index);
             stateChanged = true;
             consumed = true;
@@ -627,7 +718,7 @@ bool Runtime::handleEvent(const Event& event) {
                 ? (hasInputSelection(*input) ? input->selectionAnchor : input->cursorIndex)
                 : input->value.size();
             stateChanged = impl_->setFocusedNode(input) || stateChanged;
-            const size_t index = impl_->inputIndexAtX(*input, x);
+            const size_t index = impl_->editableIndexAtPoint(*input, x, y);
             if (event.shiftKey) {
                 setInputSelection(*input, selectionAnchor, index);
             } else {
@@ -648,7 +739,7 @@ bool Runtime::handleEvent(const Event& event) {
     case EventType::MouseDoubleClick:
         if (Node* input = inputTarget(hit)) {
             stateChanged = impl_->setFocusedNode(input) || stateChanged;
-            const size_t index = impl_->inputIndexAtX(*input, x);
+            const size_t index = impl_->editableIndexAtPoint(*input, x, y);
             selectInputWordAt(*input, index);
             impl_->selectingInput = nullptr;
             consumed = true;
@@ -666,7 +757,7 @@ bool Runtime::handleEvent(const Event& event) {
         Node* releasedAction = actionTarget(hit);
         const bool click = pressedAction && pressedAction == releasedAction && event.button == impl_->pressedButton;
         if (impl_->selectingInput) {
-            const size_t index = impl_->inputIndexAtX(*impl_->selectingInput, x);
+            const size_t index = impl_->editableIndexAtPoint(*impl_->selectingInput, x, y);
             setInputSelection(*impl_->selectingInput, impl_->selectingInput->selectionAnchor, index);
             impl_->selectingInput = nullptr;
             stateChanged = true;
@@ -689,11 +780,12 @@ bool Runtime::handleEvent(const Event& event) {
     }
     case EventType::KeyDown: {
         Node* input = impl_->focusedNode;
-        if (!isInputNode(input)) {
+        if (!isEditableNode(input)) {
             return false;
         }
 
         constexpr unsigned kBackspace = 0x08;
+        constexpr unsigned kEnter = 0x0D;
         constexpr unsigned kEscape = 0x1B;
         constexpr unsigned kEnd = 0x23;
         constexpr unsigned kHome = 0x24;
@@ -722,7 +814,7 @@ bool Runtime::handleEvent(const Event& event) {
                 break;
             case 'V':
                 if (impl_->options.readClipboardText) {
-                    const std::string text = singleLineText(impl_->options.readClipboardText());
+                    const std::string text = editableText(*input, impl_->options.readClipboardText());
                     textChanged = insertInputText(*input, text);
                 }
                 consumed = true;
@@ -744,6 +836,13 @@ bool Runtime::handleEvent(const Event& event) {
             textChanged = erasePreviousInputChar(*input);
             consumed = true;
             break;
+        case kEnter:
+            if (isTextareaNode(input)) {
+                textChanged = insertInputText(*input, "\n");
+                consumed = true;
+                break;
+            }
+            return false;
         case kDelete:
             textChanged = eraseNextInputChar(*input);
             consumed = true;
@@ -781,24 +880,26 @@ bool Runtime::handleEvent(const Event& event) {
             break;
         }
         case kHome:
-            if (input->cursorIndex != 0 || hasInputSelection(*input)) {
+            if (const size_t target = isTextareaNode(input) ? currentLineStart(input->value, input->cursorIndex) : 0;
+                input->cursorIndex != target || hasInputSelection(*input)) {
                 if (event.shiftKey) {
                     const size_t anchor = hasInputSelection(*input) ? input->selectionAnchor : input->cursorIndex;
-                    setInputSelection(*input, anchor, 0);
+                    setInputSelection(*input, anchor, target);
                 } else {
-                    setInputCursor(*input, 0);
+                    setInputCursor(*input, target);
                 }
                 stateChanged = true;
             }
             consumed = true;
             break;
         case kEnd:
-            if (input->cursorIndex != input->value.size() || hasInputSelection(*input)) {
+            if (const size_t target = isTextareaNode(input) ? currentLineEnd(input->value, input->cursorIndex) : input->value.size();
+                input->cursorIndex != target || hasInputSelection(*input)) {
                 if (event.shiftKey) {
                     const size_t anchor = hasInputSelection(*input) ? input->selectionAnchor : input->cursorIndex;
-                    setInputSelection(*input, anchor, input->value.size());
+                    setInputSelection(*input, anchor, target);
                 } else {
-                    setInputCursor(*input, input->value.size());
+                    setInputCursor(*input, target);
                 }
                 stateChanged = true;
             }
@@ -814,14 +915,14 @@ bool Runtime::handleEvent(const Event& event) {
         break;
     }
     case EventType::TextInput:
-        if (!isInputNode(impl_->focusedNode) || event.text.empty()) {
+        if (!isEditableNode(impl_->focusedNode) || event.text.empty()) {
             return false;
         }
-        textChanged = insertInputText(*impl_->focusedNode, event.text);
+        textChanged = insertInputText(*impl_->focusedNode, editableText(*impl_->focusedNode, event.text));
         consumed = true;
         break;
     case EventType::ImeComposition:
-        if (!isInputNode(impl_->focusedNode)) {
+        if (!isEditableNode(impl_->focusedNode)) {
             return false;
         }
         if (impl_->focusedNode->compositionText != event.text) {
@@ -831,7 +932,7 @@ bool Runtime::handleEvent(const Event& event) {
         consumed = true;
         break;
     case EventType::ImeEnd:
-        if (!isInputNode(impl_->focusedNode)) {
+        if (!isEditableNode(impl_->focusedNode)) {
             return false;
         }
         if (!impl_->focusedNode->compositionText.empty()) {

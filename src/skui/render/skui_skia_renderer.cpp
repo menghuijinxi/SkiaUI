@@ -2,19 +2,19 @@
 
 #include "include/core/SkCanvas.h"
 #include "include/core/SkPaint.h"
-#include "include/core/SkPathBuilder.h"
 #include "include/core/SkPoint.h"
 #include "include/core/SkShader.h"
+#include "include/core/SkStream.h"
 #include "include/effects/SkGradient.h"
 #include "include/ports/SkTypeface_win.h"
-#include "include/utils/SkParsePath.h"
+#include "modules/svg/include/SkSVGDOM.h"
 
 #include <algorithm>
 #include <array>
 #include <cstdio>
-#include <charconv>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <sstream>
 
 namespace skui {
@@ -47,107 +47,65 @@ std::string normalizeSvgMarkup(std::string svg) {
     return svg;
 }
 
-std::optional<float> parseSvgFloat(std::string_view raw) {
-    std::string value = trim(raw);
-    if (value.empty()) {
-        return std::nullopt;
-    }
-    if (value.ends_with("px")) {
-        value.resize(value.size() - 2);
-    }
-    float out = 0.0f;
-    const char* begin = value.data();
-    const char* end = value.data() + value.size();
-    const auto result = std::from_chars(begin, end, out);
-    if (result.ec != std::errc{} || result.ptr != end) {
-        return std::nullopt;
-    }
-    return out;
-}
-
-std::vector<float> parseFloatList(std::string_view raw) {
-    std::vector<float> values;
-    size_t start = 0;
-    while (start < raw.size()) {
-        while (start < raw.size() && (std::isspace(static_cast<unsigned char>(raw[start])) || raw[start] == ',')) {
-            ++start;
-        }
-        size_t end = start;
-        while (end < raw.size() && !std::isspace(static_cast<unsigned char>(raw[end])) && raw[end] != ',') {
-            ++end;
-        }
-        if (end > start) {
-            if (std::optional<float> value = parseSvgFloat(raw.substr(start, end - start))) {
-                values.push_back(*value);
-            }
-        }
-        start = end;
-    }
-    return values;
-}
-
-std::string attrValue(std::string_view tag, std::string_view name) {
-    size_t pos = 0;
-    while (pos < tag.size()) {
-        pos = tag.find(name, pos);
-        if (pos == std::string_view::npos) {
-            return {};
-        }
-        const bool leftOk = pos == 0 || std::isspace(static_cast<unsigned char>(tag[pos - 1])) || tag[pos - 1] == '<';
-        const size_t afterName = pos + name.size();
-        if (!leftOk || afterName >= tag.size() || tag[afterName] != '=') {
-            pos = afterName;
-            continue;
-        }
-        size_t valueStart = afterName + 1;
-        if (valueStart >= tag.size()) {
-            return {};
-        }
-        const char quote = tag[valueStart];
-        if (quote == '"' || quote == '\'') {
-            ++valueStart;
-            const size_t valueEnd = tag.find(quote, valueStart);
-            if (valueEnd == std::string_view::npos) {
-                return {};
-            }
-            return std::string(tag.substr(valueStart, valueEnd - valueStart));
-        }
-        size_t valueEnd = valueStart;
-        while (valueEnd < tag.size() && !std::isspace(static_cast<unsigned char>(tag[valueEnd])) && tag[valueEnd] != '>') {
-            ++valueEnd;
-        }
-        return std::string(tag.substr(valueStart, valueEnd - valueStart));
-    }
-    return {};
-}
-
-bool hasAttr(std::string_view tag, std::string_view name) {
-    size_t pos = 0;
-    while (pos < tag.size()) {
-        pos = tag.find(name, pos);
-        if (pos == std::string_view::npos) {
-            return false;
-        }
-        const bool leftOk = pos == 0 || std::isspace(static_cast<unsigned char>(tag[pos - 1])) || tag[pos - 1] == '<';
-        const size_t afterName = pos + name.size();
-        if (leftOk && afterName < tag.size() && tag[afterName] == '=') {
-            return true;
-        }
-        pos = afterName;
-    }
-    return false;
-}
-
-bool isCurrentColor(std::string_view raw) {
-    std::string value = trim(raw);
-    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
-        return static_cast<char>(std::tolower(ch));
-    });
-    return value == "currentcolor";
+std::string colorToSvgHex(SkColor color) {
+    std::ostringstream stream;
+    stream << '#'
+           << std::uppercase
+           << std::hex
+           << std::setfill('0')
+           << std::setw(2) << static_cast<int>(SkColorGetR(color))
+           << std::setw(2) << static_cast<int>(SkColorGetG(color))
+           << std::setw(2) << static_cast<int>(SkColorGetB(color));
+    return stream.str();
 }
 
 bool isUtf8ContinuationByte(unsigned char ch) {
     return (ch & 0xC0) == 0x80;
+}
+
+bool isEditableNode(const Node& node) {
+    return node.tag == "input" || node.tag == "textarea";
+}
+
+bool isTextareaNode(const Node& node) {
+    return node.tag == "textarea";
+}
+
+struct TextLine {
+    size_t start = 0;
+    size_t end = 0;
+};
+
+std::vector<TextLine> textLines(std::string_view value) {
+    std::vector<TextLine> lines;
+    size_t start = 0;
+    for (size_t i = 0; i < value.size(); ++i) {
+        if (value[i] == '\n') {
+            lines.push_back({start, i});
+            start = i + 1;
+        }
+    }
+    lines.push_back({start, value.size()});
+    return lines;
+}
+
+float lineHeightForNode(const Node& node) {
+    return std::max(12.0f, node.style.fontSize * 1.38f);
+}
+
+float edgeOrZero(const std::optional<float>& value) {
+    return value.value_or(0.0f);
+}
+
+SkRect contentRectForText(const Node& node) {
+    const float left = edgeOrZero(node.style.padding.left);
+    const float top = edgeOrZero(node.style.padding.top);
+    const float right = edgeOrZero(node.style.padding.right);
+    const float bottom = edgeOrZero(node.style.padding.bottom);
+    return SkRect::MakeLTRB(node.layout.x + left,
+                            node.layout.y + top,
+                            std::max(node.layout.x + left, node.layout.x + node.layout.w - right),
+                            std::max(node.layout.y + top, node.layout.y + node.layout.h - bottom));
 }
 
 size_t nextUtf8Boundary(std::string_view value, size_t index) {
@@ -161,95 +119,21 @@ size_t nextUtf8Boundary(std::string_view value, size_t index) {
     return index;
 }
 
-std::vector<std::string_view> tagsNamed(std::string_view svg, std::string_view name) {
-    std::vector<std::string_view> tags;
-    std::string open = "<" + std::string(name);
+void replaceAll(std::string& value, std::string_view from, std::string_view to) {
     size_t pos = 0;
-    while ((pos = svg.find(open, pos)) != std::string_view::npos) {
-        const size_t end = svg.find('>', pos + open.size());
-        if (end == std::string_view::npos) {
-            break;
-        }
-        tags.push_back(svg.substr(pos, end - pos + 1));
-        pos = end + 1;
+    while ((pos = value.find(from, pos)) != std::string::npos) {
+        value.replace(pos, from.size(), to);
+        pos += to.size();
     }
-    return tags;
 }
 
-SkColor colorWithOpacity(SkColor color, float opacity) {
-    opacity = clampf(opacity, 0.0f, 1.0f);
-    return SkColorSetA(color, static_cast<U8CPU>(static_cast<float>(SkColorGetA(color)) * opacity));
-}
-
-std::optional<SkPaint> svgPaint(std::string_view tag,
-                                std::string_view name,
-                                SkPaint::Style style,
-                                float defaultStrokeWidth,
-                                std::optional<SkColor> inheritedColor = std::nullopt,
-                                float inheritedOpacity = 1.0f,
-                                std::optional<SkColor> currentColor = std::nullopt,
-                                bool defaultFill = true) {
-    const std::string raw = attrValue(tag, name);
-    if (raw == "none") {
-        return std::nullopt;
-    }
-    SkColor color = SK_ColorTRANSPARENT;
-    if (isCurrentColor(raw)) {
-        if (!currentColor) {
-            return std::nullopt;
-        }
-        color = *currentColor;
-    } else if (!raw.empty()) {
-        color = parseColor(raw, SK_ColorTRANSPARENT);
-    } else if (inheritedColor) {
-        color = *inheritedColor;
-    } else if (style == SkPaint::kFill_Style && defaultFill) {
-        color = SK_ColorBLACK;
-    } else {
-        return std::nullopt;
-    }
-    if (SkColorGetA(color) == 0) {
-        return std::nullopt;
-    }
-
-    float opacity = inheritedOpacity;
-    if (const std::string rawOpacity = attrValue(tag, std::string(name) + "-opacity"); !rawOpacity.empty()) {
-        opacity = parseSvgFloat(rawOpacity).value_or(1.0f);
-    }
-    if (const std::string rawOpacity = attrValue(tag, "opacity"); !rawOpacity.empty()) {
-        opacity *= parseSvgFloat(rawOpacity).value_or(1.0f);
-    }
-
-    SkPaint paint;
-    paint.setAntiAlias(true);
-    paint.setStyle(style);
-    paint.setColor(colorWithOpacity(color, opacity));
-    if (style == SkPaint::kStroke_Style) {
-        paint.setStrokeWidth(parseSvgFloat(attrValue(tag, "stroke-width")).value_or(defaultStrokeWidth));
-        paint.setStrokeCap(SkPaint::kRound_Cap);
-        paint.setStrokeJoin(SkPaint::kRound_Join);
-    }
-    return paint;
-}
-
-std::optional<SkColor> svgColorAttr(std::string_view tag, std::string_view name) {
-    const std::string raw = attrValue(tag, name);
-    if (raw.empty() || raw == "none") {
-        return std::nullopt;
-    }
-    const SkColor color = parseColor(raw, SK_ColorTRANSPARENT);
-    if (SkColorGetA(color) == 0) {
-        return std::nullopt;
-    }
-    return color;
-}
-
-float svgOpacityAttr(std::string_view tag, std::string_view name, float fallback) {
-    const std::string raw = attrValue(tag, name);
-    if (raw.empty()) {
-        return fallback;
-    }
-    return parseSvgFloat(raw).value_or(fallback);
+std::string svgMarkupForDom(std::string svg, SkColor currentColor) {
+    svg = normalizeSvgMarkup(std::move(svg));
+    const std::string color = colorToSvgHex(currentColor);
+    replaceAll(svg, "currentColor", color);
+    replaceAll(svg, "currentcolor", color);
+    replaceAll(svg, "CURRENTCOLOR", color);
+    return svg;
 }
 
 }  // namespace
@@ -269,7 +153,7 @@ SkiaRenderer::~SkiaRenderer() {
 
 void SkiaRenderer::clearCaches() {
     svgFileCache_.clear();
-    parsedSvgCache_.clear();
+    svgDomCache_.clear();
     textCache_.clear();
 }
 
@@ -359,6 +243,7 @@ void SkiaRenderer::drawNode(SkCanvas& canvas, const Document& document, const No
     }
 
     drawBox(canvas, node);
+    drawProgress(canvas, node);
     drawImage(canvas, document, node);
     drawInlineSvg(canvas, node);
     drawInputSelection(canvas, node);
@@ -400,6 +285,29 @@ void SkiaRenderer::drawBox(SkCanvas& canvas, const Node& node) {
     }
 }
 
+void SkiaRenderer::drawProgress(SkCanvas& canvas, const Node& node) {
+    if (node.tag != "progress" || node.layout.w <= 0.0f || node.layout.h <= 0.0f) {
+        return;
+    }
+
+    const float ratio = clampf(node.numericMax <= 0.0f ? 0.0f : node.numericValue / node.numericMax, 0.0f, 1.0f);
+    if (ratio <= 0.0f) {
+        return;
+    }
+    Rect fillRect = node.layout;
+    fillRect.w *= ratio;
+    const float radius = node.style.borderRadius;
+    SkPaint p = fill(node.style.color);
+    if (radius > 0.0f) {
+        canvas.save();
+        canvas.clipRRect(SkRRect::MakeRectXY(node.layout.sk(), radius, radius), SkClipOp::kIntersect, true);
+        canvas.drawRRect(SkRRect::MakeRectXY(fillRect.sk(), radius, radius), p);
+        canvas.restore();
+    } else {
+        canvas.drawRect(fillRect.sk(), p);
+    }
+}
+
 void SkiaRenderer::drawImage(SkCanvas& canvas, const Document& document, const Node& node) {
     if (node.tag != "img" || node.src.empty()) {
         return;
@@ -424,32 +332,38 @@ void SkiaRenderer::drawSvgMarkup(SkCanvas& canvas, const std::string& svg, const
         return;
     }
 
-    const ParsedSvg& parsed = parsedSvg(svg, currentColor);
-    if (parsed.shapes.empty() || parsed.viewWidth <= 0.0f || parsed.viewHeight <= 0.0f) {
-        return;
+    drawSvgDom(canvas, svg, rect, currentColor);
+}
+
+bool SkiaRenderer::drawSvgDom(SkCanvas& canvas, const std::string& svg, const Rect& rect, SkColor currentColor) {
+    if (svg.empty() || rect.w <= 0.0f || rect.h <= 0.0f) {
+        return false;
     }
 
-    const float scale = std::min(rect.w / parsed.viewWidth, rect.h / parsed.viewHeight);
-    const float drawWidth = parsed.viewWidth * scale;
-    const float drawHeight = parsed.viewHeight * scale;
+    const std::string key = svgMarkupForDom(svg, currentColor);
+    auto it = svgDomCache_.find(key);
+    if (it == svgDomCache_.end()) {
+        SkMemoryStream stream(key.data(), key.size(), false);
+        SvgDomEntry entry;
+        entry.dom = SkSVGDOM::Builder().setFontManager(fontMgr_).make(stream);
+        it = svgDomCache_.emplace(key, std::move(entry)).first;
+    }
+
+    if (!it->second.dom) {
+        return false;
+    }
 
     canvas.save();
-    canvas.translate(rect.x + (rect.w - drawWidth) * 0.5f, rect.y + (rect.h - drawHeight) * 0.5f);
-    canvas.scale(scale, scale);
-    canvas.translate(-parsed.viewX, -parsed.viewY);
-    for (const SvgShape& shape : parsed.shapes) {
-        if (shape.fill) {
-            canvas.drawPath(shape.path, *shape.fill);
-        }
-        if (shape.stroke) {
-            canvas.drawPath(shape.path, *shape.stroke);
-        }
-    }
+    canvas.clipRect(rect.sk(), SkClipOp::kIntersect, true);
+    canvas.translate(rect.x, rect.y);
+    it->second.dom->setContainerSize(SkSize::Make(rect.w, rect.h));
+    it->second.dom->render(&canvas);
     canvas.restore();
+    return true;
 }
 
 void SkiaRenderer::drawInputSelection(SkCanvas& canvas, const Node& node) {
-    if (node.tag != "input" || !node.focused || node.selectionStart == node.selectionEnd || node.value.empty()) {
+    if (!isEditableNode(node) || !node.focused || node.selectionStart == node.selectionEnd || node.value.empty()) {
         return;
     }
 
@@ -459,26 +373,61 @@ void SkiaRenderer::drawInputSelection(SkCanvas& canvas, const Node& node) {
         return;
     }
 
-    const float before = start == 0 ? 0.0f : textWidth(std::string_view(node.value.data(), start), node.style.fontSize, node.style.fontBold);
-    const float selected = textWidth(std::string_view(node.value.data() + start, end - start), node.style.fontSize, node.style.fontBold);
-    const float x = std::max(node.layout.x, node.layout.x + before);
-    const float right = std::min(node.layout.x + node.layout.w, x + selected);
-    if (right <= x) {
-        return;
-    }
-
-    const float selectionHeight = std::max(12.0f, node.style.fontSize * 1.35f);
-    const float y = node.layout.y + (node.layout.h - selectionHeight) * 0.5f;
     SkPaint p = fill(SkColorSetARGB(96, 36, 232, 219));
+    const SkRect content = contentRectForText(node);
     canvas.save();
     canvas.clipRect(node.layout.sk(), SkClipOp::kIntersect, true);
-    canvas.drawRect(SkRect::MakeXYWH(x, y, right - x, selectionHeight), p);
+    if (isTextareaNode(node)) {
+        const float lineHeight = lineHeightForNode(node);
+        const float selectionHeight = std::max(12.0f, node.style.fontSize * 1.22f);
+        const std::vector<TextLine> lines = textLines(node.value);
+        for (size_t lineIndex = 0; lineIndex < lines.size(); ++lineIndex) {
+            const TextLine line = lines[lineIndex];
+            const size_t lineSelectionStart = std::max(start, line.start);
+            const size_t lineSelectionEnd = std::min(end, line.end);
+            if (lineSelectionStart > lineSelectionEnd || (lineSelectionStart == lineSelectionEnd && start != end)) {
+                continue;
+            }
+            if (lineSelectionStart == line.end && lineSelectionEnd == line.end && lineSelectionStart != start) {
+                continue;
+            }
+            const float before = lineSelectionStart <= line.start ? 0.0f : textWidth(std::string_view(node.value.data() + line.start, lineSelectionStart - line.start), node.style.fontSize, node.style.fontBold);
+            float selected = 0.0f;
+            if (lineSelectionEnd > lineSelectionStart) {
+                selected = textWidth(std::string_view(node.value.data() + lineSelectionStart, lineSelectionEnd - lineSelectionStart), node.style.fontSize, node.style.fontBold);
+            } else if (line.end < end) {
+                selected = std::max(4.0f, node.style.fontSize * 0.45f);
+            }
+            const float x = content.left() + before;
+            const float right = std::min(content.right(), x + selected);
+            if (right > x) {
+                const float y = content.top() + static_cast<float>(lineIndex) * lineHeight + (lineHeight - selectionHeight) * 0.5f;
+                canvas.drawRect(SkRect::MakeXYWH(x, y, right - x, selectionHeight), p);
+            }
+        }
+    } else {
+        const float before = start == 0 ? 0.0f : textWidth(std::string_view(node.value.data(), start), node.style.fontSize, node.style.fontBold);
+        const float selected = textWidth(std::string_view(node.value.data() + start, end - start), node.style.fontSize, node.style.fontBold);
+        const float x = std::max(content.left(), content.left() + before);
+        const float right = std::min(content.right(), x + selected);
+        if (right > x) {
+            const float selectionHeight = std::max(12.0f, node.style.fontSize * 1.35f);
+            const float y = content.top() + (content.height() - selectionHeight) * 0.5f;
+            canvas.drawRect(SkRect::MakeXYWH(x, y, right - x, selectionHeight), p);
+        }
+    }
     canvas.restore();
 }
 
 void SkiaRenderer::drawText(SkCanvas& canvas, const Node& node) {
-    const bool hasComposition = node.tag == "input" && !node.compositionText.empty();
-    const bool inputPlaceholder = node.tag == "input" && node.value.empty() && !hasComposition && !node.placeholder.empty();
+    if (node.tag == "progress") {
+        return;
+    }
+
+    const bool editable = isEditableNode(node);
+    const bool textarea = isTextareaNode(node);
+    const bool hasComposition = editable && !node.compositionText.empty();
+    const bool inputPlaceholder = editable && node.value.empty() && !hasComposition && !node.placeholder.empty();
     std::string value;
     if (inputPlaceholder) {
         value = node.placeholder;
@@ -494,40 +443,87 @@ void SkiaRenderer::drawText(SkCanvas& canvas, const Node& node) {
         return;
     }
 
-    const TextEntry& entry = textEntry(value, node.style.fontSize, node.style.fontBold);
-    const float availableWidth = std::max(0.0f, node.layout.w);
-    float x = node.layout.x;
-    if (node.style.justifyContent == YGJustifyCenter) {
-        x = node.layout.x + (availableWidth - entry.width) * 0.5f;
-    } else if (node.style.justifyContent == YGJustifyFlexEnd) {
-        x = node.layout.x + availableWidth - entry.width;
+    if (textarea) {
+        SkColor textColor = node.style.color;
+        if (inputPlaceholder) {
+            textColor = SkColorSetA(textColor, static_cast<U8CPU>(std::min(150, static_cast<int>(SkColorGetA(textColor)))));
+        }
+        const SkRect content = contentRectForText(node);
+        const float lineHeight = lineHeightForNode(node);
+        const std::vector<TextLine> lines = textLines(value);
+        canvas.save();
+        canvas.clipRect(node.layout.sk(), SkClipOp::kIntersect, true);
+        for (size_t i = 0; i < lines.size(); ++i) {
+            const TextLine line = lines[i];
+            if (line.end <= line.start && !inputPlaceholder) {
+                continue;
+            }
+            const std::string_view lineText(value.data() + line.start, line.end - line.start);
+            if (lineText.empty()) {
+                continue;
+            }
+            const TextEntry& entry = textEntry(lineText, node.style.fontSize, node.style.fontBold);
+            const float baseline = content.top() + static_cast<float>(i) * lineHeight + lineHeight * 0.5f - (entry.metrics.fAscent + entry.metrics.fDescent) * 0.5f;
+            canvas.drawTextBlob(entry.blob, content.left(), baseline, fill(textColor));
+        }
+        canvas.restore();
+        return;
     }
-    x = std::max(node.layout.x, x);
-    const float y = node.layout.y + node.layout.h * 0.5f - (entry.bounds.fTop + entry.bounds.fBottom) * 0.5f;
+
+    const TextEntry& entry = textEntry(value, node.style.fontSize, node.style.fontBold);
+    const SkRect content = contentRectForText(node);
+    const float availableWidth = std::max(0.0f, content.width());
+    float x = content.left();
+    if (node.style.justifyContent == YGJustifyCenter) {
+        x = content.left() + (availableWidth - entry.width) * 0.5f;
+    } else if (node.style.justifyContent == YGJustifyFlexEnd) {
+        x = content.right() - entry.width;
+    }
+    x = std::max(content.left(), x);
+    const float y = content.top() + content.height() * 0.5f - (entry.metrics.fAscent + entry.metrics.fDescent) * 0.5f;
     SkColor textColor = node.style.color;
     if (inputPlaceholder) {
         textColor = SkColorSetA(textColor, static_cast<U8CPU>(std::min(150, static_cast<int>(SkColorGetA(textColor)))));
     }
-    canvas.save();
-    canvas.clipRect(node.layout.sk(), SkClipOp::kIntersect, true);
-    canvas.drawTextBlob(entry.blob, x, y, fill(textColor));
-    canvas.restore();
+    if (editable) {
+        canvas.save();
+        canvas.clipRect(node.layout.sk(), SkClipOp::kIntersect, true);
+        canvas.drawTextBlob(entry.blob, x, y, fill(textColor));
+        canvas.restore();
+    } else {
+        canvas.drawTextBlob(entry.blob, x, y, fill(textColor));
+    }
 }
 
 void SkiaRenderer::drawInputCompositionUnderline(SkCanvas& canvas, const Node& node) {
-    if (node.tag != "input" || node.compositionText.empty()) {
+    if (!isEditableNode(node) || node.compositionText.empty()) {
         return;
     }
 
     const size_t cursor = std::min(node.cursorIndex, node.value.size());
-    const float before = cursor == 0 ? 0.0f : textWidth(std::string_view(node.value.data(), cursor), node.style.fontSize, node.style.fontBold);
+    const SkRect content = contentRectForText(node);
+    size_t lineStart = 0;
+    float lineTop = content.top();
+    float lineHeight = content.height();
+    if (isTextareaNode(node)) {
+        const std::vector<TextLine> lines = textLines(node.value);
+        lineHeight = lineHeightForNode(node);
+        for (size_t i = 0; i < lines.size(); ++i) {
+            if (cursor <= lines[i].end || i + 1 == lines.size()) {
+                lineStart = lines[i].start;
+                lineTop = content.top() + static_cast<float>(i) * lineHeight;
+                break;
+            }
+        }
+    }
+    const float before = cursor == lineStart ? 0.0f : textWidth(std::string_view(node.value.data() + lineStart, cursor - lineStart), node.style.fontSize, node.style.fontBold);
     const float width = textWidth(node.compositionText, node.style.fontSize, node.style.fontBold);
-    const float x = node.layout.x + before;
-    const float right = std::min(node.layout.x + node.layout.w, x + width);
+    const float x = content.left() + before;
+    const float right = std::min(content.right(), x + width);
     if (right <= x) {
         return;
     }
-    const float y = node.layout.y + node.layout.h * 0.5f + node.style.fontSize * 0.58f;
+    const float y = lineTop + lineHeight * 0.5f + node.style.fontSize * 0.58f;
     SkPaint p = stroke(node.style.color, 1.0f);
     p.setStrokeCap(SkPaint::kButt_Cap);
     canvas.save();
@@ -537,116 +533,39 @@ void SkiaRenderer::drawInputCompositionUnderline(SkCanvas& canvas, const Node& n
 }
 
 void SkiaRenderer::drawInputCaret(SkCanvas& canvas, const Node& node) {
-    if (node.tag != "input" || !node.focused || node.selectionStart != node.selectionEnd) {
+    if (!isEditableNode(node) || !node.focused || node.selectionStart != node.selectionEnd) {
         return;
     }
 
     const size_t cursor = std::min(node.cursorIndex, node.value.size());
-    std::string_view before(node.value.data(), cursor);
+    const SkRect content = contentRectForText(node);
+    size_t lineStart = 0;
+    float lineTop = content.top();
+    float lineHeight = content.height();
+    if (isTextareaNode(node)) {
+        const std::vector<TextLine> lines = textLines(node.value);
+        lineHeight = lineHeightForNode(node);
+        for (size_t i = 0; i < lines.size(); ++i) {
+            if (cursor <= lines[i].end || i + 1 == lines.size()) {
+                lineStart = lines[i].start;
+                lineTop = content.top() + static_cast<float>(i) * lineHeight;
+                break;
+            }
+        }
+    }
+    std::string_view before(node.value.data() + lineStart, cursor - lineStart);
     float caretOffset = before.empty() ? 0.0f : textWidth(before, node.style.fontSize, node.style.fontBold);
     if (!node.compositionText.empty()) {
         caretOffset += textWidth(node.compositionText, node.style.fontSize, node.style.fontBold);
     }
-    const float x = std::min(node.layout.x + node.layout.w - 1.0f, node.layout.x + caretOffset);
+    const float x = std::min(content.right() - 1.0f, content.left() + caretOffset);
     const float caretHeight = std::max(12.0f, node.style.fontSize * 1.18f);
-    const float y0 = node.layout.y + (node.layout.h - caretHeight) * 0.5f;
+    const float y0 = lineTop + (lineHeight - caretHeight) * 0.5f;
     const float y1 = y0 + caretHeight;
 
     SkPaint p = stroke(node.style.color, 1.25f);
     p.setStrokeCap(SkPaint::kButt_Cap);
     canvas.drawLine(x, y0, x, y1, p);
-}
-
-SkiaRenderer::ParsedSvg SkiaRenderer::parseSvg(std::string_view svg, SkColor currentColor) const {
-    ParsedSvg parsed;
-    std::optional<SkColor> inheritedFill;
-    std::optional<SkColor> inheritedStroke;
-    float inheritedFillOpacity = 1.0f;
-    float inheritedStrokeOpacity = 1.0f;
-    bool defaultFill = true;
-    if (const size_t svgPos = svg.find("<svg"); svgPos != std::string_view::npos) {
-        if (const size_t svgEnd = svg.find('>', svgPos); svgEnd != std::string_view::npos) {
-            const std::string_view svgTag = svg.substr(svgPos, svgEnd - svgPos + 1);
-            const std::string viewBox = attrValue(svgTag, "viewBox");
-            const std::vector<float> values = parseFloatList(viewBox);
-            if (values.size() == 4 && values[2] > 0.0f && values[3] > 0.0f) {
-                parsed.viewX = values[0];
-                parsed.viewY = values[1];
-                parsed.viewWidth = values[2];
-                parsed.viewHeight = values[3];
-            }
-            if (isCurrentColor(attrValue(svgTag, "fill"))) {
-                inheritedFill = currentColor;
-            } else {
-                inheritedFill = svgColorAttr(svgTag, "fill");
-            }
-            if (isCurrentColor(attrValue(svgTag, "stroke"))) {
-                inheritedStroke = currentColor;
-            } else {
-                inheritedStroke = svgColorAttr(svgTag, "stroke");
-            }
-            if (hasAttr(svgTag, "fill") && !inheritedFill) {
-                defaultFill = false;
-            }
-            inheritedFillOpacity = svgOpacityAttr(svgTag, "fill-opacity", 1.0f) *
-                                   svgOpacityAttr(svgTag, "opacity", 1.0f);
-            inheritedStrokeOpacity = svgOpacityAttr(svgTag, "stroke-opacity", 1.0f) *
-                                     svgOpacityAttr(svgTag, "opacity", 1.0f);
-        }
-    }
-
-    for (std::string_view pathTag : tagsNamed(svg, "path")) {
-        const std::string d = attrValue(pathTag, "d");
-        if (d.empty()) {
-            continue;
-        }
-        std::optional<SkPath> path = SkParsePath::FromSVGString(d.c_str());
-        if (!path) {
-            continue;
-        }
-        SvgShape shape;
-        shape.path = *path;
-        shape.fill = svgPaint(pathTag, "fill", SkPaint::kFill_Style, 1.0f, inheritedFill, inheritedFillOpacity, currentColor, defaultFill);
-        shape.stroke = svgPaint(pathTag, "stroke", SkPaint::kStroke_Style, 1.0f, inheritedStroke, inheritedStrokeOpacity, currentColor);
-        if (shape.fill || shape.stroke) {
-            parsed.shapes.push_back(std::move(shape));
-        }
-    }
-
-    for (std::string_view circleTag : tagsNamed(svg, "circle")) {
-        const float cx = parseSvgFloat(attrValue(circleTag, "cx")).value_or(0.0f);
-        const float cy = parseSvgFloat(attrValue(circleTag, "cy")).value_or(0.0f);
-        const float r = parseSvgFloat(attrValue(circleTag, "r")).value_or(0.0f);
-        if (r <= 0.0f) {
-            continue;
-        }
-        SvgShape shape;
-        shape.path = SkPathBuilder().addCircle(cx, cy, r).detach();
-        shape.fill = svgPaint(circleTag, "fill", SkPaint::kFill_Style, 1.0f, inheritedFill, inheritedFillOpacity, currentColor, defaultFill);
-        shape.stroke = svgPaint(circleTag, "stroke", SkPaint::kStroke_Style, 1.0f, inheritedStroke, inheritedStrokeOpacity, currentColor);
-        if (shape.fill || shape.stroke) {
-            parsed.shapes.push_back(std::move(shape));
-        }
-    }
-
-    return parsed;
-}
-
-const SkiaRenderer::ParsedSvg& SkiaRenderer::parsedSvg(std::string_view svg, SkColor currentColor) {
-    std::string key = normalizeSvgMarkup(std::string(svg));
-    if (key.find("currentColor") != std::string::npos || key.find("currentcolor") != std::string::npos ||
-        key.find("CURRENTCOLOR") != std::string::npos) {
-        char colorKey[16];
-        std::snprintf(colorKey, sizeof(colorKey), "|%08X", currentColor);
-        key += colorKey;
-    }
-    auto it = parsedSvgCache_.find(key);
-    if (it != parsedSvgCache_.end()) {
-        return it->second;
-    }
-    ParsedSvg parsed = parseSvg(key, currentColor);
-    it = parsedSvgCache_.emplace(std::move(key), std::move(parsed)).first;
-    return it->second;
 }
 
 std::optional<std::string> SkiaRenderer::readSvgAsset(const Document& document, std::string_view src) {
@@ -714,6 +633,7 @@ const SkiaRenderer::TextEntry& SkiaRenderer::textEntry(std::string_view value, f
     const SkFont f = font(size, bold);
     TextEntry entry;
     entry.width = f.measureText(value.data(), value.size(), SkTextEncoding::kUTF8, &entry.bounds);
+    f.getMetrics(&entry.metrics);
     entry.blob = SkTextBlob::MakeFromText(value.data(), value.size(), f, SkTextEncoding::kUTF8);
     it = textCache_.emplace(std::move(key), std::move(entry)).first;
     return it->second;

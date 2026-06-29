@@ -46,6 +46,10 @@ add_executable(SkiaUiDesk WIN32
     src/skui_demo/main.cpp
 )
 
+add_executable(SkiaRelayDeskDemo WIN32
+    src/skui_relay_demo/main.cpp
+)
+
 add_executable(SkuiInteractionTests
     tests/skui_interaction_tests.cpp
 )
@@ -90,6 +94,7 @@ target_include_directories(Skui PRIVATE
 
 target_link_libraries(Skui PUBLIC
     unofficial::skia::skia
+    unofficial::skia::modules::svg
     yoga::yogacore
 )
 
@@ -140,6 +145,11 @@ target_include_directories(SkiaUiDesk PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src/skui/public"
 )
 
+target_include_directories(SkiaRelayDeskDemo PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/skui/public"
+)
+
 target_link_libraries(SkiaUiDesk PRIVATE
     SkuiWin32Dx12
     user32
@@ -154,6 +164,23 @@ target_link_libraries(SkiaUiDesk PRIVATE
     usp10
 )
 
+target_link_libraries(SkiaRelayDeskDemo PRIVATE
+    SkuiWin32Dx12
+    user32
+    gdi32
+    dwmapi
+    shcore
+    d3d12
+    dxgi
+    dxguid
+    d3dcompiler
+    dbghelp
+    ole32
+    shell32
+    usp10
+    windowscodecs
+)
+
 target_link_libraries(SkuiInteractionTests PRIVATE
     Skui
     usp10
@@ -166,10 +193,18 @@ target_compile_definitions(SkiaUiDesk PRIVATE
     _UNICODE
 )
 
+target_compile_definitions(SkiaRelayDeskDemo PRIVATE
+    WIN32_LEAN_AND_MEAN
+    NOMINMAX
+    UNICODE
+    _UNICODE
+)
+
 if(MSVC)
     target_compile_options(Skui PRIVATE /utf-8 /permissive- /Zc:__cplusplus)
     target_compile_options(SkuiWin32Dx12 PRIVATE /utf-8 /permissive- /Zc:__cplusplus)
     target_compile_options(SkiaUiDesk PRIVATE /utf-8 /permissive- /Zc:__cplusplus)
+    target_compile_options(SkiaRelayDeskDemo PRIVATE /utf-8 /permissive- /Zc:__cplusplus)
     target_compile_options(SkuiInteractionTests PRIVATE /utf-8 /permissive- /Zc:__cplusplus)
 endif()
 
@@ -219,6 +254,19 @@ add_custom_command(TARGET SkiaUiDesk POST_BUILD
             "${CMAKE_CURRENT_SOURCE_DIR}/assets/skui_demo"
             "$<TARGET_FILE_DIR:SkiaUiDesk>/assets/skui_demo"
 )
+
+file(GLOB_RECURSE SKUI_RELAY_DEMO_ASSETS CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/assets/skui_relay_demo/*"
+)
+
+add_custom_target(SkiaRelayDeskDemoAssets ALL
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_CURRENT_SOURCE_DIR}/assets/skui_relay_demo"
+            "$<TARGET_FILE_DIR:SkiaRelayDeskDemo>/assets/skui_relay_demo"
+    DEPENDS ${SKUI_RELAY_DEMO_ASSETS}
+)
+
+add_dependencies(SkiaRelayDeskDemo SkiaRelayDeskDemoAssets)
 
 if(SKIATEST_USE_SKIA_D3D)
     target_compile_definitions(SkiaLayerDesk PRIVATE SKIATEST_USE_SKIA_D3D=1)
