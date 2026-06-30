@@ -61,7 +61,8 @@ enum class ElementEventType {
     MouseMove,
     MouseUp,
     Click,
-    Input
+    Input,
+    Scroll
 };
 
 struct ElementEvent {
@@ -74,6 +75,8 @@ struct ElementEvent {
     std::string value;
     float x = 0.0f;
     float y = 0.0f;
+    float scrollX = 0.0f;
+    float scrollY = 0.0f;
     MouseButton button = MouseButton::None;
 };
 
@@ -84,6 +87,23 @@ using ClipboardWriteCallback = std::function<void(std::string_view)>;
 struct StyleUpdate {
     std::string id;
     std::string declarations;
+};
+
+struct TextUpdate {
+    std::string id;
+    std::string text;
+};
+
+struct AttributeUpdate {
+    std::string id;
+    std::string name;
+    std::string value;
+};
+
+struct RuntimeUpdates {
+    std::vector<StyleUpdate> styles;
+    std::vector<TextUpdate> texts;
+    std::vector<AttributeUpdate> attributes;
 };
 
 struct RuntimeOptions {
@@ -133,7 +153,10 @@ public:
     bool setStyleById(std::string_view id, std::string_view declarations);
     bool setStylesById(const std::vector<StyleUpdate>& updates);
     bool setTextById(std::string_view id, std::string_view text);
+    bool setTextsById(const std::vector<TextUpdate>& updates);
     bool setAttributeById(std::string_view id, std::string_view name, std::string_view value);
+    bool setAttributesById(const std::vector<AttributeUpdate>& updates);
+    bool applyUpdates(const RuntimeUpdates& updates);
     bool removeAttributeById(std::string_view id, std::string_view name);
     [[nodiscard]] bool hasClassById(std::string_view id, std::string_view className) const;
     void setElementEventCallback(ElementEventCallback callback);

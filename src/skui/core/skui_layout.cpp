@@ -123,8 +123,14 @@ void updateScrollMetrics(Node& node) {
         }
     }
 
-    node.scrollContentWidth = std::max(node.layout.w, maxRight - minLeft);
-    node.scrollContentHeight = std::max(node.layout.h, maxBottom - minTop);
+    const float measuredContentWidth = maxRight - minLeft;
+    const float measuredContentHeight = maxBottom - minTop;
+    node.scrollContentWidth = node.virtualContentWidth > 0.0f
+        ? std::max(node.layout.w, node.virtualContentWidth)
+        : std::max(node.layout.w, measuredContentWidth);
+    node.scrollContentHeight = node.virtualContentHeight > 0.0f
+        ? std::max(node.layout.h, node.virtualContentHeight)
+        : std::max(node.layout.h, measuredContentHeight);
     node.scrollX = clampf(node.scrollX, 0.0f, std::max(0.0f, node.scrollContentWidth - node.layout.w));
     node.scrollY = clampf(node.scrollY, 0.0f, std::max(0.0f, node.scrollContentHeight - node.layout.h));
 }
@@ -153,6 +159,7 @@ void LayoutEngine::buildYoga(Node& node, YGNodeRef yogaNode) {
 
     YGNodeSetContext(yogaNode, &node);
     YGNodeStyleSetFlexDirection(yogaNode, s.flexDirection);
+    YGNodeStyleSetFlexWrap(yogaNode, s.flexWrap);
     YGNodeStyleSetAlignItems(yogaNode, s.alignItems);
     YGNodeStyleSetJustifyContent(yogaNode, s.justifyContent);
     if (s.alignSelf != YGAlignAuto) {

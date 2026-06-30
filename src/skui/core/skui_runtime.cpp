@@ -346,7 +346,7 @@ bool updateScrollFromScrollbar(Node& node, ScrollbarAxis axis, float pointer, fl
     return changed;
 }
 
-bool scrollNode(Node& node, float dx, float dy) {
+bool scrollNode(Node& node, float dx, float dy, Node** scrolled = nullptr) {
     bool changed = false;
     if (dx != 0.0f && canScrollX(node)) {
         const float next = clampf(node.scrollX + dx, 0.0f, maxScrollX(node));
@@ -358,12 +358,15 @@ bool scrollNode(Node& node, float dx, float dy) {
         changed = next != node.scrollY || changed;
         node.scrollY = next;
     }
+    if (changed && scrolled) {
+        *scrolled = &node;
+    }
     return changed;
 }
 
-bool scrollNearest(Node* leaf, float dx, float dy) {
+bool scrollNearest(Node* leaf, float dx, float dy, Node** scrolled = nullptr) {
     for (Node* current = leaf; current; current = current->parent) {
-        if (scrollNode(*current, dx, dy)) {
+        if (scrollNode(*current, dx, dy, scrolled)) {
             return true;
         }
     }
@@ -381,6 +384,8 @@ ElementEvent makeElementEvent(ElementEventType type, const Node& node, const Eve
     event.value = node.value;
     event.x = x;
     event.y = y;
+    event.scrollX = node.scrollX;
+    event.scrollY = node.scrollY;
     event.button = source.button;
     return event;
 }
@@ -847,6 +852,18 @@ void syncNodeAttribute(Node& node, const std::string& name) {
         node.src = value;
     } else if (name == "data-action") {
         node.action = value;
+    } else if (name == "data-virtual-width") {
+        node.virtualContentWidth = 0.0f;
+        const char* begin = value.data();
+        const char* end = value.data() + value.size();
+        std::from_chars(begin, end, node.virtualContentWidth);
+        node.virtualContentWidth = std::max(0.0f, node.virtualContentWidth);
+    } else if (name == "data-virtual-height") {
+        node.virtualContentHeight = 0.0f;
+        const char* begin = value.data();
+        const char* end = value.data() + value.size();
+        std::from_chars(begin, end, node.virtualContentHeight);
+        node.virtualContentHeight = std::max(0.0f, node.virtualContentHeight);
     } else if (name == "style") {
         node.inlineStyle = {};
         if (hasValue) {
@@ -1075,25 +1092,31 @@ bool Runtime::handleEvent(const Event& event) {
     bool consumed = false;
     bool stateChanged = false;
     bool textChanged = false;
+    bool layoutNeeded = false;
+    bool scrollChanged = false;
+    Node* scrolledNode = nullptr;
 
     switch (event.type) {
     case EventType::MouseMove: {
         if (impl_->scrollingNode && impl_->mousePressed) {
             const float pointer = impl_->scrollingAxis == ScrollbarAxis::Vertical ? y : x;
-            stateChanged = updateScrollFromScrollbar(*impl_->scrollingNode,
-                                                     impl_->scrollingAxis,
-                                                     pointer,
-                                                     impl_->scrollbarDragOffset) || stateChanged;
+            scrollChanged = updateScrollFromScrollbar(*impl_->scrollingNode,
+                                                      impl_->scrollingAxis,
+                                                      pointer,
+                                                      impl_->scrollbarDragOffset) || scrollChanged;
+            scrolledNode = scrollChanged ? impl_->scrollingNode : scrolledNode;
             consumed = true;
         } else if (impl_->selectingInput && impl_->mousePressed) {
             const size_t index = impl_->editableIndexAtPoint(*impl_->selectingInput, x, y);
             setInputSelection(*impl_->selectingInput, impl_->selectingInput->selectionAnchor, index);
             stateChanged = true;
+            layoutNeeded = true;
             consumed = true;
         } else if (impl_->selectingText && impl_->mousePressed) {
             const size_t index = impl_->selectableIndexAtX(*impl_->selectingText, x);
             setSelectableSelection(*impl_->selectingText, impl_->selectingText->selectionAnchor, index);
             stateChanged = true;
+            layoutNeeded = true;
             consumed = true;
         }
         if (hit != impl_->hoveredLeaf) {
@@ -1128,10 +1151,11 @@ bool Runtime::handleEvent(const Event& event) {
             impl_->selectingInput = nullptr;
             impl_->selectingText = nullptr;
             const float pointer = impl_->scrollingAxis == ScrollbarAxis::Vertical ? y : x;
-            stateChanged = updateScrollFromScrollbar(*impl_->scrollingNode,
-                                                     impl_->scrollingAxis,
-                                                     pointer,
-                                                     impl_->scrollbarDragOffset) || stateChanged;
+            scrollChanged = updateScrollFromScrollbar(*impl_->scrollingNode,
+                                                      impl_->scrollingAxis,
+                                                      pointer,
+                                                      impl_->scrollbarDragOffset) || scrollChanged;
+            scrolledNode = scrollChanged ? impl_->scrollingNode : scrolledNode;
             consumed = true;
         } else if (Node* input = inputTarget(hit)) {
             const bool wasFocused = impl_->focusedNode == input;
@@ -1139,6 +1163,7 @@ bool Runtime::handleEvent(const Event& event) {
                 ? (hasInputSelection(*input) ? input->selectionAnchor : input->cursorIndex)
                 : input->value.size();
             stateChanged = impl_->setFocusedNode(input) || stateChanged;
+            layoutNeeded = true;
             const size_t index = impl_->editableIndexAtPoint(*input, x, y);
             if (event.shiftKey) {
                 setInputSelection(*input, selectionAnchor, index);
@@ -1149,13 +1174,17 @@ bool Runtime::handleEvent(const Event& event) {
             impl_->selectingText = nullptr;
             if (impl_->selectedText) {
                 stateChanged = clearSelectableSelection(*impl_->selectedText) || stateChanged;
+                layoutNeeded = true;
                 impl_->selectedText = nullptr;
             }
             stateChanged = true;
+            layoutNeeded = true;
         } else if (Node* selectable = selectableTextTarget(hit)) {
             stateChanged = impl_->setFocusedNode(nullptr) || stateChanged;
+            layoutNeeded = true;
             if (impl_->selectedText && impl_->selectedText != selectable) {
                 stateChanged = clearSelectableSelection(*impl_->selectedText) || stateChanged;
+                layoutNeeded = true;
             }
             const size_t selectionAnchor = (event.shiftKey && hasSelectableSelection(*selectable))
                 ? selectable->selectionAnchor
@@ -1170,34 +1199,42 @@ bool Runtime::handleEvent(const Event& event) {
             impl_->selectingText = selectable;
             impl_->selectedText = selectable;
             stateChanged = true;
+            layoutNeeded = true;
         } else {
             impl_->selectingInput = nullptr;
             impl_->selectingText = nullptr;
             if (impl_->selectedText) {
                 stateChanged = clearSelectableSelection(*impl_->selectedText) || stateChanged;
+                layoutNeeded = true;
                 impl_->selectedText = nullptr;
             }
             stateChanged = impl_->setFocusedNode(nullptr) || stateChanged;
+            layoutNeeded = layoutNeeded || stateChanged;
         }
         if (Node* target = actionTarget(hit); target && impl_->options.onElementEvent) {
             impl_->options.onElementEvent(makeElementEvent(ElementEventType::MouseDown, *target, event, x, y));
         }
         consumed = hit != nullptr;
         stateChanged = true;
+        layoutNeeded = true;
         break;
     case EventType::MouseDoubleClick:
         if (Node* input = inputTarget(hit)) {
             stateChanged = impl_->setFocusedNode(input) || stateChanged;
+            layoutNeeded = true;
             const size_t index = impl_->editableIndexAtPoint(*input, x, y);
             selectInputWordAt(*input, index);
             impl_->selectingInput = nullptr;
             impl_->selectingText = nullptr;
             consumed = true;
             stateChanged = true;
+            layoutNeeded = true;
         } else if (Node* selectable = selectableTextTarget(hit)) {
             stateChanged = impl_->setFocusedNode(nullptr) || stateChanged;
+            layoutNeeded = true;
             if (impl_->selectedText && impl_->selectedText != selectable) {
                 stateChanged = clearSelectableSelection(*impl_->selectedText) || stateChanged;
+                layoutNeeded = true;
             }
             const size_t index = impl_->selectableIndexAtX(*selectable, x);
             selectSelectableWordAt(*selectable, index);
@@ -1206,6 +1243,7 @@ bool Runtime::handleEvent(const Event& event) {
             impl_->selectedText = selectable;
             consumed = true;
             stateChanged = true;
+            layoutNeeded = true;
         } else {
             consumed = hit != nullptr;
         }
@@ -1223,12 +1261,14 @@ bool Runtime::handleEvent(const Event& event) {
             setInputSelection(*impl_->selectingInput, impl_->selectingInput->selectionAnchor, index);
             impl_->selectingInput = nullptr;
             stateChanged = true;
+            layoutNeeded = true;
         }
         if (impl_->selectingText) {
             const size_t index = impl_->selectableIndexAtX(*impl_->selectingText, x);
             setSelectableSelection(*impl_->selectingText, impl_->selectingText->selectionAnchor, index);
             impl_->selectingText = nullptr;
             stateChanged = true;
+            layoutNeeded = true;
         }
         if (Node* target = releasedAction ? releasedAction : pressedAction; target && impl_->options.onElementEvent) {
             impl_->options.onElementEvent(makeElementEvent(ElementEventType::MouseUp, *target, event, x, y));
@@ -1248,14 +1288,15 @@ bool Runtime::handleEvent(const Event& event) {
         impl_->scrollbarDragOffset = 0.0f;
         impl_->hoveredLeaf = hit;
         stateChanged = true;
+        layoutNeeded = true;
         break;
     }
     case EventType::MouseWheel: {
         const float step = event.wheelDelta == 0.0f ? 0.0f : -event.wheelDelta / 120.0f * 48.0f;
         const float dx = event.shiftKey ? step : 0.0f;
         const float dy = event.shiftKey ? 0.0f : step;
-        stateChanged = scrollNearest(hit, dx, dy);
-        consumed = stateChanged;
+        scrollChanged = scrollNearest(hit, dx, dy, &scrolledNode);
+        consumed = scrollChanged;
         break;
     }
     case EventType::KeyDown: {
@@ -1356,6 +1397,7 @@ bool Runtime::handleEvent(const Event& event) {
                     setInputCursor(*input, previous);
                 }
                 stateChanged = true;
+                layoutNeeded = true;
             }
             consumed = true;
             break;
@@ -1372,6 +1414,7 @@ bool Runtime::handleEvent(const Event& event) {
                     setInputCursor(*input, next);
                 }
                 stateChanged = true;
+                layoutNeeded = true;
             }
             consumed = true;
             break;
@@ -1386,6 +1429,7 @@ bool Runtime::handleEvent(const Event& event) {
                     setInputCursor(*input, target);
                 }
                 stateChanged = true;
+                layoutNeeded = true;
             }
             consumed = true;
             break;
@@ -1399,11 +1443,13 @@ bool Runtime::handleEvent(const Event& event) {
                     setInputCursor(*input, target);
                 }
                 stateChanged = true;
+                layoutNeeded = true;
             }
             consumed = true;
             break;
         case kEscape:
             stateChanged = impl_->setFocusedNode(nullptr) || stateChanged;
+            layoutNeeded = layoutNeeded || stateChanged;
             consumed = true;
             break;
         default:
@@ -1416,6 +1462,7 @@ bool Runtime::handleEvent(const Event& event) {
             return false;
         }
         textChanged = insertInputText(*impl_->focusedNode, editableText(*impl_->focusedNode, event.text));
+        layoutNeeded = textChanged;
         consumed = true;
         break;
     case EventType::ImeComposition:
@@ -1425,6 +1472,7 @@ bool Runtime::handleEvent(const Event& event) {
         if (impl_->focusedNode->compositionText != event.text) {
             impl_->focusedNode->compositionText = event.text;
             stateChanged = true;
+            layoutNeeded = true;
         }
         consumed = true;
         break;
@@ -1435,6 +1483,7 @@ bool Runtime::handleEvent(const Event& event) {
         if (!impl_->focusedNode->compositionText.empty()) {
             impl_->focusedNode->compositionText.clear();
             stateChanged = true;
+            layoutNeeded = true;
         }
         consumed = true;
         break;
@@ -1451,16 +1500,23 @@ bool Runtime::handleEvent(const Event& event) {
         }
         if (updateStateTree(*impl_->document.root, hovered, active)) {
             stateChanged = true;
+            layoutNeeded = true;
         }
     }
     if (textChanged && impl_->focusedNode && impl_->options.onElementEvent) {
         impl_->options.onElementEvent(makeElementEvent(ElementEventType::Input, *impl_->focusedNode, event, x, y));
     }
-    if (stateChanged || textChanged) {
+    if (scrollChanged && scrolledNode && impl_->options.onElementEvent) {
+        impl_->options.onElementEvent(makeElementEvent(ElementEventType::Scroll, *scrolledNode, event, x, y));
+    }
+    layoutNeeded = layoutNeeded || textChanged;
+    if ((stateChanged || textChanged) && layoutNeeded) {
         impl_->recomputeAndLayout();
         impl_->dirty = true;
+    } else if (scrollChanged || stateChanged || textChanged) {
+        impl_->dirty = true;
     }
-    return consumed || stateChanged;
+    return consumed || stateChanged || scrollChanged;
 }
 
 void Runtime::render(SkCanvas& canvas) {
@@ -1530,29 +1586,7 @@ bool Runtime::setStyleById(std::string_view id, std::string_view declarations) {
 }
 
 bool Runtime::setStylesById(const std::vector<StyleUpdate>& updates) {
-    if (!impl_->hasDocument || !impl_->document.root || updates.empty()) {
-        return false;
-    }
-    bool changed = false;
-    for (const StyleUpdate& update : updates) {
-        if (update.id.empty()) {
-            continue;
-        }
-        Node* node = findById(*impl_->document.root, update.id);
-        if (!node) {
-            continue;
-        }
-        node->inlineStyle = {};
-        parseInlineStyle(update.declarations, node->inlineStyle);
-        node->attributes["style"] = update.declarations;
-        changed = true;
-    }
-    if (!changed) {
-        return false;
-    }
-    impl_->recomputeAndLayout();
-    impl_->dirty = true;
-    return true;
+    return applyUpdates({updates, {}, {}});
 }
 
 bool Runtime::setTextById(std::string_view id, std::string_view text) {
@@ -1569,6 +1603,10 @@ bool Runtime::setTextById(std::string_view id, std::string_view text) {
     return true;
 }
 
+bool Runtime::setTextsById(const std::vector<TextUpdate>& updates) {
+    return applyUpdates({{}, updates, {}});
+}
+
 bool Runtime::setAttributeById(std::string_view id, std::string_view name, std::string_view value) {
     if (!impl_->hasDocument || !impl_->document.root || id.empty() || name.empty()) {
         return false;
@@ -1583,6 +1621,67 @@ bool Runtime::setAttributeById(std::string_view id, std::string_view name, std::
     }
     node->attributes[normalizedName] = std::string(value);
     syncNodeAttribute(*node, normalizedName);
+    impl_->recomputeAndLayout();
+    impl_->dirty = true;
+    return true;
+}
+
+bool Runtime::setAttributesById(const std::vector<AttributeUpdate>& updates) {
+    return applyUpdates({{}, {}, updates});
+}
+
+bool Runtime::applyUpdates(const RuntimeUpdates& updates) {
+    if (!impl_->hasDocument || !impl_->document.root ||
+        (updates.styles.empty() && updates.texts.empty() && updates.attributes.empty())) {
+        return false;
+    }
+    bool changed = false;
+
+    for (const StyleUpdate& update : updates.styles) {
+        if (update.id.empty()) {
+            continue;
+        }
+        Node* node = findById(*impl_->document.root, update.id);
+        if (!node) {
+            continue;
+        }
+        node->inlineStyle = {};
+        parseInlineStyle(update.declarations, node->inlineStyle);
+        node->attributes["style"] = update.declarations;
+        changed = true;
+    }
+
+    for (const TextUpdate& update : updates.texts) {
+        if (update.id.empty()) {
+            continue;
+        }
+        Node* node = findById(*impl_->document.root, update.id);
+        if (!node) {
+            continue;
+        }
+        node->text = update.text;
+        changed = true;
+    }
+
+    for (const AttributeUpdate& update : updates.attributes) {
+        if (update.id.empty() || update.name.empty()) {
+            continue;
+        }
+        Node* node = findById(*impl_->document.root, update.id);
+        if (!node) {
+            continue;
+        }
+        const std::string normalizedName = lowerAscii(trim(update.name));
+        if (normalizedName.empty()) {
+            continue;
+        }
+        node->attributes[normalizedName] = update.value;
+        syncNodeAttribute(*node, normalizedName);
+        changed = true;
+    }
+    if (!changed) {
+        return false;
+    }
     impl_->recomputeAndLayout();
     impl_->dirty = true;
     return true;

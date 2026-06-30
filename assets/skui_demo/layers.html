@@ -574,11 +574,14 @@
       top: 204px;
       width: 548px;
       height: 42px;
+      flex-direction: row;
+      flex-wrap: wrap;
+      align-items: flex-start;
     }
     .property-tool {
-      position: absolute;
-      top: 0px;
       height: 39px;
+      margin-right: 8px;
+      margin-bottom: 8px;
       flex-direction: row;
       align-items: center;
       justify-content: center;
@@ -634,7 +637,7 @@
       left: 0px;
       top: 0px;
       width: 1394px;
-      height: 724px;
+      height: 3600040px;
     }
     .attr-row-bg {
       position: absolute;
@@ -928,48 +931,48 @@
       </div>
 
       <div id="property-toolbar" class="property-toolbar">
-        <button class="property-tool" style="left:0px;width:86px" data-action="attr-add-field">
+        <button class="property-tool" style="width:86px" data-action="attr-add-field">
           <svg class="property-tool-icon" viewBox="0 0 24 24" fill="none" stroke="#DFF8FA" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.4"></circle><path d="M12 7.8v8.4M7.8 12h8.4"></path></svg>
           <span>新增字段</span>
         </button>
-        <button class="property-tool" style="left:94px;width:86px" data-action="attr-delete-field">
+        <button class="property-tool" style="width:86px" data-action="attr-delete-field">
           <svg class="property-tool-icon" viewBox="0 0 24 24" fill="none" stroke="#DFF8FA" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16"></path><path d="M9 6V4h6v2"></path><path d="M7 6l1 14h8l1-14"></path><path d="M10 10v6M14 10v6"></path></svg>
           <span>删除字段</span>
         </button>
-        <button class="property-tool" style="left:188px;width:74px" data-action="attr-copy-column">
+        <button class="property-tool" style="width:74px" data-action="attr-copy-column">
           <svg class="property-tool-icon" viewBox="0 0 24 24" fill="none" stroke="#DFF8FA" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M8 8h11v11H8Z"></path><path d="M5 16H4V5h11v1"></path></svg>
           <span>复制列</span>
         </button>
-        <button class="property-tool" style="left:270px;width:74px" data-action="attr-paste-column">
+        <button class="property-tool" style="width:74px" data-action="attr-paste-column">
           <svg class="property-tool-icon" viewBox="0 0 24 24" fill="none" stroke="#DFF8FA" stroke-opacity="0.64" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4h6l1 2h3v14H5V6h3Z"></path><path d="M9 11h6M9 15h6"></path></svg>
           <span>粘贴列</span>
         </button>
-        <button class="property-tool" style="left:352px;width:84px" data-action="attr-highlight">
+        <button class="property-tool" style="width:84px" data-action="attr-highlight">
           <svg class="property-tool-icon" viewBox="0 0 24 24" fill="none" stroke="#DFF8FA" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 18h16L13.5 6 10 13l-2-3Z"></path></svg>
           <span>设为高度</span>
         </button>
-        <button class="property-tool property-tool-compact" style="left:444px;width:42px" data-action="attr-focus">
+        <button class="property-tool property-tool-compact" style="width:42px" data-action="attr-focus">
           <svg class="property-tool-icon" viewBox="0 0 24 24" fill="none" stroke="#DFF8FA" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3.2"></circle><path d="M12 3v4M12 17v4M3 12h4M17 12h4"></path></svg>
         </button>
-        <button id="attr-visibility-button" class="property-tool property-tool-compact" style="left:494px;width:42px" data-action="attr-toggle-visibility">
+        <button id="attr-visibility-button" class="property-tool property-tool-compact" style="width:42px" data-action="attr-toggle-visibility">
           <svg class="property-tool-icon property-eye-on" viewBox="0 0 24 24" fill="none" stroke="#DFF8FA" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3.2 12s3.3-5.2 8.8-5.2 8.8 5.2 8.8 5.2-3.3 5.2-8.8 5.2S3.2 12 3.2 12Z"></path><circle cx="12" cy="12" r="2.4"></circle></svg>
           <svg class="property-tool-icon property-eye-off" viewBox="0 0 24 24" fill="none" stroke="#DFF8FA" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3.2 12s3.3-5.2 8.8-5.2 8.8 5.2 8.8 5.2-3.3 5.2-8.8 5.2S3.2 12 3.2 12Z"></path><path d="M4 4l16 16"></path><circle cx="12" cy="12" r="2.4"></circle></svg>
         </button>
       </div>
 
-      <div id="property-table-viewport" class="property-table-viewport">
+      <div id="property-table-viewport" class="property-table-viewport" data-action="attr-table-scroll" data-virtual-width="1394" data-virtual-height="3600040">
         <div class="property-table-content">
-          <div class="attr-handle-header"></div>
-          <div class="attr-header-cell col-id" style="left:34px;top:0px;width:80px"><div class="attr-header-label" style="width:52px" data-action="select-attr-col:id">ID</div><div id="sort-id" class="attr-sort" data-action="sort-attr:id">-</div></div>
-          <div class="attr-header-cell col-name" style="left:114px;top:0px;width:120px"><div class="attr-header-label" style="width:92px" data-action="select-attr-col:name">名称</div><div id="sort-name" class="attr-sort" data-action="sort-attr:name">-</div></div>
-          <div class="attr-header-cell col-landuse" style="left:234px;top:0px;width:150px"><div class="attr-header-label" style="width:122px" data-action="select-attr-col:landuse">landuse</div><div id="sort-landuse" class="attr-sort" data-action="sort-attr:landuse">-</div></div>
-          <div class="attr-header-cell col-height" style="left:384px;top:0px;width:110px"><div class="attr-header-label" style="width:82px" data-action="select-attr-col:height">height</div><div id="sort-height" class="attr-sort" data-action="sort-attr:height">-</div></div>
-          <div class="attr-header-cell col-type" style="left:494px;top:0px;width:120px"><div class="attr-header-label" style="width:92px" data-action="select-attr-col:type">type</div><div id="sort-type" class="attr-sort" data-action="sort-attr:type">-</div></div>
-          <div class="attr-header-cell col-owner" style="left:614px;top:0px;width:160px"><div class="attr-header-label" style="width:132px" data-action="select-attr-col:owner">owner</div><div id="sort-owner" class="attr-sort" data-action="sort-attr:owner">-</div></div>
-          <div class="attr-header-cell col-area" style="left:774px;top:0px;width:120px"><div class="attr-header-label" style="width:92px" data-action="select-attr-col:area">area_m2</div><div id="sort-area" class="attr-sort" data-action="sort-attr:area">-</div></div>
-          <div class="attr-header-cell col-updated" style="left:894px;top:0px;width:160px"><div class="attr-header-label" style="width:132px" data-action="select-attr-col:updated">updated_at</div><div id="sort-updated" class="attr-sort" data-action="sort-attr:updated">-</div></div>
-          <div class="attr-header-cell col-status" style="left:1054px;top:0px;width:120px"><div class="attr-header-label" style="width:92px" data-action="select-attr-col:status">status</div><div id="sort-status" class="attr-sort" data-action="sort-attr:status">-</div></div>
-          <div class="attr-header-cell col-note" style="left:1174px;top:0px;width:220px"><div class="attr-header-label" style="width:192px" data-action="select-attr-col:note">note</div><div id="sort-note" class="attr-sort" data-action="sort-attr:note">-</div></div>
+          <div id="attr-handle-header" class="attr-handle-header"></div>
+          <div id="attr-header-id" class="attr-header-cell col-id" style="left:34px;top:0px;width:80px"><div class="attr-header-label" style="width:52px" data-action="select-attr-col:id">ID</div><div id="sort-id" class="attr-sort" data-action="sort-attr:id">-</div></div>
+          <div id="attr-header-name" class="attr-header-cell col-name" style="left:114px;top:0px;width:120px"><div class="attr-header-label" style="width:92px" data-action="select-attr-col:name">名称</div><div id="sort-name" class="attr-sort" data-action="sort-attr:name">-</div></div>
+          <div id="attr-header-landuse" class="attr-header-cell col-landuse" style="left:234px;top:0px;width:150px"><div class="attr-header-label" style="width:122px" data-action="select-attr-col:landuse">landuse</div><div id="sort-landuse" class="attr-sort" data-action="sort-attr:landuse">-</div></div>
+          <div id="attr-header-height" class="attr-header-cell col-height" style="left:384px;top:0px;width:110px"><div class="attr-header-label" style="width:82px" data-action="select-attr-col:height">height</div><div id="sort-height" class="attr-sort" data-action="sort-attr:height">-</div></div>
+          <div id="attr-header-type" class="attr-header-cell col-type" style="left:494px;top:0px;width:120px"><div class="attr-header-label" style="width:92px" data-action="select-attr-col:type">type</div><div id="sort-type" class="attr-sort" data-action="sort-attr:type">-</div></div>
+          <div id="attr-header-owner" class="attr-header-cell col-owner" style="left:614px;top:0px;width:160px"><div class="attr-header-label" style="width:132px" data-action="select-attr-col:owner">owner</div><div id="sort-owner" class="attr-sort" data-action="sort-attr:owner">-</div></div>
+          <div id="attr-header-area" class="attr-header-cell col-area" style="left:774px;top:0px;width:120px"><div class="attr-header-label" style="width:92px" data-action="select-attr-col:area">area_m2</div><div id="sort-area" class="attr-sort" data-action="sort-attr:area">-</div></div>
+          <div id="attr-header-updated" class="attr-header-cell col-updated" style="left:894px;top:0px;width:160px"><div class="attr-header-label" style="width:132px" data-action="select-attr-col:updated">updated_at</div><div id="sort-updated" class="attr-sort" data-action="sort-attr:updated">-</div></div>
+          <div id="attr-header-status" class="attr-header-cell col-status" style="left:1054px;top:0px;width:120px"><div class="attr-header-label" style="width:92px" data-action="select-attr-col:status">status</div><div id="sort-status" class="attr-sort" data-action="sort-attr:status">-</div></div>
+          <div id="attr-header-note" class="attr-header-cell col-note" style="left:1174px;top:0px;width:220px"><div class="attr-header-label" style="width:192px" data-action="select-attr-col:note">note</div><div id="sort-note" class="attr-sort" data-action="sort-attr:note">-</div></div>
 
           <div id="attr-row-1-bg" class="attr-row-bg" style="top:40px" data-action="select-attr-row:attr-row-1"></div>
           <svg id="attr-row-1-handle" class="attr-row-handle" style="top:40px" data-action="select-attr-row:attr-row-1" viewBox="0 0 24 24" fill="none"><circle cx="8" cy="5" r="1.45" fill="#DCE8F1" fill-opacity="0.72"></circle><circle cx="16" cy="5" r="1.45" fill="#DCE8F1" fill-opacity="0.72"></circle><circle cx="8" cy="12" r="1.45" fill="#DCE8F1" fill-opacity="0.72"></circle><circle cx="16" cy="12" r="1.45" fill="#DCE8F1" fill-opacity="0.72"></circle><circle cx="8" cy="19" r="1.45" fill="#DCE8F1" fill-opacity="0.72"></circle><circle cx="16" cy="19" r="1.45" fill="#DCE8F1" fill-opacity="0.72"></circle></svg>
@@ -1049,12 +1052,12 @@
       </div>
 
       <div id="selected-cell-card" class="selected-cell-card"></div>
-      <div class="selected-cell-title">选中单元格</div>
-      <div class="selected-cell-field" style="top:644px">
+      <div id="selected-cell-title" class="selected-cell-title">选中单元格</div>
+      <div id="selected-cell-value-row" class="selected-cell-field" style="top:644px">
         <div class="selected-cell-label">字段值</div>
         <div id="selected-cell-value" class="selected-cell-value">commercial</div>
       </div>
-      <div class="selected-cell-field" style="top:690px">
+      <div id="selected-cell-type-row" class="selected-cell-field" style="top:690px">
         <div class="selected-cell-label">字段类型</div>
         <div id="selected-cell-type" class="selected-cell-value">Text</div>
       </div>

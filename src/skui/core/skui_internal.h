@@ -105,6 +105,7 @@ struct Style {
         bool display = false;
         bool position = false;
         bool flexDirection = false;
+        bool flexWrap = false;
         bool alignItems = false;
         bool justifyContent = false;
         bool alignSelf = false;
@@ -147,6 +148,7 @@ struct Style {
     Display display = Display::Flex;
     Position position = Position::Relative;
     YGFlexDirection flexDirection = YGFlexDirectionColumn;
+    YGWrap flexWrap = YGWrapNoWrap;
     YGAlign alignItems = YGAlignStretch;
     YGJustify justifyContent = YGJustifyFlexStart;
     YGAlign alignSelf = YGAlignAuto;
@@ -197,6 +199,8 @@ struct Node {
     std::string svgMarkup;
     float numericValue = 0.0f;
     float numericMax = 1.0f;
+    float virtualContentWidth = 0.0f;
+    float virtualContentHeight = 0.0f;
     std::unordered_map<std::string, std::string> attributes;
     Style style;
     Style inlineStyle;

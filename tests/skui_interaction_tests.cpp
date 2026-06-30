@@ -799,6 +799,155 @@ int main() {
     ok = expect(batchA == solidColor(0xAB, 0xCD, 0xEF), "batch style update should apply first node style") && ok;
     ok = expect(batchB == solidColor(0x77, 0x88, 0x99), "batch style update should apply second node style") && ok;
 
+    constexpr std::string_view virtualScrollHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      position: relative;
+      width: 140px;
+      height: 90px;
+      background-color: #000000;
+    }
+    .virtual-list {
+      position: absolute;
+      left: 10px;
+      top: 10px;
+      width: 70px;
+      height: 40px;
+      overflow-y: auto;
+      overflow-x: auto;
+      background-color: #111111;
+    }
+    .row {
+      position: absolute;
+      left: 0px;
+      top: 0px;
+      width: 50px;
+      height: 20px;
+      background-color: #223344;
+      color: #ffffff;
+      font-size: 12px;
+    }
+    .sentinel {
+      position: absolute;
+      left: 0px;
+      top: 80px;
+      width: 50px;
+      height: 20px;
+      background-color: #abcdef;
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <div id="virtual-list" class="virtual-list" data-action="virtual-scroll" data-virtual-width="400" data-virtual-height="1000">
+      <div id="pool-row" class="row">row 0</div>
+    </div>
+    <div id="label-a" class="row" style="left:90px;top:10px;background-color:#111111">a</div>
+    <div id="label-b" class="row" style="left:90px;top:40px;background-color:#111111">b</div>
+  </div>
+</body>
+</html>
+)html";
+
+    skui::Runtime virtualRuntime(options);
+    virtualRuntime.resize(kWidth, kHeight, 1.0f);
+    float virtualScrollY = -1.0f;
+    float virtualScrollX = -1.0f;
+    int scrollEvents = 0;
+    virtualRuntime.setElementEventCallback([&](const skui::ElementEvent& event) {
+        if (event.type == skui::ElementEventType::Scroll && event.action == "virtual-scroll") {
+            virtualScrollX = event.scrollX;
+            virtualScrollY = event.scrollY;
+            ++scrollEvents;
+        }
+    });
+    if (!virtualRuntime.loadDocumentFromString(virtualScrollHtml, "")) {
+        std::cerr << "virtual scroll load failed: " << virtualRuntime.lastError() << "\n";
+        return 1;
+    }
+    uint32_t virtualScrollbar = 0;
+    ok = renderPixel(virtualRuntime, 75, 25, virtualScrollbar) && ok;
+    ok = expect(virtualScrollbar == solidColor(0xB8, 0xC3, 0xD0), "virtual content height should create a scrollbar without real child height") && ok;
+    sendWheel(virtualRuntime, 20.0f, 20.0f, -240.0f);
+    ok = expect(scrollEvents == 1, "virtual scroll container should emit a scroll event") && ok;
+    ok = expect(virtualScrollY > 0.0f, "scroll event should expose vertical scroll offset") && ok;
+    sendWheel(virtualRuntime, 20.0f, 20.0f, -240.0f, true);
+    ok = expect(scrollEvents == 2, "virtual horizontal scroll should emit a scroll event") && ok;
+    ok = expect(virtualScrollX > 0.0f, "scroll event should expose horizontal scroll offset") && ok;
+    ok = expect(virtualRuntime.setTextsById({{"label-a", "updated A"}, {"label-b", "updated B"}}),
+                "batch text update should report success") && ok;
+    ok = expect(virtualRuntime.setAttributesById({{"virtual-list", "data-virtual-height", "1600"}}),
+                "batch attribute update should report success for virtual dimensions") && ok;
+    ok = expect(virtualRuntime.setStyleById("pool-row", "position:absolute;left:0px;top:5000px;width:50px;height:20px;background-color:#223344;color:#ffffff;font-size:12px;"),
+                "moving a pooled row should report success") && ok;
+    ok = expect(virtualRuntime.setAttributesById({{"virtual-list", "data-virtual-height", "1000"}}),
+                "resetting virtual height should report success") && ok;
+    sendWheel(virtualRuntime, 20.0f, 20.0f, -24000.0f);
+    ok = expect(virtualScrollY <= 960.0f, "pooled row position should not expand virtual scroll range") && ok;
+
+    constexpr std::string_view flexWrapHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      position: relative;
+      width: 140px;
+      height: 90px;
+      background-color: #000000;
+    }
+    .toolbar {
+      position: absolute;
+      left: 10px;
+      top: 10px;
+      width: 64px;
+      height: 90px;
+      flex-direction: row;
+      flex-wrap: wrap;
+      align-items: flex-start;
+    }
+    .tool {
+      width: 40px;
+      height: 20px;
+      margin-right: 8px;
+      margin-bottom: 8px;
+      background-color: #222222;
+    }
+    .a {
+      background-color: #ff0000;
+    }
+    .b {
+      background-color: #00ff00;
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <div class="toolbar">
+      <div class="tool a"></div>
+      <div class="tool b"></div>
+    </div>
+  </div>
+</body>
+</html>
+)html";
+
+    skui::Runtime flexWrapRuntime(options);
+    flexWrapRuntime.resize(kWidth, kHeight, 1.0f);
+    if (!flexWrapRuntime.loadDocumentFromString(flexWrapHtml, "")) {
+        std::cerr << "flex wrap load failed: " << flexWrapRuntime.lastError() << "\n";
+        return 1;
+    }
+    uint32_t firstRowProbe = 0;
+    uint32_t secondRowProbe = 0;
+    ok = renderPixel(flexWrapRuntime, 20, 18, firstRowProbe) && ok;
+    ok = renderPixel(flexWrapRuntime, 20, 46, secondRowProbe) && ok;
+    ok = expect(firstRowProbe == solidColor(0xFF, 0x00, 0x00), "flex-wrap should keep first child on first row") && ok;
+    ok = expect(secondRowProbe == solidColor(0x00, 0xFF, 0x00), "flex-wrap should move overflowing child to next row") && ok;
+
     constexpr std::string_view scrollHtml = R"html(
 <!doctype html>
 <html>

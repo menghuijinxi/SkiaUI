@@ -319,6 +319,10 @@ void mergeStyle(Style& target, const Style& source) {
         target.flexDirection = source.flexDirection;
         target.flags.flexDirection = true;
     }
+    if (f.flexWrap) {
+        target.flexWrap = source.flexWrap;
+        target.flags.flexWrap = true;
+    }
     if (f.alignItems) {
         target.alignItems = source.alignItems;
         target.flags.alignItems = true;
@@ -844,6 +848,10 @@ void applyDeclaration(Style& style, std::string_view rawName, std::string_view r
         const std::string v = lower(value);
         style.flexDirection = v == "row" ? YGFlexDirectionRow : YGFlexDirectionColumn;
         style.flags.flexDirection = true;
+    } else if (name == "flex-wrap") {
+        const std::string v = lower(value);
+        style.flexWrap = v == "wrap" ? YGWrapWrap : YGWrapNoWrap;
+        style.flags.flexWrap = true;
     } else if (name == "align-items") {
         const std::string v = lower(value);
         if (v == "center") {
@@ -1368,6 +1376,8 @@ std::unique_ptr<Node> convertElement(lxb_dom_element_t* element, Node* parent, s
     node->action = attributeValue(node->attributes, "data-action");
     node->numericValue = attributeFloat(node->attributes, "value", 0.0f);
     node->numericMax = std::max(0.0001f, attributeFloat(node->attributes, "max", 1.0f));
+    node->virtualContentWidth = std::max(0.0f, attributeFloat(node->attributes, "data-virtual-width", 0.0f));
+    node->virtualContentHeight = std::max(0.0f, attributeFloat(node->attributes, "data-virtual-height", 0.0f));
 
     const std::string inlineStyle = attributeValue(node->attributes, "style");
     if (!inlineStyle.empty()) {
