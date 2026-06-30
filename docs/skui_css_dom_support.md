@@ -122,7 +122,8 @@
 | `border-color` | 边框色 |
 | `border-width` | 数字或 `px` |
 | `border-style` | `solid`、`none` |
-| `border-radius` | 数字或 `px` |
+| `border-radius` | 1-4 个数字或 `px`，按 CSS shorthand 顺序展开四角 |
+| `border-top-left-radius` / `border-top-right-radius` / `border-bottom-right-radius` / `border-bottom-left-radius` | 数字或 `px` |
 | `font-size` | 数字或 `px` |
 | `font-weight` | `bold`、`600`、`700` 为粗体；其他为常规 |
 
@@ -134,6 +135,8 @@
 - `#RRGGBB`
 - `rgb(r,g,b)`
 - `rgba(r,g,b,a)`，`a` 可用 `0-1` 或 `0-255`
+
+`border-radius` 展开规则与浏览器 CSS shorthand 一致：一个值应用到四角，两个值为左上/右下与右上/左下，三个值为左上、右上/左下、右下，四个值为左上、右上、右下、左下。当前只支持圆形半径，不支持 `border-radius: 8px / 4px` 这类椭圆半径语法。分角圆角会作用于背景、边框、`progress` 填充和 `overflow` 裁剪。
 
 ### 滚动和裁剪
 
@@ -150,6 +153,7 @@
 - 支持拖动滚动条 thumb，点击滚动条轨道。
 - `scrollbar-gutter: stable` 会给滚动条保留独立占位，避免滚动条盖在内容上。
 - 虚拟滚动通过 `data-virtual-width` / `data-virtual-height` 设置内容尺寸，实际 DOM 可以只保留可见池化节点。
+- 设置虚拟尺寸后，滚动范围以 `data-virtual-width` / `data-virtual-height` 为准，不会被池化节点临时移动到很远位置撑大。
 - 滚动发生时会向 `data-action` 节点发出 `Scroll` 事件，事件中包含 `scrollX` / `scrollY`。
 
 ### 交互
@@ -234,6 +238,14 @@
 - `hasClassById`
 
 大量列表、表格、聊天记录建议使用批量接口 `applyUpdates`，减少重复样式计算和布局。
+
+运行时更新规则：
+
+- `setStyleById` 和 `RuntimeUpdates::styles` 会替换该节点完整内联 `style` 声明，不会与旧内联样式做增量合并。
+- `setTextById` 和 `RuntimeUpdates::texts` 更新节点文本；输入框和进度条的当前值应通过 `value` 属性更新。
+- `setAttributeById`、`setAttributesById`、`removeAttributeById` 会同步已知属性到内部状态，包括 `id`、`class`、`style`、`value`、`max`、`placeholder`、`src`、`data-action`、`data-virtual-width`、`data-virtual-height`。
+- `class` 属性更新后会重新参与选择器匹配；`style` 属性更新后会重新解析内联样式。
+- `applyUpdates` 会按样式、文本、属性的顺序批量应用，并只请求一次重新布局。
 
 ## 当前限制
 
