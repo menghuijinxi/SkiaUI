@@ -1083,6 +1083,7 @@ void Runtime::resize(int width, int height, float dpiScale) {
     height = std::max(1, height);
     dpiScale = std::max(0.1f, dpiScale);
     if (width == impl_->width && height == impl_->height && dpiScale == impl_->dpiScale) {
+        impl_->flushLayout();
         return;
     }
 

@@ -100,6 +100,20 @@ struct EdgeValues {
     std::optional<Length> bottom;
 };
 
+struct CornerRadii {
+    float topLeft = 0.0f;
+    float topRight = 0.0f;
+    float bottomRight = 0.0f;
+    float bottomLeft = 0.0f;
+
+    [[nodiscard]] bool any() const {
+        return topLeft > 0.0f ||
+               topRight > 0.0f ||
+               bottomRight > 0.0f ||
+               bottomLeft > 0.0f;
+    }
+};
+
 struct Style {
     struct Flags {
         bool display = false;
@@ -134,7 +148,10 @@ struct Style {
         bool borderColor = false;
         bool borderWidth = false;
         bool borderStyle = false;
-        bool borderRadius = false;
+        bool borderTopLeftRadius = false;
+        bool borderTopRightRadius = false;
+        bool borderBottomRightRadius = false;
+        bool borderBottomLeftRadius = false;
         bool fontSize = false;
         bool fontBold = false;
         bool backgroundGradient = false;
@@ -169,7 +186,7 @@ struct Style {
     SkColor borderColor = SK_ColorTRANSPARENT;
     float borderWidth = 0.0f;
     BorderStyle borderStyle = BorderStyle::None;
-    float borderRadius = 0.0f;
+    CornerRadii borderRadius;
     float fontSize = 16.0f;
     bool fontBold = false;
     Gradient backgroundGradient;

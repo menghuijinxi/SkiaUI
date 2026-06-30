@@ -621,6 +621,54 @@ int main() {
     ok = expect(progressFill == solidColor(0x10, 0xC0, 0xB0), "progress value should render filled track") && ok;
     ok = expect(progressTrack == solidColor(0x20, 0x30, 0x40), "progress max range should leave unfilled track") && ok;
 
+    constexpr std::string_view borderRadiusHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      position: relative;
+      width: 140px;
+      height: 90px;
+      background-color: #000000;
+    }
+    .corner-box {
+      position: absolute;
+      left: 10px;
+      top: 10px;
+      width: 40px;
+      height: 40px;
+      background-color: #ABCDEF;
+      border-radius: 14px 0 0 0;
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <div class="corner-box"></div>
+  </div>
+</body>
+</html>
+)html";
+    skui::Runtime borderRadiusRuntime(options);
+    borderRadiusRuntime.resize(kWidth, kHeight, 1.0f);
+    if (!borderRadiusRuntime.loadDocumentFromString(borderRadiusHtml, "")) {
+        std::cerr << "border radius load failed: " << borderRadiusRuntime.lastError() << "\n";
+        return 1;
+    }
+    uint32_t roundedTopLeft = 0;
+    uint32_t squareTopRight = 0;
+    uint32_t squareBottomLeft = 0;
+    uint32_t squareBottomRight = 0;
+    ok = renderPixel(borderRadiusRuntime, 12, 12, roundedTopLeft) && ok;
+    ok = renderPixel(borderRadiusRuntime, 48, 12, squareTopRight) && ok;
+    ok = renderPixel(borderRadiusRuntime, 12, 48, squareBottomLeft) && ok;
+    ok = renderPixel(borderRadiusRuntime, 48, 48, squareBottomRight) && ok;
+    ok = expect(roundedTopLeft == solidColor(0x00, 0x00, 0x00), "border-radius shorthand should round only the top-left corner") && ok;
+    ok = expect(squareTopRight == solidColor(0xAB, 0xCD, 0xEF), "border-radius shorthand should keep the top-right corner square") && ok;
+    ok = expect(squareBottomLeft == solidColor(0xAB, 0xCD, 0xEF), "border-radius shorthand should keep the bottom-left corner square") && ok;
+    ok = expect(squareBottomRight == solidColor(0xAB, 0xCD, 0xEF), "border-radius shorthand should keep the bottom-right corner square") && ok;
+
     constexpr std::string_view responsiveHtml = R"html(
 <!doctype html>
 <html>

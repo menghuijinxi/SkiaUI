@@ -31,6 +31,28 @@ std::vector<SkColor4f> gradientColors(const std::vector<SkColor>& colors) {
     return stops;
 }
 
+SkRRect makeRRect(const Rect& rect, const CornerRadii& radii) {
+    SkVector corners[4] = {
+        {radii.topLeft, radii.topLeft},
+        {radii.topRight, radii.topRight},
+        {radii.bottomRight, radii.bottomRight},
+        {radii.bottomLeft, radii.bottomLeft},
+    };
+    SkRRect rrect;
+    rrect.setRectRadii(rect.sk(), corners);
+    return rrect;
+}
+
+SkRRect makeInsetRRect(const Rect& rect, const CornerRadii& radii, float inset) {
+    CornerRadii inner{
+        std::max(0.0f, radii.topLeft - inset),
+        std::max(0.0f, radii.topRight - inset),
+        std::max(0.0f, radii.bottomRight - inset),
+        std::max(0.0f, radii.bottomLeft - inset),
+    };
+    return makeRRect(rect, inner);
+}
+
 std::string readTextFile(const std::filesystem::path& path) {
     std::ifstream file(path, std::ios::binary);
     if (!file) {
@@ -334,10 +356,8 @@ void SkiaRenderer::drawNode(SkCanvas& canvas, const Document& document, const No
     if (clipsChildren) {
         const Rect contentClip = scrollContentClipRect(node);
         canvas.save();
-        if (node.style.borderRadius > 0.0f) {
-            canvas.clipRRect(SkRRect::MakeRectXY(contentClip.sk(), node.style.borderRadius, node.style.borderRadius),
-                             SkClipOp::kIntersect,
-                             true);
+        if (node.style.borderRadius.any()) {
+            canvas.clipRRect(makeRRect(contentClip, node.style.borderRadius), SkClipOp::kIntersect, true);
         } else {
             canvas.clipRect(contentClip.sk(), SkClipOp::kIntersect, true);
         }
@@ -363,9 +383,8 @@ void SkiaRenderer::drawBox(SkCanvas& canvas, const Node& node) {
     }
 
     if (SkColorGetA(node.style.backgroundColor) > 0 || node.style.backgroundGradient.kind != GradientKind::None) {
-        const float radius = node.style.borderRadius;
-        if (radius > 0.0f) {
-            canvas.drawRRect(SkRRect::MakeRectXY(r.sk(), radius, radius), backgroundPaint(node));
+        if (node.style.borderRadius.any()) {
+            canvas.drawRRect(makeRRect(r, node.style.borderRadius), backgroundPaint(node));
         } else {
             canvas.drawRect(r.sk(), backgroundPaint(node));
         }
@@ -375,13 +394,15 @@ void SkiaRenderer::drawBox(SkCanvas& canvas, const Node& node) {
     if (node.style.borderStyle == BorderStyle::Solid &&
         node.style.borderWidth > 0.0f &&
         SkColorGetA(borderColor) > 0) {
-        if (node.style.borderRadius > 0.0f) {
+        if (node.style.borderRadius.any()) {
             const float half = node.style.borderWidth * 0.5f;
             const SkRect border = SkRect::MakeXYWH(r.x + half,
                                                    r.y + half,
                                                    std::max(0.0f, r.w - node.style.borderWidth),
                                                    std::max(0.0f, r.h - node.style.borderWidth));
-            canvas.drawRRect(SkRRect::MakeRectXY(border, node.style.borderRadius, node.style.borderRadius),
+            canvas.drawRRect(makeInsetRRect({border.x(), border.y(), border.width(), border.height()},
+                                            node.style.borderRadius,
+                                            half),
                              stroke(borderColor, node.style.borderWidth));
         } else {
             SkPaint borderPaint = fill(borderColor);
@@ -412,12 +433,11 @@ void SkiaRenderer::drawProgress(SkCanvas& canvas, const Node& node) {
     }
     Rect fillRect = node.layout;
     fillRect.w *= ratio;
-    const float radius = node.style.borderRadius;
     SkPaint p = fill(node.style.color);
-    if (radius > 0.0f) {
+    if (node.style.borderRadius.any()) {
         canvas.save();
-        canvas.clipRRect(SkRRect::MakeRectXY(node.layout.sk(), radius, radius), SkClipOp::kIntersect, true);
-        canvas.drawRRect(SkRRect::MakeRectXY(fillRect.sk(), radius, radius), p);
+        canvas.clipRRect(makeRRect(node.layout, node.style.borderRadius), SkClipOp::kIntersect, true);
+        canvas.drawRRect(makeRRect(fillRect, node.style.borderRadius), p);
         canvas.restore();
     } else {
         canvas.drawRect(fillRect.sk(), p);

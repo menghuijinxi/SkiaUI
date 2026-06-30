@@ -272,6 +272,35 @@ bool applyEdgeShorthand(EdgeValues& edges,
     return true;
 }
 
+bool applyBorderRadiusShorthand(Style& style, std::string_view raw) {
+    std::vector<float> values;
+    for (const std::string& token : splitCssTokens(raw)) {
+        std::optional<float> radius = parseNumberOrPx(token);
+        if (!radius) {
+            return false;
+        }
+        values.push_back(std::max(0.0f, *radius));
+    }
+    if (values.empty() || values.size() > 4) {
+        return false;
+    }
+
+    style.borderRadius.topLeft = values[0];
+    style.borderRadius.topRight = values.size() >= 2 ? values[1] : values[0];
+    style.borderRadius.bottomRight = values.size() >= 3 ? values[2] : values[0];
+    style.borderRadius.bottomLeft = values.size() >= 4 ? values[3] : style.borderRadius.topRight;
+    style.flags.borderTopLeftRadius = true;
+    style.flags.borderTopRightRadius = true;
+    style.flags.borderBottomRightRadius = true;
+    style.flags.borderBottomLeftRadius = true;
+    return true;
+}
+
+void setBorderCornerRadius(Style& style, bool Style::Flags::*flag, float CornerRadii::*field, float radius) {
+    style.borderRadius.*field = std::max(0.0f, radius);
+    style.flags.*flag = true;
+}
+
 std::optional<BorderStyle> parseBorderStyleValue(std::string_view raw) {
     const std::string value = lower(trim(raw));
     if (value == "solid") {
@@ -435,9 +464,21 @@ void mergeStyle(Style& target, const Style& source) {
         target.borderStyle = source.borderStyle;
         target.flags.borderStyle = true;
     }
-    if (f.borderRadius) {
-        target.borderRadius = source.borderRadius;
-        target.flags.borderRadius = true;
+    if (f.borderTopLeftRadius) {
+        target.borderRadius.topLeft = source.borderRadius.topLeft;
+        target.flags.borderTopLeftRadius = true;
+    }
+    if (f.borderTopRightRadius) {
+        target.borderRadius.topRight = source.borderRadius.topRight;
+        target.flags.borderTopRightRadius = true;
+    }
+    if (f.borderBottomRightRadius) {
+        target.borderRadius.bottomRight = source.borderRadius.bottomRight;
+        target.flags.borderBottomRightRadius = true;
+    }
+    if (f.borderBottomLeftRadius) {
+        target.borderRadius.bottomLeft = source.borderRadius.bottomLeft;
+        target.flags.borderBottomLeftRadius = true;
     }
     if (f.fontSize) {
         target.fontSize = source.fontSize;
@@ -982,9 +1023,16 @@ void applyDeclaration(Style& style, std::string_view rawName, std::string_view r
         const std::string v = lower(value);
         style.borderStyle = v == "solid" ? BorderStyle::Solid : BorderStyle::None;
         style.flags.borderStyle = true;
-    } else if (name == "border-radius" && number) {
-        style.borderRadius = *number;
-        style.flags.borderRadius = true;
+    } else if (name == "border-radius") {
+        applyBorderRadiusShorthand(style, value);
+    } else if (name == "border-top-left-radius" && number) {
+        setBorderCornerRadius(style, &Style::Flags::borderTopLeftRadius, &CornerRadii::topLeft, *number);
+    } else if (name == "border-top-right-radius" && number) {
+        setBorderCornerRadius(style, &Style::Flags::borderTopRightRadius, &CornerRadii::topRight, *number);
+    } else if (name == "border-bottom-right-radius" && number) {
+        setBorderCornerRadius(style, &Style::Flags::borderBottomRightRadius, &CornerRadii::bottomRight, *number);
+    } else if (name == "border-bottom-left-radius" && number) {
+        setBorderCornerRadius(style, &Style::Flags::borderBottomLeftRadius, &CornerRadii::bottomLeft, *number);
     } else if (name == "font-size" && number) {
         style.fontSize = *number;
         style.flags.fontSize = true;
