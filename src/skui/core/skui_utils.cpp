@@ -50,6 +50,57 @@ std::vector<std::string> splitWhitespace(std::string_view value) {
     return parts;
 }
 
+float scrollViewportWidth(const Node& node) {
+    float width = node.layout.w;
+    if (node.style.scrollbarGutterStable &&
+        (node.style.overflowY == Overflow::Auto || node.style.overflowY == Overflow::Scroll)) {
+        width -= kSkuiScrollbarGutter;
+    }
+    return std::max(0.0f, width);
+}
+
+float scrollViewportHeight(const Node& node) {
+    float height = node.layout.h;
+    const bool needsHorizontalGutter = node.style.overflowX == Overflow::Scroll ||
+        (node.style.overflowX == Overflow::Auto && node.scrollContentWidth > scrollViewportWidth(node));
+    if (node.style.scrollbarGutterStable && needsHorizontalGutter) {
+        height -= kSkuiScrollbarGutter;
+    }
+    return std::max(0.0f, height);
+}
+
+float scrollMaxX(const Node& node) {
+    return std::max(0.0f, node.scrollContentWidth - scrollViewportWidth(node));
+}
+
+float scrollMaxY(const Node& node) {
+    return std::max(0.0f, node.scrollContentHeight - scrollViewportHeight(node));
+}
+
+bool shouldShowScrollbarX(const Node& node) {
+    return node.style.overflowX == Overflow::Scroll ||
+           (node.style.overflowX == Overflow::Auto && scrollMaxX(node) > 0.0f);
+}
+
+bool shouldShowScrollbarY(const Node& node) {
+    return node.style.overflowY == Overflow::Scroll ||
+           (node.style.overflowY == Overflow::Auto && scrollMaxY(node) > 0.0f);
+}
+
+Rect scrollContentClipRect(const Node& node) {
+    Rect clip = node.layout;
+    if (node.style.scrollbarGutterStable) {
+        if (node.style.overflowY == Overflow::Scroll ||
+            node.style.overflowY == Overflow::Auto) {
+            clip.w = std::max(0.0f, clip.w - kSkuiScrollbarGutter);
+        }
+        if (shouldShowScrollbarX(node)) {
+            clip.h = std::max(0.0f, clip.h - kSkuiScrollbarGutter);
+        }
+    }
+    return clip;
+}
+
 static bool parseHexByte(std::string_view text, unsigned& out) {
     unsigned value = 0;
     const auto* begin = text.data();

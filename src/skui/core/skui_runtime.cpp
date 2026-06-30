@@ -33,6 +33,11 @@ Node* hitTest(Node& node, float x, float y) {
     if (!isRenderableNode(node) || !node.layout.contains(x, y)) {
         return nullptr;
     }
+    const Rect contentClip = scrollContentClipRect(node);
+    if (!contentClip.contains(x, y) &&
+        (node.style.scrollbarGutterStable || shouldShowScrollbarX(node) || shouldShowScrollbarY(node))) {
+        return node.style.pointerEvents == PointerEvents::None ? nullptr : &node;
+    }
     const float childX = x + node.scrollX;
     const float childY = y + node.scrollY;
     for (auto it = node.children.rbegin(); it != node.children.rend(); ++it) {
@@ -181,20 +186,12 @@ Cursor cursorForNode(Node* leaf) {
     return Cursor::Default;
 }
 
-float maxScrollX(const Node& node) {
-    return std::max(0.0f, node.scrollContentWidth - node.layout.w);
-}
-
-float maxScrollY(const Node& node) {
-    return std::max(0.0f, node.scrollContentHeight - node.layout.h);
-}
-
 bool canScrollX(const Node& node) {
-    return (node.style.overflowX == Overflow::Auto || node.style.overflowX == Overflow::Scroll) && maxScrollX(node) > 0.0f;
+    return (node.style.overflowX == Overflow::Auto || node.style.overflowX == Overflow::Scroll) && scrollMaxX(node) > 0.0f;
 }
 
 bool canScrollY(const Node& node) {
-    return (node.style.overflowY == Overflow::Auto || node.style.overflowY == Overflow::Scroll) && maxScrollY(node) > 0.0f;
+    return (node.style.overflowY == Overflow::Auto || node.style.overflowY == Overflow::Scroll) && scrollMaxY(node) > 0.0f;
 }
 
 enum class ScrollbarAxis {
@@ -218,18 +215,12 @@ struct ScrollbarHit {
     float dragOffset = 0.0f;
 };
 
-constexpr float kScrollbarThickness = 6.0f;
-constexpr float kScrollbarInset = 4.0f;
-constexpr float kScrollbarMinThumb = 24.0f;
-
 bool wantsScrollbarX(const Node& node) {
-    return node.style.overflowX == Overflow::Scroll ||
-           (node.style.overflowX == Overflow::Auto && maxScrollX(node) > 0.0f);
+    return shouldShowScrollbarX(node);
 }
 
 bool wantsScrollbarY(const Node& node) {
-    return node.style.overflowY == Overflow::Scroll ||
-           (node.style.overflowY == Overflow::Auto && maxScrollY(node) > 0.0f);
+    return shouldShowScrollbarY(node);
 }
 
 std::optional<ScrollbarGeometry> scrollbarGeometry(const Node& node, ScrollbarAxis axis) {
@@ -245,24 +236,26 @@ std::optional<ScrollbarGeometry> scrollbarGeometry(const Node& node, ScrollbarAx
 
     ScrollbarGeometry geometry;
     if (axis == ScrollbarAxis::Vertical) {
-        geometry.maxScroll = maxScrollY(node);
-        geometry.trackStart = node.layout.y + kScrollbarInset;
-        geometry.trackCross = node.layout.x + node.layout.w - kScrollbarInset - kScrollbarThickness;
-        geometry.trackLength = node.layout.h - kScrollbarInset * 2.0f - (showX ? kScrollbarThickness + kScrollbarInset : 0.0f);
-        const float ratio = node.scrollContentHeight <= 0.0f ? 1.0f : node.layout.h / node.scrollContentHeight;
+        geometry.maxScroll = scrollMaxY(node);
+        geometry.trackStart = node.layout.y + kSkuiScrollbarInset;
+        geometry.trackCross = node.layout.x + node.layout.w - kSkuiScrollbarInset - kSkuiScrollbarThickness;
+        geometry.trackLength = node.layout.h - kSkuiScrollbarInset * 2.0f - (showX ? kSkuiScrollbarThickness + kSkuiScrollbarInset : 0.0f);
+        const float viewportHeight = scrollViewportHeight(node);
+        const float ratio = node.scrollContentHeight <= 0.0f ? 1.0f : viewportHeight / node.scrollContentHeight;
         geometry.thumbLength = clampf(geometry.trackLength * ratio,
-                                      std::min(kScrollbarMinThumb, geometry.trackLength),
+                                      std::min(kSkuiScrollbarMinThumb, geometry.trackLength),
                                       geometry.trackLength);
         const float travel = std::max(0.0f, geometry.trackLength - geometry.thumbLength);
         geometry.thumbStart = geometry.trackStart + (geometry.maxScroll <= 0.0f ? 0.0f : node.scrollY / geometry.maxScroll * travel);
     } else {
-        geometry.maxScroll = maxScrollX(node);
-        geometry.trackStart = node.layout.x + kScrollbarInset;
-        geometry.trackCross = node.layout.y + node.layout.h - kScrollbarInset - kScrollbarThickness;
-        geometry.trackLength = node.layout.w - kScrollbarInset * 2.0f - (showY ? kScrollbarThickness + kScrollbarInset : 0.0f);
-        const float ratio = node.scrollContentWidth <= 0.0f ? 1.0f : node.layout.w / node.scrollContentWidth;
+        geometry.maxScroll = scrollMaxX(node);
+        geometry.trackStart = node.layout.x + kSkuiScrollbarInset;
+        geometry.trackCross = node.layout.y + node.layout.h - kSkuiScrollbarInset - kSkuiScrollbarThickness;
+        geometry.trackLength = node.layout.w - kSkuiScrollbarInset * 2.0f - (showY ? kSkuiScrollbarThickness + kSkuiScrollbarInset : 0.0f);
+        const float viewportWidth = scrollViewportWidth(node);
+        const float ratio = node.scrollContentWidth <= 0.0f ? 1.0f : viewportWidth / node.scrollContentWidth;
         geometry.thumbLength = clampf(geometry.trackLength * ratio,
-                                      std::min(kScrollbarMinThumb, geometry.trackLength),
+                                      std::min(kSkuiScrollbarMinThumb, geometry.trackLength),
                                       geometry.trackLength);
         const float travel = std::max(0.0f, geometry.trackLength - geometry.thumbLength);
         geometry.thumbStart = geometry.trackStart + (geometry.maxScroll <= 0.0f ? 0.0f : node.scrollX / geometry.maxScroll * travel);
@@ -277,7 +270,7 @@ std::optional<ScrollbarGeometry> scrollbarGeometry(const Node& node, ScrollbarAx
 std::optional<ScrollbarHit> scrollbarHitSelf(Node& node, float x, float y) {
     if (std::optional<ScrollbarGeometry> vertical = scrollbarGeometry(node, ScrollbarAxis::Vertical)) {
         const bool inTrack = x >= vertical->trackCross &&
-                             x <= vertical->trackCross + kScrollbarThickness &&
+                             x <= vertical->trackCross + kSkuiScrollbarThickness &&
                              y >= vertical->trackStart &&
                              y <= vertical->trackStart + vertical->trackLength;
         if (inTrack) {
@@ -290,7 +283,7 @@ std::optional<ScrollbarHit> scrollbarHitSelf(Node& node, float x, float y) {
         const bool inTrack = x >= horizontal->trackStart &&
                              x <= horizontal->trackStart + horizontal->trackLength &&
                              y >= horizontal->trackCross &&
-                             y <= horizontal->trackCross + kScrollbarThickness;
+                             y <= horizontal->trackCross + kSkuiScrollbarThickness;
         if (inTrack) {
             const bool inThumb = x >= horizontal->thumbStart && x <= horizontal->thumbStart + horizontal->thumbLength;
             return ScrollbarHit{&node, ScrollbarAxis::Horizontal, inThumb ? x - horizontal->thumbStart : horizontal->thumbLength * 0.5f};
@@ -306,6 +299,11 @@ std::optional<ScrollbarHit> scrollbarHitTest(Node& node, float x, float y) {
     }
     if (std::optional<ScrollbarHit> hit = scrollbarHitSelf(node, x, y)) {
         return hit;
+    }
+    const Rect contentClip = scrollContentClipRect(node);
+    if (!contentClip.contains(x, y) &&
+        (node.style.scrollbarGutterStable || shouldShowScrollbarX(node) || shouldShowScrollbarY(node))) {
+        return std::nullopt;
     }
 
     const float childX = x + node.scrollX;
@@ -349,12 +347,12 @@ bool updateScrollFromScrollbar(Node& node, ScrollbarAxis axis, float pointer, fl
 bool scrollNode(Node& node, float dx, float dy, Node** scrolled = nullptr) {
     bool changed = false;
     if (dx != 0.0f && canScrollX(node)) {
-        const float next = clampf(node.scrollX + dx, 0.0f, maxScrollX(node));
+        const float next = clampf(node.scrollX + dx, 0.0f, scrollMaxX(node));
         changed = next != node.scrollX || changed;
         node.scrollX = next;
     }
     if (dy != 0.0f && canScrollY(node)) {
-        const float next = clampf(node.scrollY + dy, 0.0f, maxScrollY(node));
+        const float next = clampf(node.scrollY + dy, 0.0f, scrollMaxY(node));
         changed = next != node.scrollY || changed;
         node.scrollY = next;
     }

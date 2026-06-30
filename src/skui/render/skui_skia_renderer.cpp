@@ -260,7 +260,7 @@ void SkiaRenderer::drawNode(SkCanvas& canvas, const Document& document, const No
                                node.scrollY > 0.0f;
     if (clipsChildren) {
         canvas.save();
-        canvas.clipRect(node.layout.sk(), SkClipOp::kIntersect, true);
+        canvas.clipRect(scrollContentClipRect(node).sk(), SkClipOp::kIntersect, true);
         canvas.translate(-node.scrollX, -node.scrollY);
     }
     for (const auto& child : node.children) {
@@ -326,22 +326,14 @@ void SkiaRenderer::drawProgress(SkCanvas& canvas, const Node& node) {
 }
 
 void SkiaRenderer::drawScrollbars(SkCanvas& canvas, const Node& node) {
-    constexpr float kThickness = 6.0f;
-    constexpr float kInset = 4.0f;
-    constexpr float kMinThumb = 24.0f;
-
     if (node.layout.w <= 0.0f || node.layout.h <= 0.0f) {
         return;
     }
 
-    const float maxX = std::max(0.0f, node.scrollContentWidth - node.layout.w);
-    const float maxY = std::max(0.0f, node.scrollContentHeight - node.layout.h);
-    const bool showX = (node.style.overflowX == Overflow::Scroll ||
-                        (node.style.overflowX == Overflow::Auto && maxX > 0.0f)) &&
-                       node.scrollContentWidth > node.layout.w;
-    const bool showY = (node.style.overflowY == Overflow::Scroll ||
-                        (node.style.overflowY == Overflow::Auto && maxY > 0.0f)) &&
-                       node.scrollContentHeight > node.layout.h;
+    const float maxX = scrollMaxX(node);
+    const float maxY = scrollMaxY(node);
+    const bool showX = shouldShowScrollbarX(node) && node.scrollContentWidth > scrollViewportWidth(node);
+    const bool showY = shouldShowScrollbarY(node) && node.scrollContentHeight > scrollViewportHeight(node);
     if (!showX && !showY) {
         return;
     }
@@ -349,44 +341,44 @@ void SkiaRenderer::drawScrollbars(SkCanvas& canvas, const Node& node) {
     SkPaint thumb = fill(SkColorSetRGB(184, 195, 208));
 
     if (showY) {
-        const float trackTop = node.layout.y + kInset;
-        const float trackBottom = node.layout.y + node.layout.h - kInset - (showX ? kThickness + kInset : 0.0f);
+        const float trackTop = node.layout.y + kSkuiScrollbarInset;
+        const float trackBottom = node.layout.y + node.layout.h - kSkuiScrollbarInset - (showX ? kSkuiScrollbarThickness + kSkuiScrollbarInset : 0.0f);
         const float trackHeight = std::max(0.0f, trackBottom - trackTop);
         if (trackHeight > 0.0f) {
-            const float ratio = node.scrollContentHeight <= 0.0f ? 1.0f : node.layout.h / node.scrollContentHeight;
-            const float thumbHeight = clampf(trackHeight * ratio, std::min(kMinThumb, trackHeight), trackHeight);
+            const float ratio = node.scrollContentHeight <= 0.0f ? 1.0f : scrollViewportHeight(node) / node.scrollContentHeight;
+            const float thumbHeight = clampf(trackHeight * ratio, std::min(kSkuiScrollbarMinThumb, trackHeight), trackHeight);
             const float travel = std::max(0.0f, trackHeight - thumbHeight);
             const float thumbTop = trackTop + (maxY <= 0.0f ? 0.0f : node.scrollY / maxY * travel);
-            const SkRect trackRect = SkRect::MakeXYWH(node.layout.x + node.layout.w - kInset - kThickness,
+            const SkRect trackRect = SkRect::MakeXYWH(node.layout.x + node.layout.w - kSkuiScrollbarInset - kSkuiScrollbarThickness,
                                                       trackTop,
-                                                      kThickness,
+                                                      kSkuiScrollbarThickness,
                                                       trackHeight);
             const SkRect thumbRect = SkRect::MakeXYWH(trackRect.x(),
                                                       thumbTop,
-                                                      kThickness,
+                                                      kSkuiScrollbarThickness,
                                                       thumbHeight);
-            canvas.drawRRect(SkRRect::MakeRectXY(thumbRect, kThickness * 0.5f, kThickness * 0.5f), thumb);
+            canvas.drawRRect(SkRRect::MakeRectXY(thumbRect, kSkuiScrollbarThickness * 0.5f, kSkuiScrollbarThickness * 0.5f), thumb);
         }
     }
 
     if (showX) {
-        const float trackLeft = node.layout.x + kInset;
-        const float trackRight = node.layout.x + node.layout.w - kInset - (showY ? kThickness + kInset : 0.0f);
+        const float trackLeft = node.layout.x + kSkuiScrollbarInset;
+        const float trackRight = node.layout.x + node.layout.w - kSkuiScrollbarInset - (showY ? kSkuiScrollbarThickness + kSkuiScrollbarInset : 0.0f);
         const float trackWidth = std::max(0.0f, trackRight - trackLeft);
         if (trackWidth > 0.0f) {
-            const float ratio = node.scrollContentWidth <= 0.0f ? 1.0f : node.layout.w / node.scrollContentWidth;
-            const float thumbWidth = clampf(trackWidth * ratio, std::min(kMinThumb, trackWidth), trackWidth);
+            const float ratio = node.scrollContentWidth <= 0.0f ? 1.0f : scrollViewportWidth(node) / node.scrollContentWidth;
+            const float thumbWidth = clampf(trackWidth * ratio, std::min(kSkuiScrollbarMinThumb, trackWidth), trackWidth);
             const float travel = std::max(0.0f, trackWidth - thumbWidth);
             const float thumbLeft = trackLeft + (maxX <= 0.0f ? 0.0f : node.scrollX / maxX * travel);
             const SkRect trackRect = SkRect::MakeXYWH(trackLeft,
-                                                      node.layout.y + node.layout.h - kInset - kThickness,
+                                                      node.layout.y + node.layout.h - kSkuiScrollbarInset - kSkuiScrollbarThickness,
                                                       trackWidth,
-                                                      kThickness);
+                                                      kSkuiScrollbarThickness);
             const SkRect thumbRect = SkRect::MakeXYWH(thumbLeft,
                                                       trackRect.y(),
                                                       thumbWidth,
-                                                      kThickness);
-            canvas.drawRRect(SkRRect::MakeRectXY(thumbRect, kThickness * 0.5f, kThickness * 0.5f), thumb);
+                                                      kSkuiScrollbarThickness);
+            canvas.drawRRect(SkRRect::MakeRectXY(thumbRect, kSkuiScrollbarThickness * 0.5f, kSkuiScrollbarThickness * 0.5f), thumb);
         }
     }
 }

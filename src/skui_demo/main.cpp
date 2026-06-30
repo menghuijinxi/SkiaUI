@@ -92,9 +92,10 @@ constexpr std::string_view kAttrCols[] = {
 };
 constexpr int kAttrPoolRowCount = 18;
 constexpr int kAttrTotalRows = 100000;
-constexpr int kAttrHeaderHeight = 40;
-constexpr int kAttrRowHeight = 36;
+constexpr int kAttrHeaderHeight = 42;
+constexpr int kAttrRowHeight = 40;
 constexpr int kAttrVirtualHeight = kAttrHeaderHeight + kAttrTotalRows * kAttrRowHeight;
+constexpr int kAttrVirtualWidth = 1404;
 constexpr std::string_view kPropertyLayers[] = {
     "地块边界.shp",
     "道路中心线.shp",
@@ -105,14 +106,14 @@ constexpr int kPropertyPanelLeft = 134;
 constexpr int kPropertyPanelMinWidth = 500;
 constexpr int kPropertyPanelDefaultWidth = 610;
 constexpr int kPropertyContentLeft = 160;
-constexpr int kAttrRowGutterWidth = 34;
+constexpr int kAttrRowGutterWidth = 44;
 constexpr int kPropertyContentInset = 26;
 constexpr int kPropertyRightGap = 8;
 constexpr int kPropertyTableBaseTop = 258;
 constexpr int kPropertyToolbarButtonHeight = 39;
 constexpr int kPropertyToolbarGap = 8;
 constexpr int kPropertyToolbarBaseHeight = 42;
-constexpr int kPropertySelectedCardOffset = 322;
+constexpr int kPropertySelectedCardOffset = 360;
 constexpr int kPropertySelectedTitleOffset = 14;
 constexpr int kPropertySelectedValueOffset = 64;
 constexpr int kPropertySelectedTypeOffset = 110;
@@ -136,6 +137,7 @@ struct PropertyDemoState {
 
 PropertyDemoState gPropertyState;
 
+void setPropertyPanelWidth(skui::Runtime& runtime, int width);
 void refreshAttrWindow(skui::Runtime& runtime, float scrollY);
 
 COLORREF colorRefFromSkColor(SkColor color) {
@@ -368,7 +370,7 @@ std::string attrCellType(std::string_view col) {
 }
 
 int propertyToolbarHeight(int width) {
-    constexpr int toolWidths[] = {86, 86, 74, 74, 84, 42, 42};
+    constexpr int toolWidths[] = {100, 100, 88, 88, 98, 78, 78};
     int rows = 1;
     int lineWidth = 0;
     for (const int toolWidth : toolWidths) {
@@ -392,6 +394,9 @@ void showPage(skui::Runtime& runtime, std::string_view page) {
     if (page == "properties") {
         runtime.addClassById("layer-page", "page-hidden");
         runtime.removeClassById("properties-page", "page-hidden");
+        runtime.setAttributesById({{"property-table-viewport", "data-virtual-width", std::to_string(kAttrVirtualWidth)},
+                                   {"property-table-viewport", "data-virtual-height", std::to_string(kAttrVirtualHeight)}});
+        setPropertyPanelWidth(runtime, gPropertyState.panelWidth);
         refreshAttrWindow(runtime, gPropertyState.attrScrollY);
     } else {
         runtime.removeClassById("layer-page", "page-hidden");
@@ -748,6 +753,9 @@ void applyExportState(skui::Runtime& runtime, const std::wstring& state, float d
     } else if (state == L"properties-min") {
         clickAt(runtime, 63.0f, 557.0f, dpiScale);
         setPropertyPanelWidth(runtime, kPropertyPanelMinWidth);
+    } else if (state == L"properties-hidden") {
+        clickAt(runtime, 63.0f, 557.0f, dpiScale);
+        clickAt(runtime, 292.0f, 272.0f, dpiScale);
     }
 }
 

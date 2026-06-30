@@ -131,8 +131,8 @@ void updateScrollMetrics(Node& node) {
     node.scrollContentHeight = node.virtualContentHeight > 0.0f
         ? std::max(node.layout.h, node.virtualContentHeight)
         : std::max(node.layout.h, measuredContentHeight);
-    node.scrollX = clampf(node.scrollX, 0.0f, std::max(0.0f, node.scrollContentWidth - node.layout.w));
-    node.scrollY = clampf(node.scrollY, 0.0f, std::max(0.0f, node.scrollContentHeight - node.layout.h));
+    node.scrollX = clampf(node.scrollX, 0.0f, scrollMaxX(node));
+    node.scrollY = clampf(node.scrollY, 0.0f, scrollMaxY(node));
 }
 
 void LayoutEngine::layout(Document& document, float width, float height) {

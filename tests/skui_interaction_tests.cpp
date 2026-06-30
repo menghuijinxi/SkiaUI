@@ -1055,6 +1055,64 @@ int main() {
     ok = expect(horizontalScrolled == solidColor(0x77, 0x88, 0x99), "Shift+mouse wheel should scroll horizontal overflow content") && ok;
     ok = expect(verticalTrackScrolled == solidColor(0xAB, 0xCD, 0xEF), "clicking vertical scrollbar track should update scroll position") && ok;
 
+    constexpr std::string_view stableScrollbarHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      position: relative;
+      width: 140px;
+      height: 90px;
+      background-color: #000000;
+    }
+    .stable {
+      position: absolute;
+      left: 10px;
+      top: 10px;
+      width: 50px;
+      height: 40px;
+      overflow-y: auto;
+      overflow-x: hidden;
+      scrollbar-gutter: stable;
+      background-color: #111111;
+    }
+    .fill {
+      position: absolute;
+      left: 0px;
+      top: 0px;
+      width: 50px;
+      height: 80px;
+      background-color: #abcdef;
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <div class="stable">
+      <div class="fill"></div>
+    </div>
+  </div>
+</body>
+</html>
+)html";
+
+    skui::Runtime stableScrollbarRuntime(options);
+    stableScrollbarRuntime.resize(kWidth, kHeight, 1.0f);
+    if (!stableScrollbarRuntime.loadDocumentFromString(stableScrollbarHtml, "")) {
+        std::cerr << "stable scrollbar load failed: " << stableScrollbarRuntime.lastError() << "\n";
+        return 1;
+    }
+    uint32_t stableContent = 0;
+    uint32_t stableGutter = 0;
+    uint32_t stableThumb = 0;
+    ok = renderPixel(stableScrollbarRuntime, 20, 20, stableContent) && ok;
+    ok = renderPixel(stableScrollbarRuntime, 52, 45, stableGutter) && ok;
+    ok = renderPixel(stableScrollbarRuntime, 55, 25, stableThumb) && ok;
+    ok = expect(stableContent == solidColor(0xAB, 0xCD, 0xEF), "stable scrollbar container should still render visible child content") && ok;
+    ok = expect(stableGutter == solidColor(0x11, 0x11, 0x11), "scrollbar-gutter stable should reserve space outside child content") && ok;
+    ok = expect(stableThumb == solidColor(0xB8, 0xC3, 0xD0), "scrollbar-gutter stable should still render a vertical thumb") && ok;
+
     constexpr std::string_view textareaHtml = R"html(
 <!doctype html>
 <html>

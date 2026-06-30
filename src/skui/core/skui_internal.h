@@ -140,6 +140,7 @@ struct Style {
         bool backgroundGradient = false;
         bool overflowX = false;
         bool overflowY = false;
+        bool scrollbarGutter = false;
         bool pointerEvents = false;
         bool cursor = false;
     };
@@ -174,6 +175,7 @@ struct Style {
     Gradient backgroundGradient;
     Overflow overflowX = Overflow::Visible;
     Overflow overflowY = Overflow::Visible;
+    bool scrollbarGutterStable = false;
     PointerEvents pointerEvents = PointerEvents::Auto;
     Cursor cursor = Cursor::Auto;
 };
@@ -355,6 +357,17 @@ SkColor parseColor(std::string_view value, SkColor fallback);
 float clampf(float value, float lo, float hi);
 std::string trim(std::string_view value);
 std::vector<std::string> splitWhitespace(std::string_view value);
+constexpr float kSkuiScrollbarThickness = 6.0f;
+constexpr float kSkuiScrollbarInset = 4.0f;
+constexpr float kSkuiScrollbarMinThumb = 24.0f;
+constexpr float kSkuiScrollbarGutter = kSkuiScrollbarThickness + kSkuiScrollbarInset * 2.0f;
+float scrollViewportWidth(const Node& node);
+float scrollViewportHeight(const Node& node);
+float scrollMaxX(const Node& node);
+float scrollMaxY(const Node& node);
+bool shouldShowScrollbarX(const Node& node);
+bool shouldShowScrollbarY(const Node& node);
+Rect scrollContentClipRect(const Node& node);
 void parseInlineStyle(std::string_view declarations, Style& style);
 void recomputeStyles(Document& document, const RuntimeOptions& options, float viewportWidth = 0.0f, float viewportHeight = 0.0f);
 

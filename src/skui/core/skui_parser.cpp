@@ -459,6 +459,10 @@ void mergeStyle(Style& target, const Style& source) {
         target.overflowY = source.overflowY;
         target.flags.overflowY = true;
     }
+    if (f.scrollbarGutter) {
+        target.scrollbarGutterStable = source.scrollbarGutterStable;
+        target.flags.scrollbarGutter = true;
+    }
     if (f.pointerEvents) {
         target.pointerEvents = source.pointerEvents;
         target.flags.pointerEvents = true;
@@ -1004,6 +1008,9 @@ void applyDeclaration(Style& style, std::string_view rawName, std::string_view r
             style.overflowY = *overflow;
             style.flags.overflowY = true;
         }
+    } else if (name == "scrollbar-gutter") {
+        style.scrollbarGutterStable = lower(value).find("stable") != std::string::npos;
+        style.flags.scrollbarGutter = true;
     } else if (name == "pointer-events") {
         style.pointerEvents = lower(value) == "none" ? PointerEvents::None : PointerEvents::Auto;
         style.flags.pointerEvents = true;
