@@ -135,6 +135,39 @@ RuntimeOptions withPlatformCallbacks(RuntimeOptions options) {
     return options;
 }
 
+HCURSOR cursorHandle(Cursor cursor) {
+    LPCWSTR id = IDC_ARROW;
+    switch (cursor) {
+    case Cursor::Pointer:
+        id = IDC_HAND;
+        break;
+    case Cursor::Text:
+        id = IDC_IBEAM;
+        break;
+    case Cursor::EWResize:
+        id = IDC_SIZEWE;
+        break;
+    case Cursor::NSResize:
+        id = IDC_SIZENS;
+        break;
+    case Cursor::Move:
+        id = IDC_SIZEALL;
+        break;
+    case Cursor::Crosshair:
+        id = IDC_CROSS;
+        break;
+    case Cursor::NotAllowed:
+        id = IDC_NO;
+        break;
+    case Cursor::Auto:
+    case Cursor::Default:
+    default:
+        id = IDC_ARROW;
+        break;
+    }
+    return LoadCursorW(nullptr, id);
+}
+
 std::wstring imeCompositionString(HWND hwnd, DWORD index) {
     HIMC context = ImmGetContext(hwnd);
     if (!context) {
@@ -255,6 +288,7 @@ private:
     int presentedHeight_ = 0;
     bool trackingMouseLeave_ = false;
     std::wstring suppressedImeChars_;
+    HCURSOR currentCursor_ = nullptr;
 
     static Impl* get(HWND hwnd) {
         return reinterpret_cast<Impl*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
@@ -275,10 +309,22 @@ private:
             event.y = static_cast<float>(GET_Y_LPARAM(lParam));
         }
         runtime_.handleEvent(event);
+        updateCursor();
         if (runtime_.dirty()) {
             markFrameDirty();
             requestRepaint(hwnd, false);
         }
+    }
+
+    void updateCursor() {
+        HCURSOR next = cursorHandle(runtime_.cursor());
+        if (!next) {
+            next = LoadCursorW(nullptr, IDC_ARROW);
+        }
+        if (next != currentCursor_) {
+            currentCursor_ = next;
+        }
+        SetCursor(currentCursor_);
     }
 
     void sendWheelEvent(HWND hwnd, WPARAM wParam, LPARAM lParam, bool horizontal) {
@@ -422,6 +468,12 @@ private:
             app->trackingMouseLeave_ = false;
             app->sendMouseEvent(hwnd, EventType::MouseLeave, lParam);
             return 0;
+        case WM_SETCURSOR:
+            if (LOWORD(lParam) == HTCLIENT) {
+                app->updateCursor();
+                return TRUE;
+            }
+            break;
         case WM_LBUTTONDOWN:
             SetCapture(hwnd);
             app->sendMouseEvent(hwnd, EventType::MouseDown, lParam, MouseButton::Left);

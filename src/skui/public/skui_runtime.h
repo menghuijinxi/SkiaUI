@@ -44,8 +44,21 @@ enum class MouseButton {
     Right
 };
 
+enum class Cursor {
+    Auto,
+    Default,
+    Pointer,
+    Text,
+    EWResize,
+    NSResize,
+    Move,
+    Crosshair,
+    NotAllowed
+};
+
 enum class ElementEventType {
     MouseDown,
+    MouseMove,
     MouseUp,
     Click,
     Input
@@ -67,6 +80,11 @@ struct ElementEvent {
 using ElementEventCallback = std::function<void(const ElementEvent&)>;
 using ClipboardReadCallback = std::function<std::string()>;
 using ClipboardWriteCallback = std::function<void(std::string_view)>;
+
+struct StyleUpdate {
+    std::string id;
+    std::string declarations;
+};
 
 struct RuntimeOptions {
     std::string assetRoot;
@@ -113,6 +131,8 @@ public:
     bool addClassById(std::string_view id, std::string_view className);
     bool removeClassById(std::string_view id, std::string_view className);
     bool setStyleById(std::string_view id, std::string_view declarations);
+    bool setStylesById(const std::vector<StyleUpdate>& updates);
+    bool setTextById(std::string_view id, std::string_view text);
     bool setAttributeById(std::string_view id, std::string_view name, std::string_view value);
     bool removeAttributeById(std::string_view id, std::string_view name);
     [[nodiscard]] bool hasClassById(std::string_view id, std::string_view className) const;
@@ -121,6 +141,7 @@ public:
     [[nodiscard]] int width() const;
     [[nodiscard]] int height() const;
     [[nodiscard]] float dpiScale() const;
+    [[nodiscard]] Cursor cursor() const;
     [[nodiscard]] bool dirty() const;
     [[nodiscard]] std::string lastError() const;
     void clearDirty();

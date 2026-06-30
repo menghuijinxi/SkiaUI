@@ -455,6 +455,14 @@ void mergeStyle(Style& target, const Style& source) {
         target.overflowY = source.overflowY;
         target.flags.overflowY = true;
     }
+    if (f.pointerEvents) {
+        target.pointerEvents = source.pointerEvents;
+        target.flags.pointerEvents = true;
+    }
+    if (f.cursor) {
+        target.cursor = source.cursor;
+        target.flags.cursor = true;
+    }
 }
 
 Style defaultStyleForNode(const Node& node) {
@@ -660,6 +668,9 @@ void applyInheritedStyle(Node& node, const RuntimeOptions& options) {
         if (!node.style.flags.fontBold) {
             node.style.fontBold = parent.fontBold;
         }
+        if (!node.style.flags.cursor) {
+            node.style.cursor = parent.cursor;
+        }
     }
 
     if (node.tag == "text" || node.tag == "span" || node.tag == "label" || node.tag == "button" ||
@@ -745,6 +756,38 @@ std::optional<Overflow> parseOverflow(std::string_view raw) {
     }
     if (value == "visible") {
         return Overflow::Visible;
+    }
+    return std::nullopt;
+}
+
+std::optional<Cursor> parseCursor(std::string_view raw) {
+    const std::string value = lower(trim(raw));
+    if (value == "auto") {
+        return Cursor::Auto;
+    }
+    if (value == "default") {
+        return Cursor::Default;
+    }
+    if (value == "pointer") {
+        return Cursor::Pointer;
+    }
+    if (value == "text") {
+        return Cursor::Text;
+    }
+    if (value == "ew-resize" || value == "col-resize" || value == "e-resize" || value == "w-resize") {
+        return Cursor::EWResize;
+    }
+    if (value == "ns-resize" || value == "row-resize" || value == "n-resize" || value == "s-resize") {
+        return Cursor::NSResize;
+    }
+    if (value == "move") {
+        return Cursor::Move;
+    }
+    if (value == "crosshair") {
+        return Cursor::Crosshair;
+    }
+    if (value == "not-allowed") {
+        return Cursor::NotAllowed;
     }
     return std::nullopt;
 }
@@ -952,6 +995,14 @@ void applyDeclaration(Style& style, std::string_view rawName, std::string_view r
         if (std::optional<Overflow> overflow = parseOverflow(value)) {
             style.overflowY = *overflow;
             style.flags.overflowY = true;
+        }
+    } else if (name == "pointer-events") {
+        style.pointerEvents = lower(value) == "none" ? PointerEvents::None : PointerEvents::Auto;
+        style.flags.pointerEvents = true;
+    } else if (name == "cursor") {
+        if (std::optional<Cursor> cursor = parseCursor(value)) {
+            style.cursor = *cursor;
+            style.flags.cursor = true;
         }
     }
 }

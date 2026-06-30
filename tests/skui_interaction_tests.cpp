@@ -205,6 +205,70 @@ int main() {
     ok = expect(lastAction == "tile-click", "click action should be routed from data-action") && ok;
     ok = expect(runtime.hasClassById("tile", "selected"), "click callback should be able to mutate classes") && ok;
     ok = expect(selected != normal, "class mutation after click should repaint") && ok;
+    ok = runtime.setTextById("tile", "label") && ok;
+    int actionMoves = 0;
+    runtime.setElementEventCallback([&](const skui::ElementEvent& event) {
+        if (event.type == skui::ElementEventType::MouseMove && event.action == "tile-click") {
+            ++actionMoves;
+        }
+    });
+    sendMouse(runtime, skui::EventType::MouseMove, 20.0f, 20.0f);
+    ok = expect(actionMoves == 1, "mouse move should be emitted for data-action elements") && ok;
+
+    constexpr std::string_view pointerEventsHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .base {
+      position: absolute;
+      left: 0px;
+      top: 0px;
+      width: 100px;
+      height: 60px;
+      background-color: #112233;
+    }
+    .base:hover {
+      background-color: #445566;
+    }
+    .overlay {
+      position: absolute;
+      left: 0px;
+      top: 0px;
+      width: 100px;
+      height: 60px;
+      pointer-events: none;
+      background-color: rgba(255,255,255,0);
+    }
+  </style>
+</head>
+<body>
+  <div id="base" class="base" data-action="base-click"></div>
+  <div class="overlay"></div>
+</body>
+</html>
+)html";
+    skui::Runtime pointerEventsRuntime(options);
+    pointerEventsRuntime.resize(kWidth, kHeight, 1.0f);
+    if (!pointerEventsRuntime.loadDocumentFromString(pointerEventsHtml, "")) {
+        std::cerr << "pointer-events load failed: " << pointerEventsRuntime.lastError() << "\n";
+        return 1;
+    }
+    int pointerEventsClicks = 0;
+    pointerEventsRuntime.setElementEventCallback([&](const skui::ElementEvent& event) {
+        if (event.type == skui::ElementEventType::Click && event.action == "base-click") {
+            ++pointerEventsClicks;
+        }
+    });
+    uint32_t pointerEventsNormal = 0;
+    uint32_t pointerEventsHover = 0;
+    ok = renderPixel(pointerEventsRuntime, 20, 20, pointerEventsNormal) && ok;
+    sendMouse(pointerEventsRuntime, skui::EventType::MouseMove, 20.0f, 20.0f);
+    ok = renderPixel(pointerEventsRuntime, 20, 20, pointerEventsHover) && ok;
+    sendMouse(pointerEventsRuntime, skui::EventType::MouseDown, 20.0f, 20.0f);
+    sendMouse(pointerEventsRuntime, skui::EventType::MouseUp, 20.0f, 20.0f);
+    ok = expect(pointerEventsNormal != pointerEventsHover, "pointer-events:none overlay should not block hover") && ok;
+    ok = expect(pointerEventsClicks == 1, "pointer-events:none overlay should not block click") && ok;
 
     constexpr std::string_view selectorHtml = R"html(
 <!doctype html>
@@ -620,6 +684,120 @@ int main() {
     ok = expect(halfOutside == solidColor(0x00, 0x00, 0x00), "percentage width should leave remaining parent area") && ok;
     ok = expect(mediaWide == solidColor(0x11, 0x11, 0x11), "media query should not match wide viewport") && ok;
     ok = expect(mediaNarrow == solidColor(0xAB, 0xCD, 0xEF), "media query should recompute after resize") && ok;
+
+    constexpr std::string_view cursorHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      position: relative;
+      width: 140px;
+      height: 90px;
+      background-color: #000000;
+    }
+    .resize {
+      position: absolute;
+      left: 10px;
+      top: 10px;
+      width: 20px;
+      height: 60px;
+      cursor: ew-resize;
+      background-color: #223344;
+    }
+    .pointer {
+      position: absolute;
+      left: 50px;
+      top: 10px;
+      width: 30px;
+      height: 30px;
+      cursor: pointer;
+      background-color: #445566;
+    }
+    .child {
+      width: 20px;
+      height: 20px;
+      background-color: #667788;
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <div class="resize"></div>
+    <div class="pointer">
+      <div class="child"></div>
+    </div>
+  </div>
+</body>
+</html>
+)html";
+
+    skui::Runtime cursorRuntime(options);
+    cursorRuntime.resize(kWidth, kHeight, 1.0f);
+    if (!cursorRuntime.loadDocumentFromString(cursorHtml, "")) {
+        std::cerr << "cursor load failed: " << cursorRuntime.lastError() << "\n";
+        return 1;
+    }
+    sendMouse(cursorRuntime, skui::EventType::MouseMove, 15.0f, 20.0f);
+    ok = expect(cursorRuntime.cursor() == skui::Cursor::EWResize, "cursor property should expose resize cursor on hover") && ok;
+    sendMouse(cursorRuntime, skui::EventType::MouseMove, 55.0f, 15.0f);
+    ok = expect(cursorRuntime.cursor() == skui::Cursor::Pointer, "cursor property should inherit to child hit targets") && ok;
+    sendMouse(cursorRuntime, skui::EventType::MouseMove, 120.0f, 80.0f);
+    ok = expect(cursorRuntime.cursor() == skui::Cursor::Default, "cursor should fall back to default outside styled nodes") && ok;
+
+    constexpr std::string_view batchStyleHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      position: relative;
+      width: 140px;
+      height: 90px;
+      background-color: #000000;
+    }
+    .a {
+      position: absolute;
+      left: 0px;
+      top: 0px;
+      width: 10px;
+      height: 10px;
+      background-color: #111111;
+    }
+    .b {
+      position: absolute;
+      left: 20px;
+      top: 0px;
+      width: 10px;
+      height: 10px;
+      background-color: #222222;
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <div id="box-a" class="a"></div>
+    <div id="box-b" class="b"></div>
+  </div>
+</body>
+</html>
+)html";
+
+    skui::Runtime batchRuntime(options);
+    batchRuntime.resize(kWidth, kHeight, 1.0f);
+    if (!batchRuntime.loadDocumentFromString(batchStyleHtml, "")) {
+        std::cerr << "batch style load failed: " << batchRuntime.lastError() << "\n";
+        return 1;
+    }
+    ok = expect(batchRuntime.setStylesById({{"box-a", "width:30px;height:20px;background-color:#abcdef;"},
+                                            {"box-b", "left:60px;width:30px;height:20px;background-color:#778899;"}}),
+                "batch style update should report success when at least one id is updated") && ok;
+    uint32_t batchA = 0;
+    uint32_t batchB = 0;
+    ok = renderPixel(batchRuntime, 25, 10, batchA) && ok;
+    ok = renderPixel(batchRuntime, 65, 10, batchB) && ok;
+    ok = expect(batchA == solidColor(0xAB, 0xCD, 0xEF), "batch style update should apply first node style") && ok;
+    ok = expect(batchB == solidColor(0x77, 0x88, 0x99), "batch style update should apply second node style") && ok;
 
     constexpr std::string_view scrollHtml = R"html(
 <!doctype html>

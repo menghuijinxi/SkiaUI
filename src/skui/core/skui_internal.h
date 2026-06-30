@@ -71,6 +71,11 @@ enum class Overflow {
     Scroll
 };
 
+enum class PointerEvents {
+    Auto,
+    None
+};
+
 enum class LengthUnit {
     Px,
     Percent,
@@ -134,6 +139,8 @@ struct Style {
         bool backgroundGradient = false;
         bool overflowX = false;
         bool overflowY = false;
+        bool pointerEvents = false;
+        bool cursor = false;
     };
 
     Flags flags;
@@ -165,6 +172,8 @@ struct Style {
     Gradient backgroundGradient;
     Overflow overflowX = Overflow::Visible;
     Overflow overflowY = Overflow::Visible;
+    PointerEvents pointerEvents = PointerEvents::Auto;
+    Cursor cursor = Cursor::Auto;
 };
 
 struct Node {

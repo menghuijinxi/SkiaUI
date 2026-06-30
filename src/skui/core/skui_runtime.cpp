@@ -40,7 +40,7 @@ Node* hitTest(Node& node, float x, float y) {
             return hit;
         }
     }
-    return &node;
+    return node.style.pointerEvents == PointerEvents::None ? nullptr : &node;
 }
 
 void collectChain(Node* node, std::vector<Node*>& out) {
@@ -164,6 +164,21 @@ Node* actionTarget(Node* leaf) {
         }
     }
     return nullptr;
+}
+
+Cursor cursorForNode(Node* leaf) {
+    if (!leaf) {
+        return Cursor::Default;
+    }
+    for (Node* current = leaf; current; current = current->parent) {
+        if (current->style.cursor != Cursor::Auto) {
+            return current->style.cursor;
+        }
+    }
+    if (inputTarget(leaf) || selectableTextTarget(leaf)) {
+        return Cursor::Text;
+    }
+    return Cursor::Default;
 }
 
 float maxScrollX(const Node& node) {
@@ -944,6 +959,7 @@ public:
     Node* scrollingNode = nullptr;
     ScrollbarAxis scrollingAxis = ScrollbarAxis::None;
     float scrollbarDragOffset = 0.0f;
+    Cursor currentCursor = Cursor::Default;
     std::string lastError;
 };
 
@@ -979,6 +995,7 @@ bool Runtime::loadDocument(const std::string& path) {
     impl_->scrollingNode = nullptr;
     impl_->scrollingAxis = ScrollbarAxis::None;
     impl_->scrollbarDragOffset = 0.0f;
+    impl_->currentCursor = Cursor::Default;
     impl_->lastError.clear();
     impl_->recomputeAndLayout();
     return true;
@@ -1008,6 +1025,7 @@ bool Runtime::loadDocumentFromString(std::string_view html, std::string_view bas
     impl_->scrollingNode = nullptr;
     impl_->scrollingAxis = ScrollbarAxis::None;
     impl_->scrollbarDragOffset = 0.0f;
+    impl_->currentCursor = Cursor::Default;
     impl_->lastError.clear();
     impl_->recomputeAndLayout();
     return true;
@@ -1043,12 +1061,23 @@ bool Runtime::handleEvent(const Event& event) {
     std::optional<ScrollbarHit> scrollbarHit = pointerEvent && event.type != EventType::MouseLeave
         ? scrollbarHitTest(*impl_->document.root, x, y)
         : std::nullopt;
+    if (pointerEvent) {
+        if (event.type == EventType::MouseLeave) {
+            impl_->currentCursor = Cursor::Default;
+        } else if (impl_->mousePressed && impl_->pressedLeaf) {
+            impl_->currentCursor = cursorForNode(impl_->pressedLeaf);
+        } else if (scrollbarHit) {
+            impl_->currentCursor = scrollbarHit->axis == ScrollbarAxis::Horizontal ? Cursor::EWResize : Cursor::NSResize;
+        } else {
+            impl_->currentCursor = cursorForNode(hit);
+        }
+    }
     bool consumed = false;
     bool stateChanged = false;
     bool textChanged = false;
 
     switch (event.type) {
-    case EventType::MouseMove:
+    case EventType::MouseMove: {
         if (impl_->scrollingNode && impl_->mousePressed) {
             const float pointer = impl_->scrollingAxis == ScrollbarAxis::Vertical ? y : x;
             stateChanged = updateScrollFromScrollbar(*impl_->scrollingNode,
@@ -1071,7 +1100,12 @@ bool Runtime::handleEvent(const Event& event) {
             impl_->hoveredLeaf = hit;
             stateChanged = true;
         }
+        Node* actionSource = impl_->mousePressed && impl_->pressedLeaf ? impl_->pressedLeaf : hit;
+        if (Node* target = actionTarget(actionSource); target && impl_->options.onElementEvent) {
+            impl_->options.onElementEvent(makeElementEvent(ElementEventType::MouseMove, *target, event, x, y));
+        }
         break;
+    }
     case EventType::MouseLeave:
         if (hit != impl_->hoveredLeaf) {
             impl_->hoveredLeaf = hit;
@@ -1495,6 +1529,46 @@ bool Runtime::setStyleById(std::string_view id, std::string_view declarations) {
     return true;
 }
 
+bool Runtime::setStylesById(const std::vector<StyleUpdate>& updates) {
+    if (!impl_->hasDocument || !impl_->document.root || updates.empty()) {
+        return false;
+    }
+    bool changed = false;
+    for (const StyleUpdate& update : updates) {
+        if (update.id.empty()) {
+            continue;
+        }
+        Node* node = findById(*impl_->document.root, update.id);
+        if (!node) {
+            continue;
+        }
+        node->inlineStyle = {};
+        parseInlineStyle(update.declarations, node->inlineStyle);
+        node->attributes["style"] = update.declarations;
+        changed = true;
+    }
+    if (!changed) {
+        return false;
+    }
+    impl_->recomputeAndLayout();
+    impl_->dirty = true;
+    return true;
+}
+
+bool Runtime::setTextById(std::string_view id, std::string_view text) {
+    if (!impl_->hasDocument || !impl_->document.root || id.empty()) {
+        return false;
+    }
+    Node* node = findById(*impl_->document.root, id);
+    if (!node) {
+        return false;
+    }
+    node->text = std::string(text);
+    impl_->recomputeAndLayout();
+    impl_->dirty = true;
+    return true;
+}
+
 bool Runtime::setAttributeById(std::string_view id, std::string_view name, std::string_view value) {
     if (!impl_->hasDocument || !impl_->document.root || id.empty() || name.empty()) {
         return false;
@@ -1582,6 +1656,10 @@ int Runtime::height() const {
 
 float Runtime::dpiScale() const {
     return impl_->dpiScale;
+}
+
+Cursor Runtime::cursor() const {
+    return impl_->currentCursor;
 }
 
 bool Runtime::dirty() const {
