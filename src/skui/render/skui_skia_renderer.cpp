@@ -1,5 +1,7 @@
 #include "skui_internal.h"
 
+#include "perf_trace.h"
+
 #include "include/core/SkCanvas.h"
 #include "include/core/SkPaint.h"
 #include "include/core/SkPoint.h"
@@ -229,6 +231,20 @@ SkPaint SkiaRenderer::backgroundPaint(const Node& node) const {
 }
 
 void SkiaRenderer::draw(Document& document, SkCanvas& canvas, int width, int height, float dpiScale) {
+    const bool traceEnabled = perf::Trace::enabled();
+    const auto traceStart = traceEnabled ? perf::Trace::now() : perf::Trace::Clock::time_point{};
+    traceRender_ = traceEnabled;
+    traceBoxMs_ = 0.0;
+    traceProgressMs_ = 0.0;
+    traceImageMs_ = 0.0;
+    traceSvgMs_ = 0.0;
+    traceSelectionMs_ = 0.0;
+    traceTextMs_ = 0.0;
+    traceCaretMs_ = 0.0;
+    traceScrollbarMs_ = 0.0;
+    traceTextCount_ = 0;
+    traceSvgCount_ = 0;
+    traceNodeCount_ = 0;
     canvas.clear(options_.clearColor);
     const float scale = std::max(0.1f, dpiScale);
     canvas.save();
@@ -237,30 +253,94 @@ void SkiaRenderer::draw(Document& document, SkCanvas& canvas, int width, int hei
         drawNode(canvas, document, *document.root);
     }
     canvas.restore();
+    if (traceEnabled) {
+        std::ostringstream detail;
+        detail << "nodes=" << traceNodeCount_
+               << ";texts=" << traceTextCount_
+               << ";svgs=" << traceSvgCount_
+               << ";box_ms=" << traceBoxMs_
+               << ";progress_ms=" << traceProgressMs_
+               << ";image_ms=" << traceImageMs_
+               << ";svg_ms=" << traceSvgMs_
+               << ";selection_ms=" << traceSelectionMs_
+               << ";text_ms=" << traceTextMs_
+               << ";caret_ms=" << traceCaretMs_
+               << ";scrollbar_ms=" << traceScrollbarMs_;
+        perf::Trace::write("skui_render", "draw_breakdown", width, height, perf::Trace::elapsedMs(traceStart), detail.str());
+        perf::Trace::write("skui_render", "draw_total", width, height, perf::Trace::elapsedMs(traceStart));
+    }
+    traceRender_ = false;
 }
 
 void SkiaRenderer::drawNode(SkCanvas& canvas, const Document& document, const Node& node) {
     if (node.style.display == Display::None) {
         return;
     }
-
-    drawBox(canvas, node);
-    drawProgress(canvas, node);
-    drawImage(canvas, document, node);
-    drawInlineSvg(canvas, node);
-    drawSelectableSelection(canvas, node);
-    drawInputSelection(canvas, node);
-    drawText(canvas, node);
-    drawInputCompositionUnderline(canvas, node);
-    drawInputCaret(canvas, node);
+    if (traceRender_) {
+        ++traceNodeCount_;
+    }
 
     const bool clipsChildren = node.style.overflowX != Overflow::Visible ||
                                node.style.overflowY != Overflow::Visible ||
                                node.scrollX > 0.0f ||
                                node.scrollY > 0.0f;
+    const bool rejected = node.layout.w > 0.0f &&
+                          node.layout.h > 0.0f &&
+                          canvas.quickReject(node.layout.sk());
+    if (rejected && (node.children.empty() || clipsChildren)) {
+        return;
+    }
+
+    if (!rejected) {
+        auto start = traceRender_ ? perf::Trace::now() : perf::Trace::Clock::time_point{};
+        drawBox(canvas, node);
+        if (traceRender_) {
+            traceBoxMs_ += perf::Trace::elapsedMs(start);
+            start = perf::Trace::now();
+        }
+        drawProgress(canvas, node);
+        if (traceRender_) {
+            traceProgressMs_ += perf::Trace::elapsedMs(start);
+            start = perf::Trace::now();
+        }
+        drawImage(canvas, document, node);
+        if (traceRender_) {
+            traceImageMs_ += perf::Trace::elapsedMs(start);
+            start = perf::Trace::now();
+        }
+        drawInlineSvg(canvas, node);
+        if (traceRender_) {
+            traceSvgMs_ += perf::Trace::elapsedMs(start);
+            start = perf::Trace::now();
+        }
+        drawSelectableSelection(canvas, node);
+        drawInputSelection(canvas, node);
+        if (traceRender_) {
+            traceSelectionMs_ += perf::Trace::elapsedMs(start);
+            start = perf::Trace::now();
+        }
+        drawText(canvas, node);
+        if (traceRender_) {
+            traceTextMs_ += perf::Trace::elapsedMs(start);
+            start = perf::Trace::now();
+        }
+        drawInputCompositionUnderline(canvas, node);
+        drawInputCaret(canvas, node);
+        if (traceRender_) {
+            traceCaretMs_ += perf::Trace::elapsedMs(start);
+        }
+    }
+
     if (clipsChildren) {
+        const Rect contentClip = scrollContentClipRect(node);
         canvas.save();
-        canvas.clipRect(scrollContentClipRect(node).sk(), SkClipOp::kIntersect, true);
+        if (node.style.borderRadius > 0.0f) {
+            canvas.clipRRect(SkRRect::MakeRectXY(contentClip.sk(), node.style.borderRadius, node.style.borderRadius),
+                             SkClipOp::kIntersect,
+                             true);
+        } else {
+            canvas.clipRect(contentClip.sk(), SkClipOp::kIntersect, true);
+        }
         canvas.translate(-node.scrollX, -node.scrollY);
     }
     for (const auto& child : node.children) {
@@ -269,7 +349,11 @@ void SkiaRenderer::drawNode(SkCanvas& canvas, const Document& document, const No
     if (clipsChildren) {
         canvas.restore();
     }
+    const auto scrollbarStart = traceRender_ ? perf::Trace::now() : perf::Trace::Clock::time_point{};
     drawScrollbars(canvas, node);
+    if (traceRender_) {
+        traceScrollbarMs_ += perf::Trace::elapsedMs(scrollbarStart);
+    }
 }
 
 void SkiaRenderer::drawBox(SkCanvas& canvas, const Node& node) {
@@ -291,13 +375,28 @@ void SkiaRenderer::drawBox(SkCanvas& canvas, const Node& node) {
     if (node.style.borderStyle == BorderStyle::Solid &&
         node.style.borderWidth > 0.0f &&
         SkColorGetA(borderColor) > 0) {
-        const float half = node.style.borderWidth * 0.5f;
-        const SkRect border = SkRect::MakeXYWH(r.x + half, r.y + half, std::max(0.0f, r.w - node.style.borderWidth), std::max(0.0f, r.h - node.style.borderWidth));
         if (node.style.borderRadius > 0.0f) {
+            const float half = node.style.borderWidth * 0.5f;
+            const SkRect border = SkRect::MakeXYWH(r.x + half,
+                                                   r.y + half,
+                                                   std::max(0.0f, r.w - node.style.borderWidth),
+                                                   std::max(0.0f, r.h - node.style.borderWidth));
             canvas.drawRRect(SkRRect::MakeRectXY(border, node.style.borderRadius, node.style.borderRadius),
                              stroke(borderColor, node.style.borderWidth));
         } else {
-            canvas.drawRect(border, stroke(borderColor, node.style.borderWidth));
+            SkPaint borderPaint = fill(borderColor);
+            borderPaint.setAntiAlias(false);
+            const float bw = std::min(node.style.borderWidth, std::min(r.w, r.h) * 0.5f);
+            if (bw > 0.0f) {
+                canvas.drawRect(SkRect::MakeXYWH(r.x, r.y, r.w, bw), borderPaint);
+                canvas.drawRect(SkRect::MakeXYWH(r.x, r.y + r.h - bw, r.w, bw), borderPaint);
+                canvas.drawRect(SkRect::MakeXYWH(r.x, r.y + bw, bw, std::max(0.0f, r.h - bw * 2.0f)), borderPaint);
+                canvas.drawRect(SkRect::MakeXYWH(r.x + r.w - bw,
+                                                 r.y + bw,
+                                                 bw,
+                                                 std::max(0.0f, r.h - bw * 2.0f)),
+                                borderPaint);
+            }
         }
     }
 }
@@ -392,12 +491,18 @@ void SkiaRenderer::drawImage(SkCanvas& canvas, const Document& document, const N
     if (!svg || svg->empty()) {
         return;
     }
+    if (traceRender_) {
+        ++traceSvgCount_;
+    }
     drawSvgMarkup(canvas, *svg, node.layout, node.style.color);
 }
 
 void SkiaRenderer::drawInlineSvg(SkCanvas& canvas, const Node& node) {
     if (node.tag != "svg" || node.svgMarkup.empty()) {
         return;
+    }
+    if (traceRender_) {
+        ++traceSvgCount_;
     }
     drawSvgMarkup(canvas, node.svgMarkup, node.layout, node.style.color);
 }
@@ -547,6 +652,9 @@ void SkiaRenderer::drawText(SkCanvas& canvas, const Node& node) {
     }
     if (value.empty()) {
         return;
+    }
+    if (traceRender_) {
+        ++traceTextCount_;
     }
 
     if (textarea) {

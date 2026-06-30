@@ -1,5 +1,7 @@
 #include "skui_internal.h"
 
+#include "perf_trace.h"
+
 #include <algorithm>
 #include <cctype>
 
@@ -94,6 +96,14 @@ void setEdge(YGNodeRef node,
 }  // namespace
 
 void updateScrollMetrics(Node& node) {
+    if (node.virtualContentWidth > 0.0f && node.virtualContentHeight > 0.0f) {
+        node.scrollContentWidth = std::max(node.layout.w, node.virtualContentWidth);
+        node.scrollContentHeight = std::max(node.layout.h, node.virtualContentHeight);
+        node.scrollX = clampf(node.scrollX, 0.0f, scrollMaxX(node));
+        node.scrollY = clampf(node.scrollY, 0.0f, scrollMaxY(node));
+        return;
+    }
+
     float minLeft = 0.0f;
     float minTop = 0.0f;
     float maxRight = node.layout.w;
@@ -140,15 +150,34 @@ void LayoutEngine::layout(Document& document, float width, float height) {
         return;
     }
 
+    const bool traceEnabled = perf::Trace::enabled();
+    const auto traceStart = traceEnabled ? perf::Trace::now() : perf::Trace::Clock::time_point{};
     YogaNode rootYoga;
     YGNodeStyleSetWidth(rootYoga.get(), std::max(1.0f, width));
     YGNodeStyleSetHeight(rootYoga.get(), std::max(1.0f, height));
+    const auto buildStart = traceEnabled ? perf::Trace::now() : perf::Trace::Clock::time_point{};
     buildYoga(*document.root, rootYoga.get());
+    if (traceEnabled) {
+        perf::Trace::write("skui_layout", "build_yoga", static_cast<int>(width), static_cast<int>(height), perf::Trace::elapsedMs(buildStart));
+    }
     YGNodeStyleSetWidth(rootYoga.get(), std::max(1.0f, width));
     YGNodeStyleSetHeight(rootYoga.get(), std::max(1.0f, height));
+    const auto calculateStart = traceEnabled ? perf::Trace::now() : perf::Trace::Clock::time_point{};
     YGNodeCalculateLayout(rootYoga.get(), std::max(1.0f, width), std::max(1.0f, height), YGDirectionLTR);
+    if (traceEnabled) {
+        perf::Trace::write("skui_layout", "calculate_yoga", static_cast<int>(width), static_cast<int>(height), perf::Trace::elapsedMs(calculateStart));
+    }
+    const auto readStart = traceEnabled ? perf::Trace::now() : perf::Trace::Clock::time_point{};
     readYoga(*document.root, rootYoga.get(), 0.0f, 0.0f);
+    if (traceEnabled) {
+        perf::Trace::write("skui_layout", "read_yoga", static_cast<int>(width), static_cast<int>(height), perf::Trace::elapsedMs(readStart));
+    }
+    const auto scrollStart = traceEnabled ? perf::Trace::now() : perf::Trace::Clock::time_point{};
     updateScrollMetrics(*document.root);
+    if (traceEnabled) {
+        perf::Trace::write("skui_layout", "scroll_metrics", static_cast<int>(width), static_cast<int>(height), perf::Trace::elapsedMs(scrollStart));
+        perf::Trace::write("skui_layout", "layout_total", static_cast<int>(width), static_cast<int>(height), perf::Trace::elapsedMs(traceStart));
+    }
 }
 
 void LayoutEngine::buildYoga(Node& node, YGNodeRef yogaNode) {

@@ -888,8 +888,38 @@ public:
     void recomputeAndLayout() {
         const float viewportWidth = logicalWidth();
         const float viewportHeight = logicalHeight();
+        const bool traceEnabled = perf::Trace::enabled();
+        const auto traceStart = traceEnabled ? perf::Trace::now() : perf::Trace::Clock::time_point{};
+        const auto styleStart = traceEnabled ? perf::Trace::now() : perf::Trace::Clock::time_point{};
         recomputeStyles(document, options, viewportWidth, viewportHeight);
+        if (traceEnabled) {
+            perf::Trace::write("skui", "style_recompute", width, height, perf::Trace::elapsedMs(styleStart));
+        }
+        const auto layoutStart = traceEnabled ? perf::Trace::now() : perf::Trace::Clock::time_point{};
         layoutEngine.layout(document, viewportWidth, viewportHeight);
+        if (traceEnabled) {
+            perf::Trace::write("skui", "layout", width, height, perf::Trace::elapsedMs(layoutStart));
+            perf::Trace::write("skui", "recompute_layout_total", width, height, perf::Trace::elapsedMs(traceStart));
+        }
+    }
+
+    void requestLayout() {
+        dirty = true;
+        layoutPending = true;
+        if (updateDepth == 0) {
+            flushLayout();
+        }
+    }
+
+    void flushLayout() {
+        if (!layoutPending) {
+            return;
+        }
+        layoutPending = false;
+        if (hasDocument) {
+            recomputeAndLayout();
+        }
+        dirty = true;
     }
 
     bool setFocusedNode(Node* next) {
@@ -963,6 +993,8 @@ public:
     float dpiScale = 1.0f;
     bool hasDocument = false;
     bool dirty = true;
+    int updateDepth = 0;
+    bool layoutPending = false;
     bool mousePressed = false;
     MouseButton pressedButton = MouseButton::None;
     Node* hoveredLeaf = nullptr;
@@ -1057,9 +1089,20 @@ void Runtime::resize(int width, int height, float dpiScale) {
     impl_->width = width;
     impl_->height = height;
     impl_->dpiScale = dpiScale;
-    impl_->dirty = true;
-    if (impl_->hasDocument) {
-        impl_->recomputeAndLayout();
+    impl_->requestLayout();
+}
+
+void Runtime::beginUpdate() {
+    ++impl_->updateDepth;
+}
+
+void Runtime::endUpdate() {
+    if (impl_->updateDepth <= 0) {
+        return;
+    }
+    --impl_->updateDepth;
+    if (impl_->updateDepth == 0) {
+        impl_->flushLayout();
     }
 }
 
@@ -1509,8 +1552,7 @@ bool Runtime::handleEvent(const Event& event) {
     }
     layoutNeeded = layoutNeeded || textChanged;
     if ((stateChanged || textChanged) && layoutNeeded) {
-        impl_->recomputeAndLayout();
-        impl_->dirty = true;
+        impl_->requestLayout();
     } else if (scrollChanged || stateChanged || textChanged) {
         impl_->dirty = true;
     }
@@ -1539,8 +1581,7 @@ bool Runtime::addClassById(std::string_view id, std::string_view className) {
     }
     node->classes.emplace_back(className);
     node->attributes["class"] = classAttributeValue(node->classes);
-    impl_->recomputeAndLayout();
-    impl_->dirty = true;
+    impl_->requestLayout();
     return true;
 }
 
@@ -1562,8 +1603,7 @@ bool Runtime::removeClassById(std::string_view id, std::string_view className) {
     } else {
         node->attributes["class"] = classAttributeValue(node->classes);
     }
-    impl_->recomputeAndLayout();
-    impl_->dirty = true;
+    impl_->requestLayout();
     return true;
 }
 
@@ -1578,8 +1618,7 @@ bool Runtime::setStyleById(std::string_view id, std::string_view declarations) {
     node->inlineStyle = {};
     parseInlineStyle(declarations, node->inlineStyle);
     node->attributes["style"] = std::string(declarations);
-    impl_->recomputeAndLayout();
-    impl_->dirty = true;
+    impl_->requestLayout();
     return true;
 }
 
@@ -1596,8 +1635,7 @@ bool Runtime::setTextById(std::string_view id, std::string_view text) {
         return false;
     }
     node->text = std::string(text);
-    impl_->recomputeAndLayout();
-    impl_->dirty = true;
+    impl_->requestLayout();
     return true;
 }
 
@@ -1619,8 +1657,7 @@ bool Runtime::setAttributeById(std::string_view id, std::string_view name, std::
     }
     node->attributes[normalizedName] = std::string(value);
     syncNodeAttribute(*node, normalizedName);
-    impl_->recomputeAndLayout();
-    impl_->dirty = true;
+    impl_->requestLayout();
     return true;
 }
 
@@ -1680,8 +1717,7 @@ bool Runtime::applyUpdates(const RuntimeUpdates& updates) {
     if (!changed) {
         return false;
     }
-    impl_->recomputeAndLayout();
-    impl_->dirty = true;
+    impl_->requestLayout();
     return true;
 }
 
@@ -1702,8 +1738,7 @@ bool Runtime::removeAttributeById(std::string_view id, std::string_view name) {
         return false;
     }
     syncNodeAttribute(*node, normalizedName);
-    impl_->recomputeAndLayout();
-    impl_->dirty = true;
+    impl_->requestLayout();
     return true;
 }
 

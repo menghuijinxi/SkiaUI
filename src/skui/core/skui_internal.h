@@ -324,6 +324,18 @@ private:
     sk_sp<SkTypeface> regular_;
     sk_sp<SkTypeface> bold_;
     std::unordered_map<std::string, TextEntry> textCache_;
+    bool traceRender_ = false;
+    double traceBoxMs_ = 0.0;
+    double traceProgressMs_ = 0.0;
+    double traceImageMs_ = 0.0;
+    double traceSvgMs_ = 0.0;
+    double traceSelectionMs_ = 0.0;
+    double traceTextMs_ = 0.0;
+    double traceCaretMs_ = 0.0;
+    double traceScrollbarMs_ = 0.0;
+    int traceTextCount_ = 0;
+    int traceSvgCount_ = 0;
+    int traceNodeCount_ = 0;
 
     sk_sp<SkTypeface> pickTypeface(bool bold);
     SkFont font(float size, bool bold) const;

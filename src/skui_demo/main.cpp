@@ -6,6 +6,8 @@
 #endif
 
 #include "skui_win32_app.h"
+#include "skui_runtime_helpers.h"
+#include "skui_virtual_window.h"
 
 #include "include/core/SkColor.h"
 
@@ -21,7 +23,6 @@
 #include <cstdlib>
 #include <filesystem>
 #include <iomanip>
-#include <initializer_list>
 #include <iostream>
 #include <iterator>
 #include <sstream>
@@ -77,6 +78,36 @@ constexpr std::string_view kAttrRows[] = {
     "attr-row-16",
     "attr-row-17",
     "attr-row-18",
+    "attr-row-19",
+    "attr-row-20",
+    "attr-row-21",
+    "attr-row-22",
+    "attr-row-23",
+    "attr-row-24",
+    "attr-row-25",
+    "attr-row-26",
+    "attr-row-27",
+    "attr-row-28",
+    "attr-row-29",
+    "attr-row-30",
+    "attr-row-31",
+    "attr-row-32",
+    "attr-row-33",
+    "attr-row-34",
+    "attr-row-35",
+    "attr-row-36",
+    "attr-row-37",
+    "attr-row-38",
+    "attr-row-39",
+    "attr-row-40",
+    "attr-row-41",
+    "attr-row-42",
+    "attr-row-43",
+    "attr-row-44",
+    "attr-row-45",
+    "attr-row-46",
+    "attr-row-47",
+    "attr-row-48",
 };
 constexpr std::string_view kAttrCols[] = {
     "id",
@@ -90,7 +121,7 @@ constexpr std::string_view kAttrCols[] = {
     "status",
     "note",
 };
-constexpr int kAttrPoolRowCount = 18;
+constexpr int kAttrPoolRowCount = 48;
 constexpr int kAttrTotalRows = 100000;
 constexpr int kAttrHeaderHeight = 42;
 constexpr int kAttrRowHeight = 40;
@@ -109,24 +140,31 @@ constexpr int kPropertyContentLeft = 160;
 constexpr int kAttrRowGutterWidth = 44;
 constexpr int kPropertyContentInset = 26;
 constexpr int kPropertyRightGap = 8;
+constexpr int kPropertyStatusHeight = 60;
 constexpr int kPropertyTableBaseTop = 258;
+constexpr int kPropertyTableMinHeight = 180;
+constexpr int kPropertyTableBottomGap = 252;
 constexpr int kPropertyToolbarButtonHeight = 39;
 constexpr int kPropertyToolbarGap = 8;
 constexpr int kPropertyToolbarBaseHeight = 42;
-constexpr int kPropertySelectedCardOffset = 360;
-constexpr int kPropertySelectedTitleOffset = 14;
-constexpr int kPropertySelectedValueOffset = 64;
-constexpr int kPropertySelectedTypeOffset = 110;
 
 struct PropertyDemoState {
     bool draggingPanel = false;
     bool attributesVisible = true;
     bool layerDropdownOpen = false;
+    bool propertiesPageVisible = false;
     int panelWidth = kPropertyPanelDefaultWidth;
     float dragStartX = 0.0f;
     int dragStartWidth = kPropertyPanelDefaultWidth;
     float attrScrollY = 0.0f;
-    int firstAttrRow = 0;
+    skui::VirtualWindowState attrWindow{{kAttrTotalRows,
+                                          kAttrRowHeight,
+                                          kAttrHeaderHeight,
+                                          kAttrPoolRowCount,
+                                          7,
+                                          1}};
+    int renderedPanelWidth = -1;
+    int renderedTableTop = -1;
     int selectedAttrRow = -1;
     int selectedCellRow = 1;
     std::string selectedCellCol = "landuse";
@@ -137,8 +175,15 @@ struct PropertyDemoState {
 
 PropertyDemoState gPropertyState;
 
-void setPropertyPanelWidth(skui::Runtime& runtime, int width);
-void refreshAttrWindow(skui::Runtime& runtime, float scrollY);
+using skui::px;
+using skui::runtimeLogicalHeight;
+using skui::runtimeLogicalWidth;
+using skui::splitActionPayload;
+using skui::style;
+
+bool setPropertyPanelWidth(skui::Runtime& runtime, int width);
+void refreshAttrWindow(skui::Runtime& runtime, float scrollY, bool force = false);
+void layoutPropertyPage(skui::Runtime& runtime);
 
 COLORREF colorRefFromSkColor(SkColor color) {
     return RGB(SkColorGetR(color), SkColorGetG(color), SkColorGetB(color));
@@ -250,38 +295,6 @@ void selectLayerRow(skui::Runtime& runtime, std::string_view rowId) {
     runtime.addClassById(rowId, "row-selected");
 }
 
-std::vector<std::string_view> splitActionPayload(std::string_view payload, char delimiter) {
-    std::vector<std::string_view> parts;
-    size_t start = 0;
-    while (start <= payload.size()) {
-        const size_t end = payload.find(delimiter, start);
-        if (end == std::string_view::npos) {
-            parts.push_back(payload.substr(start));
-            break;
-        }
-        parts.push_back(payload.substr(start, end - start));
-        start = end + 1;
-    }
-    return parts;
-}
-
-std::string px(float value) {
-    std::ostringstream out;
-    out << static_cast<int>(std::lround(value)) << "px";
-    return out.str();
-}
-
-std::string style(std::initializer_list<std::pair<std::string_view, std::string_view>> declarations) {
-    std::string out;
-    for (const auto& [name, value] : declarations) {
-        out += std::string(name);
-        out += ":";
-        out += value;
-        out += ";";
-    }
-    return out;
-}
-
 int attrColumnBaseLeft(std::string_view col) {
     return col == "id" ? 0 :
            col == "name" ? 80 :
@@ -319,7 +332,7 @@ std::string cellPoolId(int poolIndex, std::string_view col) {
 }
 
 int rowIndexForPool(int poolIndex) {
-    return std::clamp(gPropertyState.firstAttrRow + poolIndex, 0, kAttrTotalRows - 1);
+    return std::clamp(gPropertyState.attrWindow.firstItem() + poolIndex, 0, kAttrTotalRows - 1);
 }
 
 std::string attrCellValue(int rowIndex, std::string_view col) {
@@ -392,13 +405,15 @@ std::string cellActionFor(int poolIndex, int rowIndex, std::string_view col) {
 
 void showPage(skui::Runtime& runtime, std::string_view page) {
     if (page == "properties") {
+        gPropertyState.propertiesPageVisible = true;
         runtime.addClassById("layer-page", "page-hidden");
         runtime.removeClassById("properties-page", "page-hidden");
         runtime.setAttributesById({{"property-table-viewport", "data-virtual-width", std::to_string(kAttrVirtualWidth)},
                                    {"property-table-viewport", "data-virtual-height", std::to_string(kAttrVirtualHeight)}});
         setPropertyPanelWidth(runtime, gPropertyState.panelWidth);
-        refreshAttrWindow(runtime, gPropertyState.attrScrollY);
+        refreshAttrWindow(runtime, gPropertyState.attrScrollY, true);
     } else {
+        gPropertyState.propertiesPageVisible = false;
         runtime.removeClassById("layer-page", "page-hidden");
         runtime.addClassById("properties-page", "page-hidden");
     }
@@ -420,30 +435,43 @@ void selectNavItem(skui::Runtime& runtime, std::string_view navName) {
     showPage(runtime, navName == "properties" ? "properties" : "layers");
 }
 
-void setPropertyPanelWidth(skui::Runtime& runtime, int width) {
-    const int maxWidth = std::max(kPropertyPanelMinWidth, runtime.width() - kPropertyPanelLeft - kPropertyRightGap);
+bool setPropertyPanelWidth(skui::Runtime& runtime, int width) {
+    const int maxWidth = std::max(kPropertyPanelMinWidth, runtimeLogicalWidth(runtime) - kPropertyPanelLeft - kPropertyRightGap);
     gPropertyState.panelWidth = std::clamp(width, kPropertyPanelMinWidth, maxWidth);
     const int contentWidth = std::max(320, gPropertyState.panelWidth - kPropertyContentInset * 2);
     const int toolbarWidth = contentWidth + 8;
     const int toolbarHeight = propertyToolbarHeight(toolbarWidth);
     const int tableTop = kPropertyTableBaseTop + std::max(0, toolbarHeight - kPropertyToolbarBaseHeight);
-    const int selectedCardTop = tableTop + kPropertySelectedCardOffset;
-    runtime.setStylesById({
-        {"property-panel", style({{"width", px(static_cast<float>(gPropertyState.panelWidth))},
-                                  {"height", "825px"}})},
-        {"property-search", style({{"width", px(static_cast<float>(contentWidth))}})},
-        {"property-toolbar", style({{"width", px(static_cast<float>(toolbarWidth))},
-                                    {"height", px(static_cast<float>(toolbarHeight))}})},
-        {"property-table-viewport", style({{"top", px(static_cast<float>(tableTop))},
-                                           {"width", px(static_cast<float>(contentWidth))}})},
-        {"selected-cell-card", style({{"top", px(static_cast<float>(selectedCardTop))},
-                                      {"width", px(static_cast<float>(contentWidth))}})},
-        {"selected-cell-title", style({{"top", px(static_cast<float>(selectedCardTop + kPropertySelectedTitleOffset))}})},
-        {"selected-cell-value-row", style({{"top", px(static_cast<float>(selectedCardTop + kPropertySelectedValueOffset))},
-                                           {"width", px(static_cast<float>(contentWidth - 40))}})},
-        {"selected-cell-type-row", style({{"top", px(static_cast<float>(selectedCardTop + kPropertySelectedTypeOffset))},
-                                          {"width", px(static_cast<float>(contentWidth - 40))}})},
-    });
+    const int tableHeight = std::max(kPropertyTableMinHeight,
+                                     runtimeLogicalHeight(runtime) - kPropertyStatusHeight - tableTop - kPropertyTableBottomGap);
+    const skui::VirtualWindowFrame frame = gPropertyState.attrWindow.update(gPropertyState.attrScrollY, tableHeight);
+    if (gPropertyState.renderedPanelWidth != gPropertyState.panelWidth ||
+        gPropertyState.renderedTableTop != tableTop) {
+        runtime.setStylesById({
+            {"property-panel", style({{"width", px(static_cast<float>(gPropertyState.panelWidth))}})},
+            {"property-search", style({{"width", px(static_cast<float>(contentWidth))}})},
+            {"property-toolbar", style({{"width", px(static_cast<float>(toolbarWidth))},
+                                        {"height", px(static_cast<float>(toolbarHeight))}})},
+            {"property-table-viewport", style({{"top", px(static_cast<float>(tableTop))},
+                                               {"width", px(static_cast<float>(contentWidth))}})},
+            {"selected-cell-card", style({{"width", px(static_cast<float>(contentWidth))}})},
+            {"selected-cell-value-row", style({{"bottom", "132px"},
+                                               {"width", px(static_cast<float>(contentWidth - 40))}})},
+            {"selected-cell-type-row", style({{"bottom", "86px"},
+                                              {"width", px(static_cast<float>(contentWidth - 40))}})},
+        });
+        gPropertyState.renderedPanelWidth = gPropertyState.panelWidth;
+        gPropertyState.renderedTableTop = tableTop;
+    }
+    return frame.cacheExpanded;
+}
+
+void layoutPropertyPage(skui::Runtime& runtime) {
+    if (!gPropertyState.propertiesPageVisible) {
+        return;
+    }
+    const bool visibleRowsChanged = setPropertyPanelWidth(runtime, gPropertyState.panelWidth);
+    refreshAttrWindow(runtime, gPropertyState.attrScrollY, visibleRowsChanged);
 }
 
 void clearAttrRows(skui::Runtime& runtime) {
@@ -466,7 +494,12 @@ void clearSelectedCellDetails(skui::Runtime& runtime) {
     runtime.setTextById("selected-cell-type", "");
 }
 
+void invalidateAttrWindow() {
+    gPropertyState.attrWindow.invalidate();
+}
+
 void selectAttrRow(skui::Runtime& runtime, int rowIndex) {
+    invalidateAttrWindow();
     clearAttrRows(runtime);
     clearAttrCells(runtime);
     runtime.setAttributeById("properties-page", "data-selected-col", "");
@@ -474,13 +507,14 @@ void selectAttrRow(skui::Runtime& runtime, int rowIndex) {
     gPropertyState.selectedCellRow = -1;
     gPropertyState.selectedAttrRow = std::clamp(rowIndex, 0, kAttrTotalRows - 1);
     clearSelectedCellDetails(runtime);
-    const int poolIndex = gPropertyState.selectedAttrRow - gPropertyState.firstAttrRow;
+    const int poolIndex = gPropertyState.selectedAttrRow - gPropertyState.attrWindow.firstItem();
     if (poolIndex >= 0 && poolIndex < kAttrPoolRowCount) {
         runtime.addClassById(rowPoolId(poolIndex) + "-bg", "row-selected-highlight");
     }
 }
 
 void selectAttrCol(skui::Runtime& runtime, std::string_view colId) {
+    invalidateAttrWindow();
     clearAttrRows(runtime);
     clearAttrCells(runtime);
     gPropertyState.selectedAttrRow = -1;
@@ -496,6 +530,7 @@ void selectAttrCell(skui::Runtime& runtime,
                     std::string_view colId,
                     std::string_view value,
                     std::string_view type) {
+    invalidateAttrWindow();
     clearAttrRows(runtime);
     clearAttrCells(runtime);
     runtime.setAttributeById("properties-page", "data-selected-col", "");
@@ -507,9 +542,17 @@ void selectAttrCell(skui::Runtime& runtime,
     runtime.setTextById("selected-cell-type", type);
 }
 
-void refreshAttrWindow(skui::Runtime& runtime, float scrollY) {
-    gPropertyState.attrScrollY = std::clamp(scrollY, 0.0f, static_cast<float>(kAttrVirtualHeight));
-    gPropertyState.firstAttrRow = std::clamp(static_cast<int>(gPropertyState.attrScrollY / kAttrRowHeight), 0, kAttrTotalRows - 1);
+void refreshAttrWindow(skui::Runtime& runtime, float scrollY, bool force) {
+    const int toolbarWidth = std::max(320, gPropertyState.panelWidth - kPropertyContentInset * 2) + 8;
+    const int toolbarHeight = propertyToolbarHeight(toolbarWidth);
+    const int tableTop = kPropertyTableBaseTop + std::max(0, toolbarHeight - kPropertyToolbarBaseHeight);
+    const int tableHeight = std::max(kPropertyTableMinHeight,
+                                     runtimeLogicalHeight(runtime) - kPropertyStatusHeight - tableTop - kPropertyTableBottomGap);
+    const skui::VirtualWindowFrame frame = gPropertyState.attrWindow.update(scrollY, tableHeight, force);
+    gPropertyState.attrScrollY = frame.scroll;
+    if (!frame.renderNeeded) {
+        return;
+    }
 
     std::vector<skui::StyleUpdate> styles;
     std::vector<skui::TextUpdate> texts;
@@ -518,20 +561,23 @@ void refreshAttrWindow(skui::Runtime& runtime, float scrollY) {
     texts.reserve(static_cast<size_t>(kAttrPoolRowCount) * std::size(kAttrCols));
     attributes.reserve(static_cast<size_t>(kAttrPoolRowCount) * (std::size(kAttrCols) + 1));
 
-    styles.push_back({"attr-handle-header", style({{"top", px(gPropertyState.attrScrollY)}})});
+    styles.push_back({"attr-handle-header", style({{"top", px(frame.scroll)}})});
     for (std::string_view col : kAttrCols) {
         styles.push_back({"attr-header-" + std::string(col), style({{"left", px(static_cast<float>(attrColumnLeft(col)))},
-                                                                     {"top", px(gPropertyState.attrScrollY)},
+                                                                     {"top", px(frame.scroll)},
                                                                      {"width", px(static_cast<float>(attrColumnWidth(col)))}})});
     }
 
     for (int poolIndex = 0; poolIndex < kAttrPoolRowCount; ++poolIndex) {
         const int rowIndex = rowIndexForPool(poolIndex);
-        const int top = static_cast<int>(std::lround(gPropertyState.attrScrollY)) + kAttrHeaderHeight + poolIndex * kAttrRowHeight;
+        const int top = frame.scrollOffset + kAttrHeaderHeight + poolIndex * kAttrRowHeight;
         const std::string row = rowPoolId(poolIndex);
+        const bool cached = poolIndex < frame.cachedItems;
         const bool rowSelected = rowIndex == gPropertyState.selectedAttrRow;
-        styles.push_back({row + "-bg", style({{"top", px(static_cast<float>(top))}})});
-        styles.push_back({row + "-handle", style({{"top", px(static_cast<float>(top))}})});
+        styles.push_back({row + "-bg", style({{"top", px(static_cast<float>(top))},
+                                              {"display", cached ? "flex" : "none"}})});
+        styles.push_back({row + "-handle", style({{"top", px(static_cast<float>(top))},
+                                                  {"display", cached ? "flex" : "none"}})});
         attributes.push_back({row + "-bg", "data-action", "select-attr-row:" + std::to_string(rowIndex)});
         attributes.push_back({row + "-handle", "data-action", "select-attr-row:" + std::to_string(rowIndex)});
         attributes.push_back({row + "-bg", "class", rowSelected ? "attr-row-bg row-selected-highlight" : "attr-row-bg"});
@@ -541,7 +587,8 @@ void refreshAttrWindow(skui::Runtime& runtime, float scrollY) {
             const bool cellSelected = rowIndex == gPropertyState.selectedCellRow && col == gPropertyState.selectedCellCol;
             styles.push_back({cell, style({{"left", px(static_cast<float>(attrColumnLeft(col)))},
                                            {"top", px(static_cast<float>(top))},
-                                           {"width", px(static_cast<float>(attrColumnWidth(col)))}})});
+                                           {"width", px(static_cast<float>(attrColumnWidth(col)))},
+                                           {"display", cached ? "flex" : "none"}})});
             texts.push_back({cell, attrCellValue(rowIndex, col)});
             attributes.push_back({cell, "data-action", cellActionFor(poolIndex, rowIndex, col)});
             attributes.push_back({cell, "class", "attr-cell col-" + std::string(col) + (cellSelected ? " cell-selected-highlight" : "")});
@@ -549,9 +596,11 @@ void refreshAttrWindow(skui::Runtime& runtime, float scrollY) {
     }
 
     runtime.applyUpdates({std::move(styles), std::move(texts), std::move(attributes)});
+    gPropertyState.attrWindow.markRendered(frame);
 }
 
 void sortAttributes(skui::Runtime& runtime, std::string_view colId) {
+    invalidateAttrWindow();
     const bool sameColumn = gPropertyState.sortCol == colId;
     gPropertyState.sortAsc = sameColumn ? !gPropertyState.sortAsc : true;
     gPropertyState.sortCol = std::string(colId);
@@ -561,7 +610,7 @@ void sortAttributes(skui::Runtime& runtime, std::string_view colId) {
         updates.push_back({"sort-" + std::string(col), col == colId ? (gPropertyState.sortAsc ? "^" : "v") : "-"});
     }
     runtime.setTextsById(updates);
-    refreshAttrWindow(runtime, gPropertyState.attrScrollY);
+    refreshAttrWindow(runtime, gPropertyState.attrScrollY, true);
 }
 
 void setLayerDropdownOpen(skui::Runtime& runtime, bool open) {
@@ -621,6 +670,7 @@ void handlePropertyAction(skui::Runtime& runtime, const skui::ElementEvent& even
     constexpr std::string_view sortPrefix = "sort-attr:";
     constexpr std::string_view layerPrefix = "select-attr-layer:";
     if (action == "attr-toggle-visibility") {
+        skui::RuntimeUpdateBatch batch(runtime);
         gPropertyState.attributesVisible = !gPropertyState.attributesVisible;
         if (gPropertyState.attributesVisible) {
             runtime.removeClassById("attr-visibility-button", "visibility-hidden");
@@ -635,22 +685,27 @@ void handlePropertyAction(skui::Runtime& runtime, const skui::ElementEvent& even
         const std::string_view value = action.substr(layerPrefix.size());
         int index = -1;
         std::from_chars(value.data(), value.data() + value.size(), index);
+        skui::RuntimeUpdateBatch batch(runtime);
         selectAttributeLayer(runtime, index);
     } else if (action.rfind(rowPrefix, 0) == 0) {
         const std::string_view value = action.substr(rowPrefix.size());
         int rowIndex = -1;
         std::from_chars(value.data(), value.data() + value.size(), rowIndex);
+        skui::RuntimeUpdateBatch batch(runtime);
         selectAttrRow(runtime, rowIndex);
     } else if (action.rfind(colPrefix, 0) == 0) {
+        skui::RuntimeUpdateBatch batch(runtime);
         selectAttrCol(runtime, action.substr(colPrefix.size()));
     } else if (action.rfind(cellPrefix, 0) == 0) {
         const std::vector<std::string_view> parts = splitActionPayload(action.substr(cellPrefix.size()), '|');
         if (parts.size() >= 5) {
             int rowIndex = -1;
             std::from_chars(parts[1].data(), parts[1].data() + parts[1].size(), rowIndex);
+            skui::RuntimeUpdateBatch batch(runtime);
             selectAttrCell(runtime, parts[0], rowIndex, parts[2], parts[3], parts[4]);
         }
     } else if (action.rfind(sortPrefix, 0) == 0) {
+        skui::RuntimeUpdateBatch batch(runtime);
         sortAttributes(runtime, action.substr(sortPrefix.size()));
     }
 }
@@ -672,6 +727,7 @@ void installDemoInteractions(skui::Runtime& runtime) {
         if (action.size() >= layerPrefix.size() && action.substr(0, layerPrefix.size()) == layerPrefix) {
             selectLayerRow(runtime, action.substr(layerPrefix.size()));
         } else if (action.size() >= navPrefix.size() && action.substr(0, navPrefix.size()) == navPrefix) {
+            skui::RuntimeUpdateBatch batch(runtime);
             selectNavItem(runtime, action.substr(navPrefix.size()));
         }
 
@@ -826,6 +882,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCmd) {
     options.runtime.clearColor = kDemoClearColor;
     options.onRuntimeReady = [](skui::Runtime& runtime) {
         installDemoInteractions(runtime);
+    };
+    options.onRuntimeResize = [](skui::Runtime& runtime) {
+        layoutPropertyPage(runtime);
     };
 
     skui::win32::Dx12WindowApp app(std::move(options));

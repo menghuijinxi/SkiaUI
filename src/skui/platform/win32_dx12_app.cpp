@@ -286,6 +286,9 @@ private:
     bool hasPresentedFrame_ = false;
     int presentedWidth_ = 0;
     int presentedHeight_ = 0;
+    int runtimeLayoutWidth_ = 0;
+    int runtimeLayoutHeight_ = 0;
+    float runtimeLayoutDpiScale_ = 0.0f;
     bool trackingMouseLeave_ = false;
     std::wstring suppressedImeChars_;
     HCURSOR currentCursor_ = nullptr;
@@ -415,6 +418,35 @@ private:
         FillRect(hdc, &client, reinterpret_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
     }
 
+    void resizeRuntimeForRender(int width, int height) {
+        const bool traceEnabled = perf::Trace::enabled();
+        const auto traceStart = traceEnabled ? perf::Trace::now() : perf::Trace::Clock::time_point{};
+        const float dpiScale = dpiScaleForDpi(dpi_);
+        const bool layoutChanged = width != runtimeLayoutWidth_ ||
+                                   height != runtimeLayoutHeight_ ||
+                                   dpiScale != runtimeLayoutDpiScale_;
+        runtime_.beginUpdate();
+        runtime_.resize(width, height, dpiScale);
+        if (layoutChanged) {
+            runtimeLayoutWidth_ = width;
+            runtimeLayoutHeight_ = height;
+            runtimeLayoutDpiScale_ = dpiScale;
+            if (options_.onRuntimeResize) {
+                options_.onRuntimeResize(runtime_);
+            }
+        }
+        runtime_.endUpdate();
+        if (!layoutChanged) {
+            if (traceEnabled) {
+                perf::Trace::write("skui_app", "resize_runtime_noop", width, height, perf::Trace::elapsedMs(traceStart));
+            }
+            return;
+        }
+        if (traceEnabled) {
+            perf::Trace::write("skui_app", "resize_runtime", width, height, perf::Trace::elapsedMs(traceStart));
+        }
+    }
+
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
         if (message == WM_NCCREATE) {
             const auto* create = reinterpret_cast<CREATESTRUCTW*>(lParam);
@@ -439,7 +471,7 @@ private:
                 return 0;
             }
             app->markFrameDirty();
-            app->requestRepaint(hwnd, true);
+            app->requestRepaint(hwnd, false);
             return 0;
         case WM_EXITSIZEMOVE:
             if (app->frameDirty_) {
@@ -568,17 +600,22 @@ private:
     }
 
     bool renderD3D(HWND hwnd, int width, int height) {
+        const bool traceEnabled = perf::Trace::enabled();
+        const auto traceStart = traceEnabled ? perf::Trace::now() : perf::Trace::Clock::time_point{};
         const bool ok = d3d_.render(
             hwnd,
             width,
             height,
             [this](SkCanvas& canvas, int drawWidth, int drawHeight) {
-                runtime_.resize(drawWidth, drawHeight, dpiScaleForDpi(dpi_));
+                resizeRuntimeForRender(drawWidth, drawHeight);
                 runtime_.render(canvas);
             },
             [this](uint32_t* pixels, int drawWidth, int drawHeight, size_t rowBytes) {
                 return renderCpuSurface(pixels, drawWidth, drawHeight, rowBytes);
             });
+        if (traceEnabled) {
+            perf::Trace::write("skui_app", ok ? "render_d3d_ok" : "render_d3d_fail", width, height, perf::Trace::elapsedMs(traceStart));
+        }
         return ok;
     }
 
@@ -596,7 +633,7 @@ private:
         if (!surface) {
             return false;
         }
-        runtime_.resize(width, height, dpiScaleForDpi(dpi_));
+        resizeRuntimeForRender(width, height);
         runtime_.render(*surface->getCanvas());
         return true;
     }

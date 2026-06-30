@@ -24,6 +24,7 @@ struct WindowOptions {
     std::string documentPath;
     RuntimeOptions runtime;
     std::function<void(Runtime&)> onRuntimeReady;
+    std::function<void(Runtime&)> onRuntimeResize;
 };
 
 class Dx12WindowApp {

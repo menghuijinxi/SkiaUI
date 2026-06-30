@@ -145,6 +145,8 @@ public:
     bool loadDocument(const std::string& path);
     bool loadDocumentFromString(std::string_view html, std::string_view basePath = {});
     void resize(int width, int height, float dpiScale);
+    void beginUpdate();
+    void endUpdate();
     bool handleEvent(const Event& event);
     void render(SkCanvas& canvas);
     bool renderToBgraPixels(uint32_t* pixels, int width, int height, size_t rowBytes, float dpiScale);
