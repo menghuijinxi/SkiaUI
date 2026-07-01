@@ -25,7 +25,7 @@
 | `img` | 加载本地图片资源；SVG 走 SVG DOM，位图走异步加载 |
 | `svg` | 内联 SVG，由 Skia SVG DOM 绘制 |
 
-`select` / `option` 目前没有浏览器式下拉控件行为。需要下拉框时，建议用普通节点自行组合：按钮节点负责展开，菜单节点用 `display:none` 或类名切换显示。
+`select` / `option` 目前没有浏览器式原生下拉控件行为。需要下拉框时，用普通节点组合按钮、菜单、遮罩和选项；C++ 侧可复用 `src/skui/public/skui_dropdown.h` 里的 `skui::DropdownState`，它负责打开/关闭、同步选中文本、切换箭头文本、显示/隐藏菜单和选中项 class。
 
 ## 通用属性
 
@@ -156,6 +156,11 @@
 - 设置虚拟尺寸后，滚动范围以 `data-virtual-width` / `data-virtual-height` 为准，不会被池化节点临时移动到很远位置撑大。
 - 滚动发生时会向 `data-action` 节点发出 `Scroll` 事件，事件中包含 `scrollX` / `scrollY`。
 
+虚拟滚动推荐分两层使用：
+
+- 聊天记录、大列表这类单维数据，使用 `skui::VirtualWindowState` 计算首个可见项、滚动偏移、缓存数量和是否需要刷新。
+- 表格这类行列数据，优先使用 `skui::VirtualTableAdapter`，由业务层提供 `VirtualTableDataSource`，适配器负责同步虚拟尺寸、移动池化行/单元格、更新文本、class 和 `data-action`。
+
 ### 交互
 
 | 属性 | 值 |
@@ -250,6 +255,19 @@
 - `class` 属性更新后会重新参与选择器匹配；`style` 属性更新后会重新解析内联样式。
 - `applyUpdates` 会按样式、文本、属性的顺序批量应用，并只请求一次重新布局。
 
+## 通用 C++ 辅助能力
+
+这些能力不是 HTML 标签，而是可被其他项目直接复用的 public 头文件：
+
+| 头文件 | 用途 |
+| --- | --- |
+| `skui_runtime_helpers.h` | `RuntimeUpdateBatch`、逻辑宽高读取、`px(...)`、内联 style 拼接、action payload 拆分 |
+| `skui_dropdown.h` | 下拉框状态控制：打开/关闭、选中项同步、菜单和遮罩显隐、选中 class 切换 |
+| `skui_virtual_window.h` | 通用窗口化渲染状态：根据滚动位置和视口高度计算可见池范围 |
+| `skui_virtual_table.h` | 表格窗口化渲染、表格面板自适应、工具栏自动换行高度计算、表格池化 DOM 刷新 |
+
+这些辅助类只处理状态、几何和运行时更新，不绑定具体视觉样式。视觉仍建议写在 HTML/CSS 中，C++ 只通过 id、class、文本和属性更新状态。
+
 ## 当前限制
 
 - 没有 JavaScript。
@@ -258,4 +276,4 @@
 - `img` 只支持本地资源路径；位图支持 PNG、JPEG、WebP 和 BMP，暂不支持网络 URL、`srcset`、懒加载策略和浏览器图片事件。
 - 文本排版是单行或简单多行编辑框，不是富文本排版引擎。
 - 中文双击选词目前按单个非 ASCII 字符处理，不做自然语言分词。
-- 虚拟滚动需要业务层监听 `Scroll` 并更新池化 DOM；SkUI 只提供滚动范围、裁剪和事件。
+- 虚拟滚动需要业务层提供数据源并根据 `Scroll` 刷新池化 DOM；SkUI 提供滚动范围、裁剪、事件，以及 `VirtualWindowState` / `VirtualTableAdapter` 辅助类，但不会自动从任意 DOM 推导大数据源。

@@ -47,6 +47,17 @@ src/skui/core/
 src/skui/render/
 ```
 
+`src/skui/public/` 里常用的接入头文件：
+
+| 头文件 | 用途 |
+| --- | --- |
+| `skui_runtime.h` | Runtime、事件、运行时更新接口 |
+| `skui_runtime_helpers.h` | 批量更新保护、逻辑尺寸、style/px/action 辅助函数 |
+| `skui_dropdown.h` | 普通 DOM 组合下拉框的状态控制 |
+| `skui_virtual_window.h` | 列表、聊天记录等单维窗口化渲染状态 |
+| `skui_virtual_table.h` | 表格窗口化渲染、表格面板布局、工具栏换行高度计算 |
+| `skui_win32_app.h` | Win32/DX12 宿主入口；只用 `SkuiWin32Dx12` 时需要 |
+
 如果需要内置 Win32/DX12 宿主，再复制：
 
 ```text
@@ -226,9 +237,58 @@ ui.setElementEventCallback([&ui](const skui::ElementEvent& event) {
 
 注意：不要依赖完整 JavaScript 或浏览器 DOM API。SkUI 的动态能力来自 C++ 回调和运行时更新接口。
 
+### 下拉框
+
+SkUI 目前没有浏览器原生 `select` 行为。下拉框建议用普通 DOM 节点写样式，用 `skui::DropdownState` 管理状态。
+
+HTML 只需要给按钮、选中文本、箭头、菜单、遮罩和选项提供稳定 id：
+
+```html
+<div id="layer-dropdown" data-action="toggle-layer-menu">
+  <span id="layer-selected">地块边界.shp</span>
+  <span id="layer-arrow">v</span>
+</div>
+<div id="layer-menu" class="dropdown-menu page-hidden">
+  <div id="layer-option-0" data-action="select-layer:0">地块边界.shp</div>
+  <div id="layer-option-1" data-action="select-layer:1">道路中心线.shp</div>
+</div>
+<div id="layer-backdrop" class="page-hidden" data-action="close-layer-menu"></div>
+```
+
+C++ 侧复用同一个状态对象：
+
+```cpp
+skui::DropdownState layerDropdown(skui::DropdownConfig{
+    .selectedTextId = "layer-selected",
+    .arrowId = "layer-arrow",
+    .menuId = "layer-menu",
+    .backdropId = "layer-backdrop",
+    .optionIdPrefix = "layer-option-",
+    .hiddenClass = "page-hidden",
+    .selectedClass = "selected",
+    .openArrow = "^",
+    .closedArrow = "v",
+    .optionCount = layers.size(),
+});
+
+ui.setElementEventCallback([&](const skui::ElementEvent& event) {
+    if (event.type != skui::ElementEventType::Click) {
+        return;
+    }
+    if (event.action == "toggle-layer-menu") {
+        layerDropdown.toggle(ui);
+    } else if (event.action == "close-layer-menu") {
+        layerDropdown.setOpen(ui, false);
+    } else if (event.action.starts_with("select-layer:")) {
+        const int index = parseIndex(event.action);
+        layerDropdown.select(ui, index, layers[index].name);
+    }
+});
+```
+
 ## 大量数据：虚拟滚动 / 窗口化渲染
 
-SkUI 支持浏览器常见的窗口化思路，但业务层需要负责池化节点内容更新。
+SkUI 支持浏览器常见的窗口化思路：滚动范围按完整数据尺寸计算，DOM 里只保留可见范围附近的一小批节点。这样可以展示几十万行数据，但实际每帧只刷新几十行。
 
 基本做法：
 
@@ -265,7 +325,113 @@ SkUI 支持浏览器常见的窗口化思路，但业务层需要负责池化节
 
 这个模式适合聊天记录、大表格、大列表。不要为几十万行真实创建几十万个 DOM 节点。
 
-池化节点更新建议放进同一个 `RuntimeUpdates` 批次：样式负责移动和显隐，文本负责替换可见内容，属性负责更新 `data-action` 或虚拟尺寸。`setStyleById` 和批量样式更新会替换节点完整内联 `style`，因此业务侧应提交该节点当前需要的完整内联声明。
+### 单维列表和聊天记录
+
+列表、聊天记录这类每项高度固定的场景，优先用 `skui::VirtualWindowState` 计算可见窗口。它会根据滚动位置和视口高度返回：
+
+- `firstItem`：第一条可见数据的下标。
+- `scrollOffset`：当前滚动偏移，用来把池化节点移动到正确位置。
+- `cachedItems`：本次需要显示的池化节点数量。
+- `renderNeeded`：首项、偏移或缓存数量没有变化时为 `false`，可以跳过 DOM 更新。
+
+业务层仍负责把 `firstItem + poolIndex` 对应的数据写入池化节点。所有节点更新建议放进同一个 `RuntimeUpdates` 批次：样式负责移动和显隐，文本负责替换可见内容，属性负责更新 `data-action` 或虚拟尺寸。
+
+### 表格
+
+表格优先用 `skui::VirtualTableAdapter`，不要在页面 `main.cpp` 里重新写一套池化表格刷新器。调用方只需要提供列定义、池化 DOM id 规则和数据源。
+
+池化 DOM 的 id 规则由 `VirtualTableGeometry` 决定：
+
+| 节点 | id 规则 |
+| --- | --- |
+| 表头拖拽列 | 调用方传入 `VirtualTableRenderConfig::handleHeaderId` |
+| 普通表头 | `headerPrefix + column.id` |
+| 行背景 | `rowPrefix + poolIndex + "-bg"`，`poolIndex` 从 1 开始 |
+| 行拖拽列 | `rowPrefix + poolIndex + "-handle"` |
+| 单元格 | `cellPrefix + poolIndex + "-" + column.id` |
+
+HTML 示例：
+
+```html
+<div id="attr-table"
+     class="attribute-table"
+     data-action="attr-table-scroll"
+     data-virtual-width="1200"
+     data-virtual-height="3600000">
+  <div id="attr-head-handle" class="table-header handle"></div>
+  <div id="attr-head-id" class="table-header">ID</div>
+  <div id="attr-head-name" class="table-header">名称</div>
+
+  <div id="attr-row-1-bg" class="table-row-bg"></div>
+  <div id="attr-row-1-handle" class="table-row-handle"></div>
+  <div id="attr-cell-1-id" class="table-cell"></div>
+  <div id="attr-cell-1-name" class="table-cell"></div>
+</div>
+```
+
+C++ 示例：
+
+```cpp
+std::vector<skui::VirtualTableColumn> columns = {
+    {"id", 96},
+    {"name", 150},
+    {"landuse", 180},
+    {"height", 130},
+};
+
+skui::VirtualTableAdapter table(
+    skui::VirtualTableGeometry("attr-row-", "attr-cell-", "attr-head-", columns, 40, 40, 36),
+    skui::VirtualWindowConfig{
+        .itemCount = static_cast<int>(records.size()),
+        .itemExtent = 36,
+        .leadingExtent = 40,
+        .poolSize = 80,
+        .minCachedItems = 12,
+        .overscanItems = 4,
+    },
+    skui::VirtualTableRenderConfig{
+        .viewportId = "attr-table",
+        .handleHeaderId = "attr-head-handle",
+        .rowBaseClass = "table-row-bg",
+        .rowSelectedClass = "selected",
+        .rowActionPrefix = "select-row:",
+        .rowHandleActionPrefix = "select-row:",
+        .cellBaseClass = "table-cell",
+        .cellSelectedClass = "selected-cell",
+        .cellColumnClassPrefix = "col-",
+    });
+
+skui::VirtualTableDataSource source;
+source.itemCount = static_cast<int>(records.size());
+source.row = [&](const skui::VirtualTableRowContext& row) {
+    return skui::VirtualTableRowData{
+        .selected = row.rowIndex == selectedRow,
+    };
+};
+source.cell = [&](const skui::VirtualTableCellContext& cell) {
+    return skui::VirtualTableCellData{
+        .text = valueFor(records[cell.rowIndex], cell.columnId),
+        .action = "select-cell:" + std::to_string(cell.rowIndex) + ":" +
+            std::string(cell.columnId),
+        .selected = isSelectedCell(cell.rowIndex, cell.columnId),
+    };
+};
+
+table.refresh(ui, currentScrollY, tableViewportHeight, source);
+```
+
+`VirtualTableAdapter::refresh` 会自动同步 `data-virtual-width` / `data-virtual-height`，并且只有首行、滚动偏移、缓存数量、数据量或强制刷新变化时才批量更新 DOM。选择状态、排序、数据内容变化后调用 `table.invalidate()`，下一次 `refresh` 会强制重写可见池。
+
+### 表格面板自适应
+
+属性表这类可拖宽面板可以复用 `skui::VirtualTablePanelLayout`：
+
+- 面板宽度会被限制在当前窗口内，不会拖到超过主窗口。
+- 工具栏按钮宽度通过 `FlowRowLayoutConfig` 计算自动换行后的高度。
+- 表格高度会按当前窗口逻辑高度扣除标题、工具栏、底部信息区后占满剩余空间。
+- `renderNeeded()` 为 `false` 时，不需要重复写入面板和表格尺寸样式；只要等待下一帧绘制即可。
+
+这类布局仍然由 Yoga 负责普通节点排版；`VirtualTablePanelLayout` 只负责把需要跨节点同步的业务尺寸计算出来，再通过 `setStylesById` 或 `applyUpdates` 写回对应节点。
 
 ## 资源路径
 
@@ -317,5 +483,7 @@ $env:https_proxy = "http://127.0.0.1:10090"
 - 平台事件已转成 `skui::Event`。
 - 剪贴板读写回调已设置；使用 `SkuiWin32Dx12` 时默认已设置。
 - 鼠标光标读取 `Runtime::cursor()` 并映射到平台光标；使用 `SkuiWin32Dx12` 时默认已设置。
+- 普通 DOM 组合下拉框优先复用 `skui::DropdownState`，不要在每个页面重复写展开/关闭/选中同步逻辑。
 - 大量数据界面使用虚拟滚动，不创建全量 DOM 节点。
+- 大表格优先复用 `skui::VirtualTableAdapter`，由页面只提供列定义、池化 DOM id 规则和数据源。
 - 使用 `applyUpdates` 批量更新，避免一帧内多次重复布局。
