@@ -11,6 +11,8 @@
 | `Skui` | HTML/CSS 解析、DOM、样式、Yoga 布局、事件、Skia 绘制 | 已经有窗口和 Skia canvas 的项目 |
 | `SkuiWin32Dx12` | Win32 窗口、DX12 swapchain、鼠标键盘 IME、剪贴板、光标适配 | Windows 原生项目快速拉起一个 SkUI 窗口 |
 
+`SkuiWin32Dx12` 只是当前仓库自带的一个宿主示例，不代表 SkUI 只能运行在 DX12 上。SkUI 核心 target 不创建窗口、不管理 swapchain，也不直接依赖 Win32/DX12；它只要求宿主在合适的时机提供一个有效的 `SkCanvas`，并把平台输入事件转成 `skui::Event`。
+
 Demo target：
 
 - `SkiaUiDesk`：SkUI 自制 CSS + DOM 功能 demo。
@@ -19,7 +21,18 @@ Demo target：
 
 ## 依赖
 
-项目需要 C++23，以及这些 vcpkg 包：
+项目需要 C++23，以及这些 vcpkg 包。依赖必须由目标项目自己拉取和配置，不要直接复用本仓库 `build` 目录里已经编译好的 `Skui.lib`、`SkuiWin32Dx12.lib` 或 Skia/Yoga/Lexbor 等第三方 `.lib`。
+
+原因是 SkUI 的第三方依赖和目标项目的渲染后端、资源格式、运行平台强相关。目标项目可能需要 Direct3D、OpenGL、Vulkan、CPU raster、不同图片 codec 或不同 CRT/编译参数；如果直接链接本项目预编译产物，这些选择会被本项目的构建方式固定住，后续也容易出现 ABI、运行库、Debug/Release、DPI/后端特性不一致的问题。
+
+推荐做法：
+
+- SkUI 以源码 target 的形式进入目标项目。
+- Skia、Yoga、Lexbor 由目标项目的包管理方案拉取，例如 vcpkg manifest、submodule、Conan 或目标项目已有的依赖系统。
+- SkUI 的 CMake 只使用 `find_package` / `target_link_libraries` 绑定目标项目解析出来的依赖 target。
+- 目标项目根据自己的后端选择 Skia feature；例如 Win32/DX12 宿主需要 Direct3D，已有 OpenGL 后端的项目可以只启用 OpenGL，纯 CPU 离屏渲染项目不必被迫启用 DX12。
+
+vcpkg manifest 示例：
 
 ```json
 {
@@ -35,11 +48,32 @@ Demo target：
 }
 ```
 
-如果只接入 `Skui`，不需要 Win32/DX12 窗口和渲染相关系统库；本地位图解码走 Skia codec，使用 vcpkg 时需要给 `skia` 启用常用格式 feature，例如 `png`、`jpeg`、`webp`。接入 `SkuiWin32Dx12` 时还需要链接 `user32`、`gdi32`、`dwmapi`、`shcore`、`d3d12`、`dxgi`、`dxguid`、`d3dcompiler`、`dbghelp`、`imm32`、`shell32`、`usp10`。
+这个 manifest 只是 Win32/DX12 demo 的参考起点，不是 SkUI 对使用者的固定要求。如果只接入 `Skui`，不需要 Win32/DX12 窗口和渲染相关系统库；本地位图解码走 Skia codec，使用 vcpkg 时需要给 `skia` 启用目标项目真正需要的图片格式 feature，例如 `png`、`jpeg`、`webp`。接入 `SkuiWin32Dx12` 时还需要链接 `user32`、`gdi32`、`dwmapi`、`shcore`、`d3d12`、`dxgi`、`dxguid`、`d3dcompiler`、`dbghelp`、`imm32`、`shell32`、`usp10`。
+
+不要这样接入：
+
+```cmake
+# 错误：把本仓库某次构建出来的产物硬塞给目标项目。
+target_link_directories(MyApp PRIVATE D:/CMakeProject/SkiaTest/build/ninja-vcpkg)
+target_link_libraries(MyApp PRIVATE Skui.lib skia.lib yoga.lib lexbor.lib)
+```
+
+正确方向是让目标项目在自己的构建里生成这些 target：
+
+```cmake
+# 正确：依赖由目标项目 toolchain / package manager 解析。
+find_package(unofficial-skia CONFIG REQUIRED)
+find_package(yoga CONFIG REQUIRED)
+find_package(lexbor CONFIG REQUIRED)
+
+add_library(Skui STATIC ...)
+target_link_libraries(Skui PUBLIC unofficial::skia::skia unofficial::skia::modules::svg yoga::yogacore)
+target_link_libraries(Skui PRIVATE lexbor::lexbor_static)
+```
 
 ## 方案一：直接复制源码接入
 
-适合当前阶段。把这些目录复制到目标项目：
+适合当前阶段，也是最推荐给其他项目的接入方式。把这些目录复制到目标项目，由目标项目自己的 CMake 和依赖系统编译 SkUI：
 
 ```text
 src/skui/public/
@@ -67,7 +101,7 @@ src/d3d_presenter.cpp
 src/perf_trace.h
 ```
 
-目标项目 CMake：
+目标项目 CMake。这里的 `find_package` 必须解析到目标项目自己的依赖安装结果，不应该指向本仓库的构建目录：
 
 ```cmake
 find_package(unofficial-skia CONFIG REQUIRED)
@@ -144,7 +178,9 @@ add_subdirectory(external/SkiaTest)
 target_link_libraries(MyApp PRIVATE Skui)
 ```
 
-这个方式会同时带入本仓库 demo target。后续如果要做成更干净的库，建议增加 `SKUI_BUILD_DEMOS` / `SKUI_BUILD_TESTS` 选项，把 demo 从库构建里隔离出去。
+这个方式仍然必须使用目标项目自己的 toolchain、vcpkg manifest 或其他依赖解析方式；它只是复用源码目录，不是复用本仓库编译产物。不要把 `external/SkiaTest/build` 里的库文件提交给目标项目使用。
+
+这个方式会同时带入本仓库 demo target。后续如果要做成更干净的库，建议增加 `SKUI_BUILD_DEMOS` / `SKUI_BUILD_TESTS` 选项，把 demo 从库构建里隔离出去。对正式项目来说，当前更建议使用“方案一”的源码 target 接入方式，只复制 `Skui` / `SkuiWin32Dx12` 需要的源码和 public 头文件。
 
 ## 方案三：使用 Win32/DX12 宿主
 
@@ -177,7 +213,29 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCmd) {
 
 ## 方案四：只接入运行时和自己的渲染循环
 
-如果目标项目已经有窗口、消息循环和 Skia `SkCanvas`，只需要 `Skui`：
+如果目标项目已经有窗口、消息循环和 Skia `SkCanvas`，只需要 `Skui`。这也是接入新后端的标准路径：新后端负责窗口、GPU context、swapchain、帧调度和平台事件；SkUI 负责 DOM、CSS、布局、事件分发和在 `SkCanvas` 上绘制。
+
+后端边界建议这样划分：
+
+| 职责 | 归属 |
+| --- | --- |
+| HTML/CSS 解析、DOM、Yoga 布局、命中测试、控件状态 | `Skui` |
+| Skia 绘制命令输出 | `Skui`，通过 `Runtime::render(SkCanvas*)` |
+| 窗口创建、swapchain、GPU surface、present | 目标项目后端 |
+| 鼠标、键盘、输入法、剪贴板、光标 | 目标项目平台适配层 |
+| 图片加载完成后的重绘调度 | 目标项目通过 `RuntimeOptions::requestRedraw` 接入 |
+
+接入流程：
+
+1. 在目标项目里按源码 target 编译 `Skui`，不要依赖 `SkuiWin32Dx12`。
+2. 目标项目按自己的后端创建 Skia surface，例如 Direct3D、OpenGL、Vulkan、Metal、Raster surface 或已有引擎暴露的 `SkCanvas`。
+3. 创建 `skui::Runtime`，设置 `assetRoot`、剪贴板回调、重绘回调和业务事件回调。
+4. 窗口尺寸或 DPI 变化时调用 `Runtime::resize(width, height, dpiScale)`。
+5. 平台输入事件转成 `skui::Event` 后调用 `Runtime::handleEvent(event)`。
+6. 每帧拿到目标后端当前帧的 `SkCanvas`，调用 `Runtime::render(canvas)`，再由目标后端 present。
+7. 图片异步加载、状态更新或输入事件触发重绘时，由宿主根据 `requestRedraw` 或自己的 dirty flag 安排下一帧。
+
+最小宿主循环示例：
 
 ```cpp
 #include "skui_runtime.h"
@@ -213,6 +271,22 @@ ui.render(canvas);
 ```
 
 `Runtime::renderToBgraPixels` 可用于离屏截图、自动化测试和视觉回归。
+
+### 新后端适配清单
+
+新增 OpenGL、Vulkan、Metal、SDL、Qt、游戏引擎或已有 CAD/GIS 渲染后端时，不需要改 SkUI 核心，通常只需要新增一个宿主 target，例如 `SkuiSdlGl`、`SkuiQtRaster` 或项目自己的 `MyAppSkuiHost`。
+
+新后端需要实现这些连接点：
+
+- **SkCanvas 来源**：每帧提供目标 surface 对应的 `SkCanvas`，并保证 `Runtime::render` 调用期间 canvas 有效。
+- **尺寸同步**：窗口逻辑宽高和 DPI scale 变化后调用 `Runtime::resize`。
+- **事件转换**：把平台鼠标、滚轮、键盘、文本输入、IME 组合文本、焦点变化转成 `skui::Event`。
+- **剪贴板**：设置 `RuntimeOptions::readClipboardText` 和 `RuntimeOptions::writeClipboardText`，文本统一转成 UTF-8。
+- **光标**：每次输入事件或 hover 变化后读取 `Runtime::cursor()`，映射成平台光标。
+- **重绘调度**：设置 `RuntimeOptions::requestRedraw`，图片加载、动画或运行时更新完成后能唤醒后端绘制一帧。
+- **资源路径**：设置 `RuntimeOptions::assetRoot`，并在目标项目构建后复制 HTML、CSS、SVG、图片等资源。
+
+不同后端只差在“如何得到 SkCanvas”和“如何接入平台事件”。只要 Skia 能在目标后端上创建 surface，SkUI 就可以复用同一套 DOM/CSS/布局和控件逻辑。
 
 ## 平台事件适配
 
@@ -505,7 +579,10 @@ $env:https_proxy = "http://127.0.0.1:10090"
 ## 接入检查清单
 
 - `Skui` 源码和 public 头文件已加入目标项目。
-- Skia、Skia SVG、Yoga、Lexbor 都能被 CMake 找到。
+- Skia、Skia SVG、Yoga、Lexbor 由目标项目自己拉取、配置并能被 CMake 找到。
+- 没有链接本仓库 `build` 目录里的预编译 `.lib`，也没有把本仓库的第三方依赖产物当成 SDK 分发。
+- Skia feature 与目标项目后端一致，例如 DX12 项目启用 Direct3D，OpenGL 项目启用 OpenGL，离屏 CPU 渲染项目只保留必要 feature。
+- 如果目标项目不是 Win32/DX12，不需要链接 `SkuiWin32Dx12`；只要自己提供 `SkCanvas`、事件转换和重绘调度即可。
 - 资源目录会随构建复制到运行目录，或 `assetRoot` 指到正确位置。
 - 平台事件已转成 `skui::Event`。
 - 剪贴板读写回调已设置；使用 `SkuiWin32Dx12` 时默认已设置。
