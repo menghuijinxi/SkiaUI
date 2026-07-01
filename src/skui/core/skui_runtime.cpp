@@ -1261,6 +1261,13 @@ bool Runtime::handleEvent(const Event& event) {
         layoutNeeded = true;
         break;
     case EventType::MouseDoubleClick:
+        if (event.button == MouseButton::None) {
+            return false;
+        }
+        impl_->mousePressed = true;
+        impl_->pressedButton = event.button;
+        impl_->pressedLeaf = hit;
+        impl_->hoveredLeaf = hit;
         if (Node* input = inputTarget(hit)) {
             stateChanged = impl_->setFocusedNode(input) || stateChanged;
             layoutNeeded = true;
@@ -1289,6 +1296,11 @@ bool Runtime::handleEvent(const Event& event) {
         } else {
             consumed = hit != nullptr;
         }
+        if (Node* target = actionTarget(hit); target && impl_->options.onElementEvent) {
+            impl_->options.onElementEvent(makeElementEvent(ElementEventType::MouseDown, *target, event, x, y));
+        }
+        stateChanged = true;
+        layoutNeeded = true;
         break;
     case EventType::MouseUp: {
         if (event.button == MouseButton::None) {

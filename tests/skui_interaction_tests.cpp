@@ -1,4 +1,5 @@
 #include "skui_runtime.h"
+#include "skui_virtual_table.h"
 
 #include "include/core/SkData.h"
 #include "include/core/SkImageInfo.h"
@@ -98,7 +99,9 @@ void sendMouse(skui::Runtime& runtime, skui::EventType type, float x, float y, b
     event.x = x;
     event.y = y;
     event.shiftKey = shift;
-    if (type == skui::EventType::MouseDown || type == skui::EventType::MouseUp) {
+    if (type == skui::EventType::MouseDown ||
+        type == skui::EventType::MouseDoubleClick ||
+        type == skui::EventType::MouseUp) {
         event.button = skui::MouseButton::Left;
     }
     runtime.handleEvent(event);
@@ -346,6 +349,9 @@ int main() {
         sendMouse(buttonRuntime, skui::EventType::MouseDown, 20.0f, 20.0f);
         sendMouse(buttonRuntime, skui::EventType::MouseUp, 20.0f, 20.0f);
         ok = expect(buttonClicks == 1, "click should be emitted for data-action button") && ok;
+        sendMouse(buttonRuntime, skui::EventType::MouseDoubleClick, 20.0f, 20.0f);
+        sendMouse(buttonRuntime, skui::EventType::MouseUp, 20.0f, 20.0f);
+        ok = expect(buttonClicks == 2, "double-click press should also emit a button click") && ok;
     }
 
     constexpr std::string_view pointerEventsHtml = R"html(
@@ -1148,6 +1154,49 @@ int main() {
                 "resetting virtual height should report success") && ok;
     sendWheel(virtualRuntime, 20.0f, 20.0f, -24000.0f);
     ok = expect(virtualScrollY <= 960.0f, "pooled row position should not expand virtual scroll range") && ok;
+
+    skui::VirtualTableGeometry tableGeometry("row-",
+                                             "cell-",
+                                             "header-",
+                                             {{"id", 40}, {"name", 70}, {"type", 50}},
+                                             24,
+                                             18,
+                                             22);
+    ok = expect(tableGeometry.contentWidth() == 184, "virtual table geometry should include row gutter width") && ok;
+    ok = expect(tableGeometry.contentHeight(10) == 238, "virtual table geometry should include header and row heights") && ok;
+    ok = expect(tableGeometry.cellId(2, "name") == "cell-3-name", "virtual table geometry should build pooled cell ids") && ok;
+
+    skui::VirtualWindowState windowState({100, tableGeometry.rowHeight(), tableGeometry.headerHeight(), 8, 3, 1});
+    const skui::VirtualWindowFrame windowFrame = windowState.update(44.0f, 88);
+    ok = expect(windowFrame.firstItem == 2, "virtual window should calculate first visible item from scroll offset") && ok;
+    ok = expect(tableGeometry.rowTop(windowFrame, 0) == 62, "virtual table row top should include header offset") && ok;
+
+    skui::VirtualTablePanelConfig panelConfig;
+    panelConfig.panelLeft = 10;
+    panelConfig.minPanelWidth = 60;
+    panelConfig.rightGap = 5;
+    panelConfig.contentInset = 4;
+    panelConfig.minContentWidth = 40;
+    panelConfig.toolbarExtraWidth = 2;
+    panelConfig.toolbarBaseHeight = 20;
+    panelConfig.tableBaseTop = 30;
+    panelConfig.tableMinHeight = 15;
+    panelConfig.tableBottomGap = 6;
+    panelConfig.reservedBottomHeight = 8;
+    panelConfig.toolbar = {{30, 30, 30}, 20, 5};
+    skui::VirtualTablePanelLayout panelLayout(panelConfig, 90);
+    skui::Runtime panelRuntime(options);
+    panelRuntime.resize(120, 100, 1.0f);
+    ok = expect(panelLayout.update(panelRuntime, 200), "virtual table panel should request initial style render") && ok;
+    const skui::VirtualTablePanelFrame firstPanelFrame = panelLayout.frame();
+    ok = expect(firstPanelFrame.panelWidth == 105, "virtual table panel should clamp width to viewport") && ok;
+    ok = expect(firstPanelFrame.toolbarHeight == 45, "virtual table panel should wrap toolbar controls") && ok;
+    ok = expect(firstPanelFrame.tableHeight == 31, "virtual table panel should use remaining table height") && ok;
+    panelLayout.markRendered();
+    panelRuntime.resize(120, 220, 1.0f);
+    ok = expect(!panelLayout.update(panelRuntime, 200), "table height-only resize should not request panel style updates") && ok;
+    ok = expect(panelLayout.frame().tableHeight > firstPanelFrame.tableHeight,
+                "table height-only resize should still update viewport height for virtual rows") && ok;
 
     constexpr std::string_view flexWrapHtml = R"html(
 <!doctype html>

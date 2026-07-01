@@ -7,6 +7,7 @@
 
 #include "skui_win32_app.h"
 #include "skui_runtime_helpers.h"
+#include "skui_virtual_table.h"
 #include "skui_virtual_window.h"
 
 #include "include/core/SkColor.h"
@@ -59,56 +60,6 @@ constexpr std::string_view kNavPositions[] = {
     "nav-pos-change",
     "nav-pos-settings",
 };
-constexpr std::string_view kAttrRows[] = {
-    "attr-row-1",
-    "attr-row-2",
-    "attr-row-3",
-    "attr-row-4",
-    "attr-row-5",
-    "attr-row-6",
-    "attr-row-7",
-    "attr-row-8",
-    "attr-row-9",
-    "attr-row-10",
-    "attr-row-11",
-    "attr-row-12",
-    "attr-row-13",
-    "attr-row-14",
-    "attr-row-15",
-    "attr-row-16",
-    "attr-row-17",
-    "attr-row-18",
-    "attr-row-19",
-    "attr-row-20",
-    "attr-row-21",
-    "attr-row-22",
-    "attr-row-23",
-    "attr-row-24",
-    "attr-row-25",
-    "attr-row-26",
-    "attr-row-27",
-    "attr-row-28",
-    "attr-row-29",
-    "attr-row-30",
-    "attr-row-31",
-    "attr-row-32",
-    "attr-row-33",
-    "attr-row-34",
-    "attr-row-35",
-    "attr-row-36",
-    "attr-row-37",
-    "attr-row-38",
-    "attr-row-39",
-    "attr-row-40",
-    "attr-row-41",
-    "attr-row-42",
-    "attr-row-43",
-    "attr-row-44",
-    "attr-row-45",
-    "attr-row-46",
-    "attr-row-47",
-    "attr-row-48",
-};
 constexpr std::string_view kAttrCols[] = {
     "id",
     "name",
@@ -121,12 +72,24 @@ constexpr std::string_view kAttrCols[] = {
     "status",
     "note",
 };
+const skui::VirtualTableGeometry kAttrTable("attr-row-",
+                                            "attr-cell-",
+                                            "attr-header-",
+                                            {{"id", 80},
+                                             {"name", 120},
+                                             {"landuse", 150},
+                                             {"height", 110},
+                                             {"type", 120},
+                                             {"owner", 160},
+                                             {"area", 120},
+                                             {"updated", 160},
+                                             {"status", 120},
+                                             {"note", 220}},
+                                            44,
+                                            42,
+                                            40);
 constexpr int kAttrPoolRowCount = 48;
 constexpr int kAttrTotalRows = 100000;
-constexpr int kAttrHeaderHeight = 42;
-constexpr int kAttrRowHeight = 40;
-constexpr int kAttrVirtualHeight = kAttrHeaderHeight + kAttrTotalRows * kAttrRowHeight;
-constexpr int kAttrVirtualWidth = 1404;
 constexpr std::string_view kPropertyLayers[] = {
     "地块边界.shp",
     "道路中心线.shp",
@@ -136,8 +99,6 @@ constexpr std::string_view kPropertyLayers[] = {
 constexpr int kPropertyPanelLeft = 134;
 constexpr int kPropertyPanelMinWidth = 500;
 constexpr int kPropertyPanelDefaultWidth = 610;
-constexpr int kPropertyContentLeft = 160;
-constexpr int kAttrRowGutterWidth = 44;
 constexpr int kPropertyContentInset = 26;
 constexpr int kPropertyRightGap = 8;
 constexpr int kPropertyStatusHeight = 60;
@@ -147,24 +108,36 @@ constexpr int kPropertyTableBottomGap = 252;
 constexpr int kPropertyToolbarButtonHeight = 39;
 constexpr int kPropertyToolbarGap = 8;
 constexpr int kPropertyToolbarBaseHeight = 42;
+const skui::VirtualTablePanelConfig kPropertyPanelLayoutConfig{
+    kPropertyPanelLeft,
+    kPropertyPanelMinWidth,
+    kPropertyRightGap,
+    kPropertyContentInset,
+    320,
+    8,
+    kPropertyToolbarBaseHeight,
+    kPropertyTableBaseTop,
+    kPropertyTableMinHeight,
+    kPropertyTableBottomGap,
+    kPropertyStatusHeight,
+    {{100, 100, 88, 88, 98, 78, 78}, kPropertyToolbarButtonHeight, kPropertyToolbarGap},
+};
 
 struct PropertyDemoState {
     bool draggingPanel = false;
     bool attributesVisible = true;
     bool layerDropdownOpen = false;
     bool propertiesPageVisible = false;
-    int panelWidth = kPropertyPanelDefaultWidth;
+    skui::VirtualTablePanelLayout panelLayout{kPropertyPanelLayoutConfig, kPropertyPanelDefaultWidth};
     float dragStartX = 0.0f;
     int dragStartWidth = kPropertyPanelDefaultWidth;
     float attrScrollY = 0.0f;
     skui::VirtualWindowState attrWindow{{kAttrTotalRows,
-                                          kAttrRowHeight,
-                                          kAttrHeaderHeight,
+                                          kAttrTable.rowHeight(),
+                                          kAttrTable.headerHeight(),
                                           kAttrPoolRowCount,
                                           7,
                                           1}};
-    int renderedPanelWidth = -1;
-    int renderedTableTop = -1;
     int selectedAttrRow = -1;
     int selectedCellRow = 1;
     std::string selectedCellCol = "landuse";
@@ -180,8 +153,6 @@ struct PropertyDemoState {
 PropertyDemoState gPropertyState;
 
 using skui::px;
-using skui::runtimeLogicalHeight;
-using skui::runtimeLogicalWidth;
 using skui::splitActionPayload;
 using skui::style;
 
@@ -318,40 +289,12 @@ void setStatusSummary(skui::Runtime& runtime, std::string_view message = {}) {
     }
 }
 
-int attrColumnBaseLeft(std::string_view col) {
-    return col == "id" ? 0 :
-           col == "name" ? 80 :
-           col == "landuse" ? 200 :
-           col == "height" ? 350 :
-           col == "type" ? 460 :
-           col == "owner" ? 580 :
-           col == "area" ? 740 :
-           col == "updated" ? 860 :
-           col == "status" ? 1020 : 1140;
-}
-
-int attrColumnLeft(std::string_view col) {
-    return kAttrRowGutterWidth + attrColumnBaseLeft(col);
-}
-
-int attrColumnWidth(std::string_view col) {
-    return col == "id" ? 80 :
-           col == "name" ? 120 :
-           col == "landuse" ? 150 :
-           col == "height" ? 110 :
-           col == "type" ? 120 :
-           col == "owner" ? 160 :
-           col == "area" ? 120 :
-           col == "updated" ? 160 :
-           col == "status" ? 120 : 220;
-}
-
 std::string rowPoolId(int poolIndex) {
-    return "attr-row-" + std::to_string(poolIndex + 1);
+    return kAttrTable.rowId(poolIndex);
 }
 
 std::string cellPoolId(int poolIndex, std::string_view col) {
-    return "attr-cell-" + std::to_string(poolIndex + 1) + "-" + std::string(col);
+    return kAttrTable.cellId(poolIndex, col);
 }
 
 int rowIndexForPool(int poolIndex) {
@@ -405,21 +348,6 @@ std::string attrCellType(std::string_view col) {
            col == "updated" ? "Date" : "Text";
 }
 
-int propertyToolbarHeight(int width) {
-    constexpr int toolWidths[] = {100, 100, 88, 88, 98, 78, 78};
-    int rows = 1;
-    int lineWidth = 0;
-    for (const int toolWidth : toolWidths) {
-        const int itemWidth = toolWidth + kPropertyToolbarGap;
-        if (lineWidth > 0 && lineWidth + itemWidth > width) {
-            ++rows;
-            lineWidth = 0;
-        }
-        lineWidth += itemWidth;
-    }
-    return rows * kPropertyToolbarButtonHeight + (rows - 1) * kPropertyToolbarGap;
-}
-
 std::string cellActionFor(int poolIndex, int rowIndex, std::string_view col) {
     return "select-attr-cell:" + cellPoolId(poolIndex, col) + "|" +
            std::to_string(rowIndex) + "|" + std::string(col) + "|" +
@@ -431,9 +359,9 @@ void showPage(skui::Runtime& runtime, std::string_view page) {
         gPropertyState.propertiesPageVisible = true;
         runtime.addClassById("layer-page", "page-hidden");
         runtime.removeClassById("properties-page", "page-hidden");
-        runtime.setAttributesById({{"property-table-viewport", "data-virtual-width", std::to_string(kAttrVirtualWidth)},
-                                   {"property-table-viewport", "data-virtual-height", std::to_string(kAttrVirtualHeight)}});
-        setPropertyPanelWidth(runtime, gPropertyState.panelWidth);
+        runtime.setAttributesById({{"property-table-viewport", "data-virtual-width", std::to_string(kAttrTable.contentWidth())},
+                                   {"property-table-viewport", "data-virtual-height", std::to_string(kAttrTable.contentHeight(kAttrTotalRows))}});
+        setPropertyPanelWidth(runtime, gPropertyState.panelLayout.requestedWidth());
         refreshAttrWindow(runtime, gPropertyState.attrScrollY, true);
     } else {
         gPropertyState.propertiesPageVisible = false;
@@ -459,32 +387,24 @@ void selectNavItem(skui::Runtime& runtime, std::string_view navName) {
 }
 
 bool setPropertyPanelWidth(skui::Runtime& runtime, int width) {
-    const int maxWidth = std::max(kPropertyPanelMinWidth, runtimeLogicalWidth(runtime) - kPropertyPanelLeft - kPropertyRightGap);
-    gPropertyState.panelWidth = std::clamp(width, kPropertyPanelMinWidth, maxWidth);
-    const int contentWidth = std::max(320, gPropertyState.panelWidth - kPropertyContentInset * 2);
-    const int toolbarWidth = contentWidth + 8;
-    const int toolbarHeight = propertyToolbarHeight(toolbarWidth);
-    const int tableTop = kPropertyTableBaseTop + std::max(0, toolbarHeight - kPropertyToolbarBaseHeight);
-    const int tableHeight = std::max(kPropertyTableMinHeight,
-                                     runtimeLogicalHeight(runtime) - kPropertyStatusHeight - tableTop - kPropertyTableBottomGap);
-    const skui::VirtualWindowFrame frame = gPropertyState.attrWindow.update(gPropertyState.attrScrollY, tableHeight);
-    if (gPropertyState.renderedPanelWidth != gPropertyState.panelWidth ||
-        gPropertyState.renderedTableTop != tableTop) {
+    const bool panelChanged = gPropertyState.panelLayout.update(runtime, width);
+    const skui::VirtualTablePanelFrame& panel = gPropertyState.panelLayout.frame();
+    const skui::VirtualWindowFrame frame = gPropertyState.attrWindow.update(gPropertyState.attrScrollY, panel.tableHeight);
+    if (panelChanged) {
         runtime.setStylesById({
-            {"property-panel", style({{"width", px(static_cast<float>(gPropertyState.panelWidth))}})},
-            {"property-search", style({{"width", px(static_cast<float>(contentWidth))}})},
-            {"property-toolbar", style({{"width", px(static_cast<float>(toolbarWidth))},
-                                        {"height", px(static_cast<float>(toolbarHeight))}})},
-            {"property-table-viewport", style({{"top", px(static_cast<float>(tableTop))},
-                                               {"width", px(static_cast<float>(contentWidth))}})},
-            {"selected-cell-card", style({{"width", px(static_cast<float>(contentWidth))}})},
+            {"property-panel", style({{"width", px(static_cast<float>(panel.panelWidth))}})},
+            {"property-search", style({{"width", px(static_cast<float>(panel.contentWidth))}})},
+            {"property-toolbar", style({{"width", px(static_cast<float>(panel.toolbarWidth))},
+                                        {"height", px(static_cast<float>(panel.toolbarHeight))}})},
+            {"property-table-viewport", style({{"top", px(static_cast<float>(panel.tableTop))},
+                                               {"width", px(static_cast<float>(panel.contentWidth))}})},
+            {"selected-cell-card", style({{"width", px(static_cast<float>(panel.contentWidth))}})},
             {"selected-cell-value-row", style({{"bottom", "132px"},
-                                               {"width", px(static_cast<float>(contentWidth - 40))}})},
+                                               {"width", px(static_cast<float>(std::max(0, panel.contentWidth - 40)))}})},
             {"selected-cell-type-row", style({{"bottom", "86px"},
-                                              {"width", px(static_cast<float>(contentWidth - 40))}})},
+                                              {"width", px(static_cast<float>(std::max(0, panel.contentWidth - 40)))}})},
         });
-        gPropertyState.renderedPanelWidth = gPropertyState.panelWidth;
-        gPropertyState.renderedTableTop = tableTop;
+        gPropertyState.panelLayout.markRendered();
     }
     return frame.cacheExpanded;
 }
@@ -493,7 +413,7 @@ void layoutPropertyPage(skui::Runtime& runtime) {
     if (!gPropertyState.propertiesPageVisible) {
         return;
     }
-    const bool visibleRowsChanged = setPropertyPanelWidth(runtime, gPropertyState.panelWidth);
+    const bool visibleRowsChanged = setPropertyPanelWidth(runtime, gPropertyState.panelLayout.requestedWidth());
     refreshAttrWindow(runtime, gPropertyState.attrScrollY, visibleRowsChanged);
 }
 
@@ -650,12 +570,8 @@ void handleFocusSelection(skui::Runtime& runtime) {
 }
 
 void refreshAttrWindow(skui::Runtime& runtime, float scrollY, bool force) {
-    const int toolbarWidth = std::max(320, gPropertyState.panelWidth - kPropertyContentInset * 2) + 8;
-    const int toolbarHeight = propertyToolbarHeight(toolbarWidth);
-    const int tableTop = kPropertyTableBaseTop + std::max(0, toolbarHeight - kPropertyToolbarBaseHeight);
-    const int tableHeight = std::max(kPropertyTableMinHeight,
-                                     runtimeLogicalHeight(runtime) - kPropertyStatusHeight - tableTop - kPropertyTableBottomGap);
-    const skui::VirtualWindowFrame frame = gPropertyState.attrWindow.update(scrollY, tableHeight, force);
+    const skui::VirtualTablePanelFrame& panel = gPropertyState.panelLayout.frame();
+    const skui::VirtualWindowFrame frame = gPropertyState.attrWindow.update(scrollY, panel.tableHeight, force);
     gPropertyState.attrScrollY = frame.scroll;
     if (!frame.renderNeeded) {
         return;
@@ -668,23 +584,15 @@ void refreshAttrWindow(skui::Runtime& runtime, float scrollY, bool force) {
     texts.reserve(static_cast<size_t>(kAttrPoolRowCount) * std::size(kAttrCols));
     attributes.reserve(static_cast<size_t>(kAttrPoolRowCount) * (std::size(kAttrCols) + 1));
 
-    styles.push_back({"attr-handle-header", style({{"top", px(frame.scroll)}})});
-    for (std::string_view col : kAttrCols) {
-        styles.push_back({"attr-header-" + std::string(col), style({{"left", px(static_cast<float>(attrColumnLeft(col)))},
-                                                                     {"top", px(frame.scroll)},
-                                                                     {"width", px(static_cast<float>(attrColumnWidth(col)))}})});
-    }
+    kAttrTable.appendHeaderStyles(styles, frame, "attr-handle-header");
 
     for (int poolIndex = 0; poolIndex < kAttrPoolRowCount; ++poolIndex) {
         const int rowIndex = rowIndexForPool(poolIndex);
-        const int top = frame.scrollOffset + kAttrHeaderHeight + poolIndex * kAttrRowHeight;
+        const int top = kAttrTable.rowTop(frame, poolIndex);
         const std::string row = rowPoolId(poolIndex);
         const bool cached = poolIndex < frame.cachedItems;
         const bool rowSelected = rowIndex == gPropertyState.selectedAttrRow;
-        styles.push_back({row + "-bg", style({{"top", px(static_cast<float>(top))},
-                                              {"display", cached ? "flex" : "none"}})});
-        styles.push_back({row + "-handle", style({{"top", px(static_cast<float>(top))},
-                                                  {"display", cached ? "flex" : "none"}})});
+        kAttrTable.appendRowStyles(styles, poolIndex, top, cached);
         attributes.push_back({row + "-bg", "data-action", "select-attr-row:" + std::to_string(rowIndex)});
         attributes.push_back({row + "-handle", "data-action", "select-attr-row:" + std::to_string(rowIndex)});
         attributes.push_back({row + "-bg", "class", rowSelected ? "attr-row-bg row-selected-highlight" : "attr-row-bg"});
@@ -692,10 +600,7 @@ void refreshAttrWindow(skui::Runtime& runtime, float scrollY, bool force) {
         for (std::string_view col : kAttrCols) {
             const std::string cell = cellPoolId(poolIndex, col);
             const bool cellSelected = rowIndex == gPropertyState.selectedCellRow && col == gPropertyState.selectedCellCol;
-            styles.push_back({cell, style({{"left", px(static_cast<float>(attrColumnLeft(col)))},
-                                           {"top", px(static_cast<float>(top))},
-                                           {"width", px(static_cast<float>(attrColumnWidth(col)))},
-                                           {"display", cached ? "flex" : "none"}})});
+            kAttrTable.appendCellStyle(styles, poolIndex, col, top, cached);
             texts.push_back({cell, attrCellValue(rowIndex, col)});
             attributes.push_back({cell, "data-action", cellActionFor(poolIndex, rowIndex, col)});
             attributes.push_back({cell, "class", "attr-cell col-" + std::string(col) + (cellSelected ? " cell-selected-highlight" : "")});
@@ -757,7 +662,7 @@ void handlePropertyAction(skui::Runtime& runtime, const skui::ElementEvent& even
         if (event.type == skui::ElementEventType::MouseDown) {
             gPropertyState.draggingPanel = true;
             gPropertyState.dragStartX = event.x;
-            gPropertyState.dragStartWidth = gPropertyState.panelWidth;
+            gPropertyState.dragStartWidth = gPropertyState.panelLayout.panelWidth();
         } else if (event.type == skui::ElementEventType::MouseMove && gPropertyState.draggingPanel) {
             const int nextWidth = gPropertyState.dragStartWidth + static_cast<int>(std::lround(event.x - gPropertyState.dragStartX));
             setPropertyPanelWidth(runtime, nextWidth);

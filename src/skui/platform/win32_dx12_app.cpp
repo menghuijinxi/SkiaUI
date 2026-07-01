@@ -540,6 +540,7 @@ private:
             app->sendMouseEvent(hwnd, EventType::MouseDown, lParam, MouseButton::Left);
             return 0;
         case WM_LBUTTONDBLCLK:
+            SetCapture(hwnd);
             app->sendMouseEvent(hwnd, EventType::MouseDoubleClick, lParam, MouseButton::Left);
             return 0;
         case WM_LBUTTONUP:
