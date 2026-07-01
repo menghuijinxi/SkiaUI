@@ -38,6 +38,7 @@ add_library(Skui STATIC
 )
 
 add_library(SkuiWin32Dx12 STATIC
+    src/skui/platform/win32_event_adapter.cpp
     src/skui/platform/win32_dx12_app.cpp
     src/d3d_presenter.cpp
 )

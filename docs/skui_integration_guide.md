@@ -108,6 +108,33 @@ if(MSVC)
 endif()
 ```
 
+如果同时接入 `SkuiWin32Dx12`，还需要把 Win32 窗口宿主、Win32 事件适配器和 DX12 presenter 加进目标：
+
+```cmake
+add_library(SkuiWin32Dx12 STATIC
+    src/skui/platform/win32_event_adapter.cpp
+    src/skui/platform/win32_dx12_app.cpp
+    src/d3d_presenter.cpp
+)
+
+target_link_libraries(SkuiWin32Dx12 PUBLIC Skui)
+
+target_link_libraries(SkuiWin32Dx12 PRIVATE
+    user32
+    gdi32
+    dwmapi
+    shcore
+    d3d12
+    dxgi
+    dxguid
+    d3dcompiler
+    dbghelp
+    ole32
+    imm32
+    shell32
+)
+```
+
 ## 方案二：作为子目录接入
 
 如果目标项目能直接引用本仓库，可以把本仓库作为 submodule 或源码目录，然后在顶层 `CMakeLists.txt` 使用：
