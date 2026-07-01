@@ -169,8 +169,12 @@ struct PropertyDemoState {
     int selectedCellRow = 1;
     std::string selectedCellCol = "landuse";
     std::string sortCol;
+    std::string copiedAttrCol;
     bool sortAsc = true;
     int layerIndex = 0;
+    int layerCount = 5;
+    int visibleLayerCount = 5;
+    int totalFeatureCount = 11272;
 };
 
 PropertyDemoState gPropertyState;
@@ -184,6 +188,7 @@ using skui::style;
 bool setPropertyPanelWidth(skui::Runtime& runtime, int width);
 void refreshAttrWindow(skui::Runtime& runtime, float scrollY, bool force = false);
 void layoutPropertyPage(skui::Runtime& runtime);
+void sortAttributes(skui::Runtime& runtime, std::string_view colId);
 
 COLORREF colorRefFromSkColor(SkColor color) {
     return RGB(SkColorGetR(color), SkColorGetG(color), SkColorGetB(color));
@@ -293,6 +298,24 @@ void selectLayerRow(skui::Runtime& runtime, std::string_view rowId) {
         runtime.removeClassById(id, "row-selected");
     }
     runtime.addClassById(rowId, "row-selected");
+}
+
+std::string groupedNumber(int value) {
+    std::string digits = std::to_string(std::max(0, value));
+    for (int insert = static_cast<int>(digits.size()) - 3; insert > 0; insert -= 3) {
+        digits.insert(static_cast<size_t>(insert), ",");
+    }
+    return digits;
+}
+
+void setStatusSummary(skui::Runtime& runtime, std::string_view message = {}) {
+    runtime.setTextById("status-layer-count", "图层:" + std::to_string(gPropertyState.layerCount));
+    runtime.setTextById("status-visible-count", "可见:" + std::to_string(gPropertyState.visibleLayerCount));
+    if (message.empty()) {
+        runtime.setTextById("status-feature-count", "总要素:" + groupedNumber(gPropertyState.totalFeatureCount));
+    } else {
+        runtime.setTextById("status-feature-count", message);
+    }
 }
 
 int attrColumnBaseLeft(std::string_view col) {
@@ -542,6 +565,90 @@ void selectAttrCell(skui::Runtime& runtime,
     runtime.setTextById("selected-cell-type", type);
 }
 
+void selectVisibleCell(skui::Runtime& runtime, int rowIndex, std::string_view colId) {
+    const int poolIndex = rowIndex - gPropertyState.attrWindow.firstItem();
+    if (poolIndex < 0 || poolIndex >= kAttrPoolRowCount) {
+        setStatusSummary(runtime, "单元格不在当前视图");
+        return;
+    }
+    const std::string cellId = cellPoolId(poolIndex, colId);
+    selectAttrCell(runtime, cellId, rowIndex, colId, attrCellValue(rowIndex, colId), attrCellType(colId));
+}
+
+void handleImportShp(skui::Runtime& runtime) {
+    skui::RuntimeUpdateBatch batch(runtime);
+    ++gPropertyState.layerCount;
+    ++gPropertyState.visibleLayerCount;
+    gPropertyState.totalFeatureCount += 1846;
+    setStatusSummary(runtime, "已导入: survey_" + std::to_string(gPropertyState.layerCount) + ".shp");
+}
+
+void handleCreateLayer(skui::Runtime& runtime) {
+    skui::RuntimeUpdateBatch batch(runtime);
+    ++gPropertyState.layerCount;
+    ++gPropertyState.visibleLayerCount;
+    setStatusSummary(runtime, "已新建图层:" + std::to_string(gPropertyState.layerCount));
+}
+
+void handleAddField(skui::Runtime& runtime) {
+    skui::RuntimeUpdateBatch batch(runtime);
+    selectAttrCol(runtime, "note");
+    setStatusSummary(runtime, "已新增字段: note");
+}
+
+void handleDeleteField(skui::Runtime& runtime) {
+    skui::RuntimeUpdateBatch batch(runtime);
+    if (gPropertyState.selectedCellCol.empty()) {
+        setStatusSummary(runtime, "请先选择字段");
+        return;
+    }
+    const std::string deleted = gPropertyState.selectedCellCol;
+    selectAttrCol(runtime, "");
+    setStatusSummary(runtime, "已删除字段: " + deleted);
+}
+
+void handleCopyColumn(skui::Runtime& runtime) {
+    if (gPropertyState.selectedCellCol.empty()) {
+        setStatusSummary(runtime, "请先选择字段");
+        return;
+    }
+    gPropertyState.copiedAttrCol = gPropertyState.selectedCellCol;
+    setStatusSummary(runtime, "已复制列: " + gPropertyState.copiedAttrCol);
+}
+
+void handlePasteColumn(skui::Runtime& runtime) {
+    if (gPropertyState.copiedAttrCol.empty()) {
+        setStatusSummary(runtime, "没有可粘贴的列");
+        return;
+    }
+    skui::RuntimeUpdateBatch batch(runtime);
+    selectAttrCol(runtime, gPropertyState.copiedAttrCol);
+    setStatusSummary(runtime, "已粘贴列: " + gPropertyState.copiedAttrCol);
+}
+
+void handleHeightField(skui::Runtime& runtime) {
+    skui::RuntimeUpdateBatch batch(runtime);
+    selectAttrCol(runtime, "height");
+    sortAttributes(runtime, "height");
+    setStatusSummary(runtime, "已设为高度字段: height");
+}
+
+void handleFocusSelection(skui::Runtime& runtime) {
+    skui::RuntimeUpdateBatch batch(runtime);
+    if (gPropertyState.selectedCellRow >= 0 && !gPropertyState.selectedCellCol.empty()) {
+        selectVisibleCell(runtime, gPropertyState.selectedCellRow, gPropertyState.selectedCellCol);
+        setStatusSummary(runtime, "已对焦行:" + std::to_string(gPropertyState.selectedCellRow + 1));
+        return;
+    }
+    if (gPropertyState.selectedAttrRow >= 0) {
+        selectAttrRow(runtime, gPropertyState.selectedAttrRow);
+        setStatusSummary(runtime, "已对焦行:" + std::to_string(gPropertyState.selectedAttrRow + 1));
+        return;
+    }
+    selectAttrRow(runtime, rowIndexForPool(0));
+    setStatusSummary(runtime, "已对焦首行");
+}
+
 void refreshAttrWindow(skui::Runtime& runtime, float scrollY, bool force) {
     const int toolbarWidth = std::max(320, gPropertyState.panelWidth - kPropertyContentInset * 2) + 8;
     const int toolbarHeight = propertyToolbarHeight(toolbarWidth);
@@ -707,6 +814,18 @@ void handlePropertyAction(skui::Runtime& runtime, const skui::ElementEvent& even
     } else if (action.rfind(sortPrefix, 0) == 0) {
         skui::RuntimeUpdateBatch batch(runtime);
         sortAttributes(runtime, action.substr(sortPrefix.size()));
+    } else if (action == "attr-add-field") {
+        handleAddField(runtime);
+    } else if (action == "attr-delete-field") {
+        handleDeleteField(runtime);
+    } else if (action == "attr-copy-column") {
+        handleCopyColumn(runtime);
+    } else if (action == "attr-paste-column") {
+        handlePasteColumn(runtime);
+    } else if (action == "attr-highlight") {
+        handleHeightField(runtime);
+    } else if (action == "attr-focus") {
+        handleFocusSelection(runtime);
     }
 }
 
@@ -729,6 +848,10 @@ void installDemoInteractions(skui::Runtime& runtime) {
         } else if (action.size() >= navPrefix.size() && action.substr(0, navPrefix.size()) == navPrefix) {
             skui::RuntimeUpdateBatch batch(runtime);
             selectNavItem(runtime, action.substr(navPrefix.size()));
+        } else if (action == "import-shp") {
+            handleImportShp(runtime);
+        } else if (action == "create-layer") {
+            handleCreateLayer(runtime);
         }
 
         std::string message = "SkiaUiDesk click: " + event.action + "\n";

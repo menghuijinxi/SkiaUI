@@ -1014,7 +1014,7 @@ Runtime::Runtime(RuntimeOptions options) : impl_(std::make_unique<Impl>(std::mov
 
 Runtime::~Runtime() {
     if (impl_) {
-        impl_->renderer.clearCaches();
+        impl_->renderer.shutdownCaches();
     }
 }
 
@@ -1796,6 +1796,9 @@ Cursor Runtime::cursor() const {
 }
 
 bool Runtime::dirty() const {
+    if (impl_->renderer.consumeImageDirty()) {
+        impl_->dirty = true;
+    }
     return impl_->dirty;
 }
 

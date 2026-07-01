@@ -22,7 +22,7 @@
 | `textarea` | 多行输入框，复用输入框行为，支持换行、选区、剪贴板、IME、Ctrl+Z |
 | `selectable` | 可框选复制文本标签；普通文本默认不可选中 |
 | `progress` | 进度条，`value` / `max` 控制填充比例 |
-| `img` | 当前用于加载 SVG 文件资源 |
+| `img` | 加载本地图片资源；SVG 走 SVG DOM，位图走异步加载 |
 | `svg` | 内联 SVG，由 Skia SVG DOM 绘制 |
 
 `select` / `option` 目前没有浏览器式下拉控件行为。需要下拉框时，建议用普通节点自行组合：按钮节点负责展开，菜单节点用 `display:none` 或类名切换显示。
@@ -193,7 +193,10 @@
 
 ## 图片和 SVG
 
-- `img[src]` 当前只读取 SVG 文本资源。
+- `img[src]` 支持本地资源路径。`.svg` 文件按 SVG 文本读取；位图支持 PNG、JPEG、WebP 和 BMP 异步读取和解码。
+- 位图图片首次绘制时会进入 renderer 内部后台加载队列；加载完成前该节点不绘制图片内容，加载完成后通过 `RuntimeOptions::requestRedraw` 安排重绘。
+- 相同解析路径的位图图片会复用缓存，不会为多个 `<img>` 重复加载。
+- 位图绘制会按节点布局盒缩放，并裁剪到节点盒；节点设置 `border-radius` 时也会按圆角裁剪。
 - 内联 `<svg>` 和 SVG 文件都交给 Skia `SkSVGDOM` 渲染。
 - 支持将 SVG 中的 `currentColor` 替换为当前节点 CSS `color`。
 - SVG 会按节点布局盒缩放绘制，并裁剪到节点盒。
@@ -252,7 +255,7 @@
 - 没有 JavaScript。
 - 没有完整浏览器表单控件。
 - 没有完整 CSS 标准、外部 stylesheet、动画。
-- 没有通用图片解码；`img` 目前面向 SVG 图标。
+- `img` 只支持本地资源路径；位图支持 PNG、JPEG、WebP 和 BMP，暂不支持网络 URL、`srcset`、懒加载策略和浏览器图片事件。
 - 文本排版是单行或简单多行编辑框，不是富文本排版引擎。
 - 中文双击选词目前按单个非 ASCII 字符处理，不做自然语言分词。
 - 虚拟滚动需要业务层监听 `Scroll` 并更新池化 DOM；SkUI 只提供滚动范围、裁剪和事件。

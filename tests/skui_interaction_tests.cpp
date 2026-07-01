@@ -1,9 +1,20 @@
 #include "skui_runtime.h"
 
+#include <objbase.h>
+#include <webp/encode.h>
+#include <wincodec.h>
+#include <wrl/client.h>
+
+#include <array>
+#include <atomic>
 #include <cstdint>
+#include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -21,6 +32,13 @@ uint32_t pixelAt(const std::vector<uint32_t>& pixels, int width, int x, int y) {
 
 constexpr uint32_t solidColor(unsigned r, unsigned g, unsigned b) {
     return 0xFF000000u | (r << 16u) | (g << 8u) | b;
+}
+
+bool isMostlyRed(uint32_t color) {
+    const unsigned red = (color >> 16u) & 0xFFu;
+    const unsigned green = (color >> 8u) & 0xFFu;
+    const unsigned blue = color & 0xFFu;
+    return red > 180u && green < 80u && blue < 80u;
 }
 
 bool renderPixel(skui::Runtime& runtime, int x, int y, uint32_t& out) {
@@ -125,6 +143,140 @@ bool expect(bool condition, std::string_view message) {
     return true;
 }
 
+class ScopedComInit {
+public:
+    ScopedComInit() : hr_(CoInitializeEx(nullptr, COINIT_MULTITHREADED)) {}
+    ~ScopedComInit() {
+        if (SUCCEEDED(hr_)) {
+            CoUninitialize();
+        }
+    }
+
+    bool usable() const {
+        return SUCCEEDED(hr_) || hr_ == RPC_E_CHANGED_MODE;
+    }
+
+private:
+    HRESULT hr_ = E_FAIL;
+};
+
+bool writeBytesFixture(const std::filesystem::path& path, const unsigned char* data, size_t size) {
+    std::ofstream file(path, std::ios::binary);
+    if (!file) {
+        return false;
+    }
+    file.write(reinterpret_cast<const char*>(data), static_cast<std::streamsize>(size));
+    return file.good();
+}
+
+bool writeRedBmpFixture(const std::filesystem::path& path) {
+    static constexpr unsigned char kRedBmp[] = {
+        0x42, 0x4D, 0x3A, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x36, 0x00, 0x00, 0x00, 0x28, 0x00,
+        0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00,
+        0x00, 0x00, 0x01, 0x00, 0x18, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x13, 0x0B,
+        0x00, 0x00, 0x13, 0x0B, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0xFF, 0x00,
+    };
+    return writeBytesFixture(path, kRedBmp, sizeof(kRedBmp));
+}
+
+bool writeRedWicFixture(const std::filesystem::path& path, REFGUID containerFormat) {
+    using Microsoft::WRL::ComPtr;
+
+    ScopedComInit com;
+    if (!com.usable()) {
+        return false;
+    }
+
+    ComPtr<IWICImagingFactory> factory;
+    HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
+                                  IID_PPV_ARGS(factory.GetAddressOf()));
+    if (FAILED(hr)) {
+        return false;
+    }
+
+    ComPtr<IWICStream> stream;
+    hr = factory->CreateStream(stream.GetAddressOf());
+    if (FAILED(hr)) {
+        return false;
+    }
+
+    const std::wstring filePath = path.wstring();
+    hr = stream->InitializeFromFilename(filePath.c_str(), GENERIC_WRITE);
+    if (FAILED(hr)) {
+        return false;
+    }
+
+    ComPtr<IWICBitmapEncoder> encoder;
+    hr = factory->CreateEncoder(containerFormat, nullptr, encoder.GetAddressOf());
+    if (FAILED(hr)) {
+        return false;
+    }
+    hr = encoder->Initialize(stream.Get(), WICBitmapEncoderNoCache);
+    if (FAILED(hr)) {
+        return false;
+    }
+
+    ComPtr<IWICBitmapFrameEncode> frame;
+    ComPtr<IPropertyBag2> properties;
+    hr = encoder->CreateNewFrame(frame.GetAddressOf(), properties.GetAddressOf());
+    if (FAILED(hr)) {
+        return false;
+    }
+    hr = frame->Initialize(properties.Get());
+    if (FAILED(hr)) {
+        return false;
+    }
+    hr = frame->SetSize(2, 2);
+    if (FAILED(hr)) {
+        return false;
+    }
+
+    WICPixelFormatGUID pixelFormat = GUID_WICPixelFormat24bppBGR;
+    hr = frame->SetPixelFormat(&pixelFormat);
+    if (FAILED(hr) || !IsEqualGUID(pixelFormat, GUID_WICPixelFormat24bppBGR)) {
+        return false;
+    }
+
+    static constexpr std::array<unsigned char, 12> kRedBgr = {
+        0x00, 0x00, 0xFF, 0x00, 0x00, 0xFF,
+        0x00, 0x00, 0xFF, 0x00, 0x00, 0xFF,
+    };
+    hr = frame->WritePixels(2, 2u * 3u, static_cast<UINT>(kRedBgr.size()), const_cast<BYTE*>(kRedBgr.data()));
+    if (FAILED(hr)) {
+        return false;
+    }
+    return SUCCEEDED(frame->Commit()) && SUCCEEDED(encoder->Commit());
+}
+
+bool writeRedPngFixture(const std::filesystem::path& path) {
+    return writeRedWicFixture(path, GUID_ContainerFormatPng);
+}
+
+bool writeRedJpegFixture(const std::filesystem::path& path) {
+    return writeRedWicFixture(path, GUID_ContainerFormatJpeg);
+}
+
+bool writeRedWebpFixture(const std::filesystem::path& path) {
+    static constexpr std::array<unsigned char, 16> kRedBgra = {
+        0x00, 0x00, 0xFF, 0xFF, 0x00, 0x00, 0xFF, 0xFF,
+        0x00, 0x00, 0xFF, 0xFF, 0x00, 0x00, 0xFF, 0xFF,
+    };
+
+    uint8_t* encoded = nullptr;
+    const size_t size = WebPEncodeLosslessBGRA(kRedBgra.data(), 2, 2, 2 * 4, &encoded);
+    if (size == 0 || !encoded) {
+        return false;
+    }
+
+    const bool written = writeBytesFixture(path, encoded, size);
+    WebPFree(encoded);
+    return written;
+}
+
 }  // namespace
 
 int main() {
@@ -168,52 +320,106 @@ int main() {
 
     skui::RuntimeOptions options;
     options.clearColor = SK_ColorBLACK;
-    skui::Runtime runtime(options);
-    runtime.resize(kWidth, kHeight, 1.0f);
-
-    int clickCount = 0;
-    std::string lastAction;
-    runtime.setElementEventCallback([&](const skui::ElementEvent& event) {
-        if (event.type == skui::ElementEventType::Click) {
-            ++clickCount;
-            lastAction = event.action;
-            runtime.addClassById(event.id, "selected");
-        }
-    });
-
-    if (!runtime.loadDocumentFromString(html, "")) {
-        std::cerr << "load failed: " << runtime.lastError() << "\n";
-        return 1;
-    }
 
     bool ok = true;
-    uint32_t normal = 0;
-    uint32_t hover = 0;
-    uint32_t active = 0;
-    uint32_t selected = 0;
+    {
+        skui::Runtime runtime(options);
+        runtime.resize(kWidth, kHeight, 1.0f);
 
-    ok = renderPixel(runtime, 20, 20, normal) && ok;
-    sendMouse(runtime, skui::EventType::MouseMove, 20.0f, 20.0f);
-    ok = renderPixel(runtime, 20, 20, hover) && ok;
-    sendMouse(runtime, skui::EventType::MouseDown, 20.0f, 20.0f);
-    ok = renderPixel(runtime, 20, 20, active) && ok;
-    sendMouse(runtime, skui::EventType::MouseUp, 20.0f, 20.0f);
-    ok = renderPixel(runtime, 20, 20, selected) && ok;
-    ok = expect(normal != hover, "div:hover should change rendered output") && ok;
-    ok = expect(hover != active, "div:active should change rendered output") && ok;
-    ok = expect(clickCount == 1, "click should be emitted for data-action div") && ok;
-    ok = expect(lastAction == "tile-click", "click action should be routed from data-action") && ok;
-    ok = expect(runtime.hasClassById("tile", "selected"), "click callback should be able to mutate classes") && ok;
-    ok = expect(selected != normal, "class mutation after click should repaint") && ok;
-    ok = runtime.setTextById("tile", "label") && ok;
-    int actionMoves = 0;
-    runtime.setElementEventCallback([&](const skui::ElementEvent& event) {
-        if (event.type == skui::ElementEventType::MouseMove && event.action == "tile-click") {
-            ++actionMoves;
+        int clickCount = 0;
+        std::string lastAction;
+        runtime.setElementEventCallback([&](const skui::ElementEvent& event) {
+            if (event.type == skui::ElementEventType::Click) {
+                ++clickCount;
+                lastAction = event.action;
+                runtime.addClassById(event.id, "selected");
+            }
+        });
+
+        if (!runtime.loadDocumentFromString(html, "")) {
+            std::cerr << "load failed: " << runtime.lastError() << "\n";
+            return 1;
         }
-    });
-    sendMouse(runtime, skui::EventType::MouseMove, 20.0f, 20.0f);
-    ok = expect(actionMoves == 1, "mouse move should be emitted for data-action elements") && ok;
+        uint32_t normal = 0;
+        uint32_t hover = 0;
+        uint32_t active = 0;
+        uint32_t selected = 0;
+
+        ok = renderPixel(runtime, 20, 20, normal) && ok;
+        sendMouse(runtime, skui::EventType::MouseMove, 20.0f, 20.0f);
+        ok = renderPixel(runtime, 20, 20, hover) && ok;
+        sendMouse(runtime, skui::EventType::MouseDown, 20.0f, 20.0f);
+        ok = renderPixel(runtime, 20, 20, active) && ok;
+        sendMouse(runtime, skui::EventType::MouseUp, 20.0f, 20.0f);
+        ok = renderPixel(runtime, 20, 20, selected) && ok;
+        ok = expect(normal != hover, "div:hover should change rendered output") && ok;
+        ok = expect(hover != active, "div:active should change rendered output") && ok;
+        ok = expect(clickCount == 1, "click should be emitted for data-action div") && ok;
+        ok = expect(lastAction == "tile-click", "click action should be routed from data-action") && ok;
+        ok = expect(runtime.hasClassById("tile", "selected"), "click callback should be able to mutate classes") && ok;
+        ok = expect(selected != normal, "class mutation after click should repaint") && ok;
+        ok = runtime.setTextById("tile", "label") && ok;
+        int actionMoves = 0;
+        runtime.setElementEventCallback([&](const skui::ElementEvent& event) {
+            if (event.type == skui::ElementEventType::MouseMove && event.action == "tile-click") {
+                ++actionMoves;
+            }
+        });
+        sendMouse(runtime, skui::EventType::MouseMove, 20.0f, 20.0f);
+        ok = expect(actionMoves == 1, "mouse move should be emitted for data-action elements") && ok;
+    }
+
+    constexpr std::string_view buttonActionHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      position: relative;
+      width: 140px;
+      height: 90px;
+      background-color: #000000;
+    }
+    .button {
+      position: absolute;
+      left: 10px;
+      top: 10px;
+      width: 80px;
+      height: 40px;
+      background-color: #335577;
+    }
+    .button-label {
+      position: absolute;
+      left: 8px;
+      top: 8px;
+      width: 60px;
+      height: 20px;
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <button class="button" data-action="button-click">
+      <span class="button-label">Run</span>
+    </button>
+  </div>
+</body>
+</html>
+)html";
+    {
+        skui::Runtime buttonRuntime(options);
+        buttonRuntime.resize(kWidth, kHeight, 1.0f);
+        ok = expect(buttonRuntime.loadDocumentFromString(buttonActionHtml), "button action document should load") && ok;
+        int buttonClicks = 0;
+        buttonRuntime.setElementEventCallback([&](const skui::ElementEvent& event) {
+            if (event.type == skui::ElementEventType::Click && event.action == "button-click") {
+                ++buttonClicks;
+            }
+        });
+        sendMouse(buttonRuntime, skui::EventType::MouseDown, 20.0f, 20.0f);
+        sendMouse(buttonRuntime, skui::EventType::MouseUp, 20.0f, 20.0f);
+        ok = expect(buttonClicks == 1, "click should be emitted for data-action button") && ok;
+    }
 
     constexpr std::string_view pointerEventsHtml = R"html(
 <!doctype html>
@@ -668,6 +874,86 @@ int main() {
     ok = expect(squareTopRight == solidColor(0xAB, 0xCD, 0xEF), "border-radius shorthand should keep the top-right corner square") && ok;
     ok = expect(squareBottomLeft == solidColor(0xAB, 0xCD, 0xEF), "border-radius shorthand should keep the bottom-left corner square") && ok;
     ok = expect(squareBottomRight == solidColor(0xAB, 0xCD, 0xEF), "border-radius shorthand should keep the bottom-right corner square") && ok;
+
+    const std::filesystem::path imageFixtureDir = std::filesystem::temp_directory_path() / "skui-image-test";
+    std::error_code ec;
+    std::filesystem::create_directories(imageFixtureDir, ec);
+
+    const auto imageHtmlForSource = [](std::string_view source) {
+        std::string html = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      position: relative;
+      width: 140px;
+      height: 90px;
+      background-color: #000000;
+    }
+    .photo {
+      position: absolute;
+      left: 10px;
+      top: 10px;
+      width: 20px;
+      height: 20px;
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <img class="photo" src=")html";
+        html += source;
+        html += R"html(">
+  </div>
+</body>
+</html>
+)html";
+        return html;
+    };
+
+    struct ImageFixture {
+        const char* fileName = nullptr;
+        bool (*write)(const std::filesystem::path&) = nullptr;
+    };
+    const ImageFixture imageFixtures[] = {
+        {"red.bmp", writeRedBmpFixture},
+        {"red.png", writeRedPngFixture},
+        {"red.jpg", writeRedJpegFixture},
+        {"red.webp", writeRedWebpFixture},
+    };
+
+    for (const ImageFixture& fixture : imageFixtures) {
+        const std::filesystem::path imageFixturePath = imageFixtureDir / fixture.fileName;
+        ok = expect(fixture.write(imageFixturePath),
+                    std::string("bitmap test fixture should be written: ") + fixture.fileName) && ok;
+
+        std::atomic_int imageRedraws{0};
+        skui::RuntimeOptions imageOptions = options;
+        imageOptions.requestRedraw = [&] {
+            imageRedraws.fetch_add(1);
+        };
+        skui::Runtime imageRuntime(imageOptions);
+        imageRuntime.resize(kWidth, kHeight, 1.0f);
+        const std::string imageHtml = imageHtmlForSource(fixture.fileName);
+        if (!imageRuntime.loadDocumentFromString(imageHtml, imageFixtureDir.string())) {
+            std::cerr << "image load failed: " << imageRuntime.lastError() << "\n";
+            return 1;
+        }
+        uint32_t imageBefore = 0;
+        uint32_t imageAfter = 0;
+        ok = renderPixel(imageRuntime, 20, 20, imageBefore) && ok;
+        for (int i = 0; i < 100 && !imageRuntime.dirty(); ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        ok = renderPixel(imageRuntime, 20, 20, imageAfter) && ok;
+        ok = expect(imageBefore == solidColor(0x00, 0x00, 0x00),
+                    std::string("async bitmap image should not block the first render: ") + fixture.fileName) && ok;
+        ok = expect(imageRedraws.load() > 0,
+                    std::string("async bitmap image load should request redraw: ") + fixture.fileName) && ok;
+        ok = expect(isMostlyRed(imageAfter),
+                    std::string("async bitmap image should render after loading: ") + fixture.fileName) && ok;
+    }
 
     constexpr std::string_view responsiveHtml = R"html(
 <!doctype html>

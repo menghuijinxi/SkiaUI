@@ -83,6 +83,7 @@ struct ElementEvent {
 using ElementEventCallback = std::function<void(const ElementEvent&)>;
 using ClipboardReadCallback = std::function<std::string()>;
 using ClipboardWriteCallback = std::function<void(std::string_view)>;
+using RequestRedrawCallback = std::function<void()>;
 
 struct StyleUpdate {
     std::string id;
@@ -114,6 +115,7 @@ struct RuntimeOptions {
     ElementEventCallback onElementEvent;
     ClipboardReadCallback readClipboardText;
     ClipboardWriteCallback writeClipboardText;
+    RequestRedrawCallback requestRedraw;
 };
 
 struct Event {

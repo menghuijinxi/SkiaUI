@@ -3,20 +3,33 @@
 #include "perf_trace.h"
 
 #include "include/core/SkCanvas.h"
+#include "include/core/SkImage.h"
+#include "include/core/SkImageInfo.h"
 #include "include/core/SkPaint.h"
+#include "include/core/SkPixmap.h"
 #include "include/core/SkPoint.h"
+#include "include/core/SkSamplingOptions.h"
 #include "include/core/SkShader.h"
 #include "include/core/SkStream.h"
 #include "include/effects/SkGradient.h"
 #include "include/ports/SkTypeface_win.h"
 #include "modules/svg/include/SkSVGDOM.h"
 
+#include <objbase.h>
+#include <webp/decode.h>
+#include <wincodec.h>
+#include <wrl/client.h>
+
 #include <algorithm>
 #include <array>
 #include <cstdio>
+#include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <iterator>
+#include <limits>
+#include <optional>
 #include <sstream>
 
 namespace skui {
@@ -61,6 +74,14 @@ std::string readTextFile(const std::filesystem::path& path) {
     std::ostringstream stream;
     stream << file.rdbuf();
     return stream.str();
+}
+
+std::vector<unsigned char> readBinaryFile(const std::string& path) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file) {
+        return {};
+    }
+    return {std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
 }
 
 std::string normalizeSvgMarkup(std::string svg) {
@@ -163,9 +184,74 @@ std::string svgMarkupForDom(std::string svg, SkColor currentColor) {
     return svg;
 }
 
+std::string lowerAscii(std::string_view value) {
+    std::string out;
+    out.reserve(value.size());
+    for (char ch : value) {
+        out.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
+    }
+    return out;
+}
+
+uint16_t readLe16(const std::vector<unsigned char>& data, size_t offset) {
+    return static_cast<uint16_t>(data[offset]) |
+           static_cast<uint16_t>(static_cast<uint16_t>(data[offset + 1]) << 8u);
+}
+
+uint32_t readLe32(const std::vector<unsigned char>& data, size_t offset) {
+    return static_cast<uint32_t>(data[offset]) |
+           (static_cast<uint32_t>(data[offset + 1]) << 8u) |
+           (static_cast<uint32_t>(data[offset + 2]) << 16u) |
+           (static_cast<uint32_t>(data[offset + 3]) << 24u);
+}
+
+int32_t readLeS32(const std::vector<unsigned char>& data, size_t offset) {
+    return static_cast<int32_t>(readLe32(data, offset));
+}
+
+bool imageBufferLayout(int width, int height, size_t& rowBytes, size_t& byteSize) {
+    if (width <= 0 || height <= 0) {
+        return false;
+    }
+    const size_t safeWidth = static_cast<size_t>(width);
+    const size_t safeHeight = static_cast<size_t>(height);
+    if (safeWidth > std::numeric_limits<size_t>::max() / 4u) {
+        return false;
+    }
+    rowBytes = safeWidth * 4u;
+    if (rowBytes == 0 || rowBytes > static_cast<size_t>(std::numeric_limits<int>::max())) {
+        return false;
+    }
+    if (safeHeight > std::numeric_limits<size_t>::max() / rowBytes) {
+        return false;
+    }
+    byteSize = rowBytes * safeHeight;
+    return byteSize <= static_cast<size_t>(std::numeric_limits<uint32_t>::max());
+}
+
+class ScopedComInit {
+public:
+    ScopedComInit() : hr_(CoInitializeEx(nullptr, COINIT_MULTITHREADED)) {}
+    ~ScopedComInit() {
+        if (SUCCEEDED(hr_)) {
+            CoUninitialize();
+        }
+    }
+
+    bool usable() const {
+        return SUCCEEDED(hr_) || hr_ == RPC_E_CHANGED_MODE;
+    }
+
+private:
+    HRESULT hr_ = E_FAIL;
+};
+
 }  // namespace
 
-SkiaRenderer::SkiaRenderer(RuntimeOptions options) : options_(std::move(options)) {
+SkiaRenderer::SkiaRenderer(RuntimeOptions options)
+    : assetRoot_(std::move(options.assetRoot)),
+      clearColor_(options.clearColor),
+      requestRedraw_(std::move(options.requestRedraw)) {
     fontMgr_ = SkFontMgr_New_DirectWrite();
     if (!fontMgr_) {
         fontMgr_ = SkFontMgr_New_GDI();
@@ -175,13 +261,23 @@ SkiaRenderer::SkiaRenderer(RuntimeOptions options) : options_(std::move(options)
 }
 
 SkiaRenderer::~SkiaRenderer() {
-    clearCaches();
+    shutdownCaches();
 }
 
 void SkiaRenderer::clearCaches() {
+    stopBitmapLoads(bitmapState_);
     svgFileCache_.clear();
     svgDomCache_.clear();
     textCache_.clear();
+    bitmapState_.reset();
+}
+
+void SkiaRenderer::shutdownCaches() {
+    stopBitmapLoads(bitmapState_);
+    svgFileCache_.clear();
+    svgDomCache_.clear();
+    textCache_.clear();
+    bitmapState_.reset();
 }
 
 sk_sp<SkTypeface> SkiaRenderer::pickTypeface(bool bold) {
@@ -267,7 +363,7 @@ void SkiaRenderer::draw(Document& document, SkCanvas& canvas, int width, int hei
     traceTextCount_ = 0;
     traceSvgCount_ = 0;
     traceNodeCount_ = 0;
-    canvas.clear(options_.clearColor);
+    canvas.clear(clearColor_);
     const float scale = std::max(0.1f, dpiScale);
     canvas.save();
     canvas.scale(scale, scale);
@@ -507,6 +603,38 @@ void SkiaRenderer::drawImage(SkCanvas& canvas, const Document& document, const N
         return;
     }
 
+    if (!isSvgSource(node.src)) {
+        const std::string path = resolveAssetPath(document, node.src);
+        if (path.empty()) {
+            return;
+        }
+        BitmapImageEntry entry = bitmapImageEntry(path);
+        if (entry.state != ImageState::Ready || !entry.pixels || entry.pixels->empty()) {
+            return;
+        }
+        const SkImageInfo info = SkImageInfo::Make(entry.width, entry.height, kBGRA_8888_SkColorType, kPremul_SkAlphaType);
+        SkPixmap pixmap(info, entry.pixels->data(), entry.rowBytes);
+        sk_sp<SkImage> image = SkImages::RasterFromPixmapCopy(pixmap);
+        if (!image) {
+            return;
+        }
+        canvas.save();
+        if (node.style.borderRadius.any()) {
+            canvas.clipRRect(makeRRect(node.layout, node.style.borderRadius), SkClipOp::kIntersect, true);
+        } else {
+            canvas.clipRect(node.layout.sk(), SkClipOp::kIntersect, true);
+        }
+        SkPaint paint;
+        paint.setAntiAlias(true);
+        const SkSamplingOptions sampling = entry.width < 2 || entry.height < 2
+                                             ? SkSamplingOptions(SkFilterMode::kNearest)
+                                             : SkSamplingOptions(SkFilterMode::kLinear);
+        const SkRect srcRect = SkRect::MakeWH(static_cast<float>(entry.width), static_cast<float>(entry.height));
+        canvas.drawImageRect(image.get(), srcRect, node.layout.sk(), sampling, &paint, SkCanvas::kStrict_SrcRectConstraint);
+        canvas.restore();
+        return;
+    }
+
     const std::optional<std::string> svg = readSvgAsset(document, node.src);
     if (!svg || svg->empty()) {
         return;
@@ -515,6 +643,316 @@ void SkiaRenderer::drawImage(SkCanvas& canvas, const Document& document, const N
         ++traceSvgCount_;
     }
     drawSvgMarkup(canvas, *svg, node.layout, node.style.color);
+}
+
+SkiaRenderer::BitmapImageEntry SkiaRenderer::bitmapImageEntry(const std::string& path) {
+    if (!bitmapState_) {
+        bitmapState_ = std::make_shared<BitmapImageState>();
+    }
+    std::shared_ptr<BitmapImageState> state = bitmapState_;
+    {
+        std::lock_guard lock(state->mutex);
+        auto it = state->cache.find(path);
+        if (it != state->cache.end()) {
+            return it->second;
+        }
+        state->cache.emplace(path, BitmapImageEntry{});
+    }
+    enqueueBitmapLoad(state, path);
+    return {};
+}
+
+void SkiaRenderer::enqueueBitmapLoad(const std::shared_ptr<BitmapImageState>& state, const std::string& path) const {
+    if (!state) {
+        return;
+    }
+    {
+        std::lock_guard lock(state->mutex);
+        state->queue.push_back(path);
+    }
+    ensureBitmapWorker(state);
+    state->cv.notify_one();
+}
+
+void SkiaRenderer::ensureBitmapWorker(const std::shared_ptr<BitmapImageState>& state) const {
+    if (!state) {
+        return;
+    }
+    std::lock_guard lock(state->mutex);
+    if (state->workerStarted) {
+        return;
+    }
+    state->workerStarted = true;
+    state->worker = std::thread(bitmapWorkerLoop, state, requestRedraw_);
+}
+
+void SkiaRenderer::stopBitmapLoads(const std::shared_ptr<BitmapImageState>& state) {
+    if (!state) {
+        return;
+    }
+    {
+        std::lock_guard lock(state->mutex);
+        state->queue.clear();
+        state->cache.clear();
+        state->dirty = false;
+        state->stop = true;
+    }
+    state->cv.notify_all();
+    if (state->worker.joinable()) {
+        state->worker.join();
+    }
+}
+
+void SkiaRenderer::bitmapWorkerLoop(std::shared_ptr<BitmapImageState> state, RequestRedrawCallback requestRedraw) {
+    if (!state) {
+        return;
+    }
+
+    for (;;) {
+        std::string path;
+        {
+            std::unique_lock lock(state->mutex);
+            state->cv.wait(lock, [&] {
+                return state->stop || !state->queue.empty();
+            });
+            if (state->stop) {
+                return;
+            }
+            path = std::move(state->queue.front());
+            state->queue.pop_front();
+        }
+
+        BitmapImageEntry loaded = loadBitmapImage(path);
+        bool updated = false;
+        {
+            std::lock_guard lock(state->mutex);
+            if (state->stop) {
+                return;
+            }
+            auto it = state->cache.find(path);
+            if (it != state->cache.end()) {
+                it->second = std::move(loaded);
+                state->dirty = true;
+                updated = true;
+            }
+        }
+        if (updated && requestRedraw) {
+            requestRedraw();
+        }
+    }
+}
+
+SkiaRenderer::BitmapImageEntry SkiaRenderer::loadBitmapImage(const std::string& path) {
+    if (isWebpSource(path)) {
+        BitmapImageEntry webpEntry = loadWebpBitmapImage(path);
+        if (webpEntry.state == ImageState::Ready) {
+            return webpEntry;
+        }
+    }
+
+    BitmapImageEntry wicEntry = loadWicBitmapImage(path);
+    if (wicEntry.state == ImageState::Ready) {
+        return wicEntry;
+    }
+
+    return loadBmpBitmapImage(path);
+}
+
+SkiaRenderer::BitmapImageEntry SkiaRenderer::loadWicBitmapImage(const std::string& path) {
+    using Microsoft::WRL::ComPtr;
+
+    BitmapImageEntry entry;
+    entry.state = ImageState::Failed;
+
+    ScopedComInit com;
+    if (!com.usable()) {
+        return entry;
+    }
+
+    ComPtr<IWICImagingFactory> factory;
+    HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
+                                  IID_PPV_ARGS(factory.GetAddressOf()));
+    if (FAILED(hr)) {
+        return entry;
+    }
+
+    const std::wstring filePath = std::filesystem::path(path).wstring();
+    ComPtr<IWICBitmapDecoder> decoder;
+    hr = factory->CreateDecoderFromFilename(filePath.c_str(), nullptr, GENERIC_READ,
+                                            WICDecodeMetadataCacheOnDemand, decoder.GetAddressOf());
+    if (FAILED(hr)) {
+        return entry;
+    }
+
+    ComPtr<IWICBitmapFrameDecode> frame;
+    hr = decoder->GetFrame(0, frame.GetAddressOf());
+    if (FAILED(hr)) {
+        return entry;
+    }
+
+    UINT width = 0;
+    UINT height = 0;
+    hr = frame->GetSize(&width, &height);
+    if (FAILED(hr) ||
+        width > static_cast<UINT>(std::numeric_limits<int>::max()) ||
+        height > static_cast<UINT>(std::numeric_limits<int>::max())) {
+        return entry;
+    }
+
+    size_t rowBytes = 0;
+    size_t byteSize = 0;
+    if (!imageBufferLayout(static_cast<int>(width), static_cast<int>(height), rowBytes, byteSize)) {
+        return entry;
+    }
+
+    ComPtr<IWICFormatConverter> converter;
+    hr = factory->CreateFormatConverter(converter.GetAddressOf());
+    if (FAILED(hr)) {
+        return entry;
+    }
+
+    hr = converter->Initialize(frame.Get(), GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone,
+                               nullptr, 0.0, WICBitmapPaletteTypeCustom);
+    if (FAILED(hr)) {
+        return entry;
+    }
+
+    auto pixels = std::make_shared<std::vector<unsigned char>>(byteSize);
+    hr = converter->CopyPixels(nullptr, static_cast<UINT>(rowBytes), static_cast<UINT>(byteSize), pixels->data());
+    if (FAILED(hr)) {
+        return entry;
+    }
+
+    entry.state = ImageState::Ready;
+    entry.width = static_cast<int>(width);
+    entry.height = static_cast<int>(height);
+    entry.rowBytes = rowBytes;
+    entry.pixels = std::move(pixels);
+    return entry;
+}
+
+SkiaRenderer::BitmapImageEntry SkiaRenderer::loadWebpBitmapImage(const std::string& path) {
+    BitmapImageEntry entry;
+    entry.state = ImageState::Failed;
+
+    const std::vector<unsigned char> data = readBinaryFile(path);
+    if (data.empty()) {
+        return entry;
+    }
+
+    int width = 0;
+    int height = 0;
+    if (!WebPGetInfo(data.data(), data.size(), &width, &height)) {
+        return entry;
+    }
+
+    size_t rowBytes = 0;
+    size_t byteSize = 0;
+    if (!imageBufferLayout(width, height, rowBytes, byteSize)) {
+        return entry;
+    }
+
+    auto pixels = std::make_shared<std::vector<unsigned char>>(byteSize);
+    if (!WebPDecodeBGRAInto(data.data(), data.size(), pixels->data(), byteSize, static_cast<int>(rowBytes))) {
+        return entry;
+    }
+    premultiplyBgra(*pixels, rowBytes, width, height);
+
+    entry.state = ImageState::Ready;
+    entry.width = width;
+    entry.height = height;
+    entry.rowBytes = rowBytes;
+    entry.pixels = std::move(pixels);
+    return entry;
+}
+
+SkiaRenderer::BitmapImageEntry SkiaRenderer::loadBmpBitmapImage(const std::string& path) {
+    BitmapImageEntry entry;
+    entry.state = ImageState::Failed;
+
+    const std::vector<unsigned char> data = readBinaryFile(path);
+    if (data.size() < 54 || data[0] != 'B' || data[1] != 'M') {
+        return entry;
+    }
+
+    const uint32_t pixelOffset = readLe32(data, 10);
+    const uint32_t dibSize = readLe32(data, 14);
+    if (dibSize < 40 || pixelOffset >= data.size()) {
+        return entry;
+    }
+
+    const int32_t widthSigned = readLeS32(data, 18);
+    const int32_t heightSigned = readLeS32(data, 22);
+    const uint16_t planes = readLe16(data, 26);
+    const uint16_t bitsPerPixel = readLe16(data, 28);
+    const uint32_t compression = readLe32(data, 30);
+    if (widthSigned <= 0 || heightSigned == 0 || planes != 1 || compression != 0 ||
+        (bitsPerPixel != 24 && bitsPerPixel != 32)) {
+        return entry;
+    }
+
+    const int width = widthSigned;
+    const int height = std::abs(heightSigned);
+    const bool topDown = heightSigned < 0;
+    const size_t srcBytesPerPixel = static_cast<size_t>(bitsPerPixel / 8);
+    const size_t srcRowBytes = ((static_cast<size_t>(width) * bitsPerPixel + 31u) / 32u) * 4u;
+    if (srcRowBytes == 0 || static_cast<size_t>(height) > (data.size() - pixelOffset) / srcRowBytes) {
+        return entry;
+    }
+
+    size_t rowBytes = 0;
+    size_t byteSize = 0;
+    if (!imageBufferLayout(width, height, rowBytes, byteSize)) {
+        return entry;
+    }
+    auto pixels = std::make_shared<std::vector<unsigned char>>(byteSize);
+    if (pixels->empty()) {
+        return entry;
+    }
+
+    for (int y = 0; y < height; ++y) {
+        const int srcY = topDown ? y : (height - 1 - y);
+        const size_t srcRow = static_cast<size_t>(pixelOffset) + static_cast<size_t>(srcY) * srcRowBytes;
+        const size_t dstRow = static_cast<size_t>(y) * rowBytes;
+        for (int x = 0; x < width; ++x) {
+            const size_t src = srcRow + static_cast<size_t>(x) * srcBytesPerPixel;
+            const size_t dst = dstRow + static_cast<size_t>(x) * 4u;
+            (*pixels)[dst + 0] = data[src + 0];
+            (*pixels)[dst + 1] = data[src + 1];
+            (*pixels)[dst + 2] = data[src + 2];
+            (*pixels)[dst + 3] = bitsPerPixel == 32 ? data[src + 3] : 0xFF;
+        }
+    }
+    premultiplyBgra(*pixels, rowBytes, width, height);
+
+    entry.state = ImageState::Ready;
+    entry.width = width;
+    entry.height = height;
+    entry.rowBytes = rowBytes;
+    entry.pixels = std::move(pixels);
+    return entry;
+}
+
+void SkiaRenderer::premultiplyBgra(std::vector<unsigned char>& pixels, size_t rowBytes, int width, int height) {
+    for (int y = 0; y < height; ++y) {
+        const size_t row = static_cast<size_t>(y) * rowBytes;
+        for (int x = 0; x < width; ++x) {
+            const size_t offset = row + static_cast<size_t>(x) * 4u;
+            const unsigned alpha = pixels[offset + 3];
+            if (alpha == 0xFF) {
+                continue;
+            }
+            if (alpha == 0) {
+                pixels[offset + 0] = 0;
+                pixels[offset + 1] = 0;
+                pixels[offset + 2] = 0;
+                continue;
+            }
+            pixels[offset + 0] = static_cast<unsigned char>((static_cast<unsigned>(pixels[offset + 0]) * alpha + 127u) / 255u);
+            pixels[offset + 1] = static_cast<unsigned char>((static_cast<unsigned>(pixels[offset + 1]) * alpha + 127u) / 255u);
+            pixels[offset + 2] = static_cast<unsigned char>((static_cast<unsigned>(pixels[offset + 2]) * alpha + 127u) / 255u);
+        }
+    }
 }
 
 void SkiaRenderer::drawInlineSvg(SkCanvas& canvas, const Node& node) {
@@ -834,14 +1272,39 @@ std::string SkiaRenderer::resolveAssetPath(const Document& document, std::string
         }
     }
 
-    if (!options_.assetRoot.empty()) {
-        fs::path candidate = fs::path(options_.assetRoot) / path;
+    if (!assetRoot_.empty()) {
+        fs::path candidate = fs::path(assetRoot_) / path;
         if (fs::exists(candidate)) {
             return candidate.string();
         }
     }
 
     return path.string();
+}
+
+bool SkiaRenderer::isSvgSource(std::string_view src) {
+    const std::string value = lowerAscii(trim(src));
+    constexpr std::string_view suffix = ".svg";
+    return value.size() >= suffix.size() &&
+           value.compare(value.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
+bool SkiaRenderer::isWebpSource(std::string_view src) {
+    const std::string value = lowerAscii(trim(src));
+    constexpr std::string_view suffix = ".webp";
+    return value.size() >= suffix.size() &&
+           value.compare(value.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
+bool SkiaRenderer::consumeImageDirty() {
+    std::shared_ptr<BitmapImageState> state = bitmapState_;
+    if (!state) {
+        return false;
+    }
+    std::lock_guard lock(state->mutex);
+    const bool dirty = state->dirty;
+    state->dirty = false;
+    return dirty;
 }
 
 const SkiaRenderer::TextEntry& SkiaRenderer::textEntry(std::string_view value, float size, bool bold) {

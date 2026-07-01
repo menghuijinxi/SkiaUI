@@ -15,6 +15,7 @@
       "name": "rmlui",
       "default-features": false
     },
+    "libwebp",
     "lexbor",
     "yoga"
   ]

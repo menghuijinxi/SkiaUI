@@ -12,6 +12,7 @@ find_package(unofficial-skia CONFIG REQUIRED)
 find_package(RmlUi CONFIG REQUIRED)
 find_package(yoga CONFIG REQUIRED)
 find_package(lexbor CONFIG REQUIRED)
+find_package(WebP CONFIG REQUIRED)
 
 option(SKIATEST_USE_SKIA_D3D "Render SkiaLayerDesk through Skia Ganesh D3D12 backend" ON)
 
@@ -100,6 +101,9 @@ target_link_libraries(Skui PUBLIC
 
 target_link_libraries(Skui PRIVATE
     lexbor::lexbor_static
+    WebP::webp
+    ole32
+    windowscodecs
 )
 
 target_compile_definitions(Skui PUBLIC
@@ -183,6 +187,9 @@ target_link_libraries(SkiaRelayDeskDemo PRIVATE
 
 target_link_libraries(SkuiInteractionTests PRIVATE
     Skui
+    WebP::webp
+    ole32
+    windowscodecs
     usp10
 )
 

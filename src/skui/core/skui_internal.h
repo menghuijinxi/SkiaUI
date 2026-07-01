@@ -16,15 +16,18 @@
 #include "include/core/SkTypeface.h"
 #include <yoga/Yoga.h>
 
+#include <condition_variable>
+#include <deque>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
 class SkSVGDOM;
-
 namespace skui {
 
 struct Rect {
@@ -303,7 +306,8 @@ public:
     bool loadString(std::string_view html, std::string_view basePath, Document& outDocument, std::string& error);
 
 private:
-    RuntimeOptions options_;
+    float scale_ = 1.0f;
+    Theme theme_;
 };
 
 class LayoutEngine {
@@ -321,8 +325,10 @@ public:
     ~SkiaRenderer();
     void draw(Document& document, SkCanvas& canvas, int width, int height, float dpiScale);
     void clearCaches();
+    void shutdownCaches();
     size_t textIndexAtOffset(std::string_view value, float size, bool bold, float offset);
     float textStartX(const Node& node, std::string_view value);
+    [[nodiscard]] bool consumeImageDirty();
 
 private:
     struct TextEntry {
@@ -336,7 +342,34 @@ private:
         sk_sp<SkSVGDOM> dom;
     };
 
-    RuntimeOptions options_;
+    enum class ImageState {
+        Loading,
+        Ready,
+        Failed
+    };
+
+    struct BitmapImageEntry {
+        ImageState state = ImageState::Loading;
+        std::shared_ptr<std::vector<unsigned char>> pixels;
+        size_t rowBytes = 0;
+        int width = 0;
+        int height = 0;
+    };
+
+    struct BitmapImageState {
+        std::unordered_map<std::string, BitmapImageEntry> cache;
+        std::deque<std::string> queue;
+        std::thread worker;
+        std::mutex mutex;
+        std::condition_variable cv;
+        bool dirty = false;
+        bool workerStarted = false;
+        bool stop = false;
+    };
+
+    std::string assetRoot_;
+    SkColor clearColor_ = SkColorSetRGB(7, 12, 18);
+    RequestRedrawCallback requestRedraw_;
     sk_sp<SkFontMgr> fontMgr_;
     sk_sp<SkTypeface> regular_;
     sk_sp<SkTypeface> bold_;
@@ -372,12 +405,25 @@ private:
     void drawText(SkCanvas& canvas, const Node& node);
     void drawInputCompositionUnderline(SkCanvas& canvas, const Node& node);
     void drawInputCaret(SkCanvas& canvas, const Node& node);
+    BitmapImageEntry bitmapImageEntry(const std::string& path);
+    void enqueueBitmapLoad(const std::shared_ptr<BitmapImageState>& state, const std::string& path) const;
+    void ensureBitmapWorker(const std::shared_ptr<BitmapImageState>& state) const;
+    void stopBitmapLoads(const std::shared_ptr<BitmapImageState>& state);
+    static void bitmapWorkerLoop(std::shared_ptr<BitmapImageState> state, RequestRedrawCallback requestRedraw);
+    static BitmapImageEntry loadBitmapImage(const std::string& path);
+    static BitmapImageEntry loadWicBitmapImage(const std::string& path);
+    static BitmapImageEntry loadWebpBitmapImage(const std::string& path);
+    static BitmapImageEntry loadBmpBitmapImage(const std::string& path);
+    static void premultiplyBgra(std::vector<unsigned char>& pixels, size_t rowBytes, int width, int height);
     std::optional<std::string> readSvgAsset(const Document& document, std::string_view src);
     std::string resolveAssetPath(const Document& document, std::string_view src) const;
+    static bool isSvgSource(std::string_view src);
+    static bool isWebpSource(std::string_view src);
     const TextEntry& textEntry(std::string_view value, float size, bool bold);
     float textWidth(std::string_view value, float size, bool bold);
     std::unordered_map<std::string, SvgDomEntry> svgDomCache_;
     std::unordered_map<std::string, std::string> svgFileCache_;
+    std::shared_ptr<BitmapImageState> bitmapState_;
 };
 
 SkColor rgb(unsigned r, unsigned g, unsigned b);

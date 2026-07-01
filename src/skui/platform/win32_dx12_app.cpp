@@ -14,6 +14,7 @@
 #include <shellscalingapi.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -28,6 +29,7 @@ namespace skui::win32 {
 namespace {
 
 constexpr float kDefaultDpi = 96.0f;
+constexpr UINT kRequestRedrawMessage = WM_APP + 0x531;
 
 float dpiScaleForDpi(UINT dpi) {
     return static_cast<float>(std::max<UINT>(dpi, 1)) / kDefaultDpi;
@@ -189,7 +191,7 @@ class Dx12WindowApp::Impl {
 public:
     explicit Impl(WindowOptions options)
         : options_(std::move(options)),
-          runtime_(withPlatformCallbacks(options_.runtime)),
+          runtime_(withPlatformCallbacks(configureRuntimeCallbacks(options_.runtime))),
           d3d_(options_.clearColor) {}
 
     ~Impl() {
@@ -258,6 +260,7 @@ public:
         if (!hwnd) {
             return 1;
         }
+        hwnd_ = hwnd;
 
         BOOL dark = TRUE;
         DwmSetWindowAttribute(hwnd, 20, &dark, sizeof(dark));
@@ -269,11 +272,14 @@ public:
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
+        hwnd_ = nullptr;
         return static_cast<int>(msg.wParam);
     }
 
 private:
     WindowOptions options_;
+    HWND hwnd_ = nullptr;
+    std::atomic_bool redrawMessagePending_{false};
     Runtime runtime_;
     D3DPresenter d3d_;
     std::vector<uint32_t> pixels_;
@@ -295,6 +301,24 @@ private:
 
     static Impl* get(HWND hwnd) {
         return reinterpret_cast<Impl*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    }
+
+    RuntimeOptions configureRuntimeCallbacks(RuntimeOptions options) {
+        const RequestRedrawCallback previous = std::move(options.requestRedraw);
+        options.requestRedraw = [this, previous] {
+            if (previous) {
+                previous();
+            }
+            HWND hwnd = hwnd_;
+            if (!hwnd) {
+                return;
+            }
+            bool expected = false;
+            if (redrawMessagePending_.compare_exchange_strong(expected, true)) {
+                PostMessageW(hwnd, kRequestRedrawMessage, 0, 0);
+            }
+        };
+        return options;
     }
 
     void markFrameDirty() {
@@ -459,6 +483,11 @@ private:
         }
 
         switch (message) {
+        case kRequestRedrawMessage:
+            app->redrawMessagePending_.store(false);
+            app->markFrameDirty();
+            app->requestRepaint(hwnd, false);
+            return 0;
         case WM_WINDOWPOSCHANGING: {
             auto* pos = reinterpret_cast<WINDOWPOS*>(lParam);
             if (pos && !(pos->flags & SWP_NOSIZE)) {
@@ -591,6 +620,7 @@ private:
             app->eraseBackground(hwnd, reinterpret_cast<HDC>(wParam));
             return 1;
         case WM_DESTROY:
+            app->hwnd_ = nullptr;
             PostQuitMessage(0);
             return 0;
         default:
