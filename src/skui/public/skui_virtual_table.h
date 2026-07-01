@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <functional>
 #include <initializer_list>
 #include <string>
 #include <string_view>
@@ -296,6 +297,298 @@ private:
     int rowGutterWidth_ = 0;
     int headerHeight_ = 0;
     int rowHeight_ = 1;
+};
+
+struct VirtualTableRenderConfig {
+    std::string viewportId;
+    std::string handleHeaderId;
+    std::string rowBaseClass;
+    std::string rowSelectedClass;
+    std::string rowActionPrefix;
+    std::string rowHandleActionPrefix;
+    std::string cellBaseClass;
+    std::string cellSelectedClass;
+    std::string cellColumnClassPrefix;
+};
+
+struct VirtualTableRowContext {
+    int rowIndex = 0;
+    int poolIndex = 0;
+    bool visible = false;
+    std::string rowBackgroundId;
+    std::string rowHandleId;
+};
+
+struct VirtualTableCellContext {
+    int rowIndex = 0;
+    int poolIndex = 0;
+    bool visible = false;
+    std::string_view columnId;
+    std::string cellId;
+};
+
+struct VirtualTableRowData {
+    std::string action;
+    std::string handleAction;
+    std::string className;
+    bool selected = false;
+};
+
+struct VirtualTableCellData {
+    std::string text;
+    std::string action;
+    std::string className;
+    bool selected = false;
+};
+
+struct VirtualTableDataSource {
+    int itemCount = 0;
+    std::function<VirtualTableRowData(const VirtualTableRowContext&)> row;
+    std::function<VirtualTableCellData(const VirtualTableCellContext&)> cell;
+};
+
+class VirtualTableAdapter {
+public:
+    VirtualTableAdapter(VirtualTableGeometry geometry,
+                        VirtualWindowConfig windowConfig,
+                        VirtualTableRenderConfig renderConfig)
+        : geometry_(std::move(geometry)),
+          renderConfig_(std::move(renderConfig)) {
+        itemCount_ = std::max(0, windowConfig.itemCount);
+        window_.configure(windowConfig);
+    }
+
+    [[nodiscard]] const VirtualTableGeometry& geometry() const {
+        return geometry_;
+    }
+
+    [[nodiscard]] const VirtualWindowFrame& frame() const {
+        return frame_;
+    }
+
+    [[nodiscard]] int firstItem() const {
+        return frame_.firstItem;
+    }
+
+    [[nodiscard]] float scroll() const {
+        return frame_.scroll;
+    }
+
+    [[nodiscard]] int rowIndexForPool(int poolIndex) const {
+        if (itemCount_ <= 0) {
+            return 0;
+        }
+        return std::clamp(frame_.firstItem + poolIndex, 0, itemCount_ - 1);
+    }
+
+    [[nodiscard]] std::string rowBackgroundId(int poolIndex) const {
+        return geometry_.rowBackgroundId(poolIndex);
+    }
+
+    [[nodiscard]] std::string rowHandleId(int poolIndex) const {
+        return geometry_.rowHandleId(poolIndex);
+    }
+
+    [[nodiscard]] std::string cellId(int poolIndex, std::string_view columnId) const {
+        return geometry_.cellId(poolIndex, columnId);
+    }
+
+    [[nodiscard]] int contentWidth() const {
+        return geometry_.contentWidth();
+    }
+
+    [[nodiscard]] int contentHeight() const {
+        return geometry_.contentHeight(itemCount_);
+    }
+
+    [[nodiscard]] const VirtualWindowConfig& windowConfig() const {
+        return window_.config();
+    }
+
+    void invalidate() {
+        window_.invalidate();
+    }
+
+    bool syncViewport(Runtime& runtime, int itemCount) {
+        const bool itemCountChanged = setItemCount(itemCount);
+        const int nextContentWidth = contentWidth();
+        const int nextContentHeight = contentHeight();
+        const bool viewportChanged = nextContentWidth != syncedContentWidth_ ||
+            nextContentHeight != syncedContentHeight_;
+        if (!renderConfig_.viewportId.empty() && viewportChanged) {
+            runtime.setAttributesById({
+                {renderConfig_.viewportId, "data-virtual-width", std::to_string(nextContentWidth)},
+                {renderConfig_.viewportId, "data-virtual-height", std::to_string(nextContentHeight)},
+            });
+            syncedContentWidth_ = nextContentWidth;
+            syncedContentHeight_ = nextContentHeight;
+        }
+        return itemCountChanged;
+    }
+
+    [[nodiscard]] VirtualWindowFrame updateWindow(float scroll, int viewportExtent, bool force = false) {
+        frame_ = window_.update(scroll, viewportExtent, force);
+        return frame_;
+    }
+
+    bool refresh(Runtime& runtime,
+                 float scroll,
+                 int viewportExtent,
+                 const VirtualTableDataSource& dataSource,
+                 bool force = false) {
+        const bool itemCountChanged = syncViewport(runtime, dataSource.itemCount);
+        const VirtualWindowFrame nextFrame = updateWindow(scroll, viewportExtent, force || itemCountChanged);
+        if (!nextFrame.renderNeeded) {
+            return false;
+        }
+
+        std::vector<StyleUpdate> styles;
+        std::vector<TextUpdate> texts;
+        std::vector<AttributeUpdate> attributes;
+        const size_t poolSize = static_cast<size_t>(window_.config().poolSize);
+        styles.reserve(poolSize * (geometry_.columnCount() + 2));
+        texts.reserve(poolSize * geometry_.columnCount());
+        attributes.reserve(poolSize * (geometry_.columnCount() * 2 + 3));
+
+        geometry_.appendHeaderStyles(styles, nextFrame, renderConfig_.handleHeaderId);
+
+        for (int poolIndex = 0; poolIndex < window_.config().poolSize; ++poolIndex) {
+            const bool visible = poolIndex < nextFrame.cachedItems &&
+                nextFrame.firstItem + poolIndex < itemCount_;
+            const int rowIndex = rowIndexForPool(poolIndex);
+            const int top = geometry_.rowTop(nextFrame, poolIndex);
+            geometry_.appendRowStyles(styles, poolIndex, top, visible);
+            appendRowAttributes(attributes, dataSource, rowIndex, poolIndex, visible);
+
+            for (const VirtualTableColumn& column : geometry_.columns()) {
+                const std::string cell = geometry_.cellId(poolIndex, column.id);
+                geometry_.appendCellStyle(styles, poolIndex, column.id, top, visible);
+                if (!visible) {
+                    continue;
+                }
+                const VirtualTableCellData cellData = loadCell(dataSource,
+                                                               rowIndex,
+                                                               poolIndex,
+                                                               column.id,
+                                                               cell,
+                                                               visible);
+                texts.push_back({cell, cellData.text});
+                attributes.push_back({cell, "data-action", cellData.action});
+                attributes.push_back({cell, "class", cellClassName(column.id, cellData)});
+            }
+        }
+
+        runtime.applyUpdates({std::move(styles), std::move(texts), std::move(attributes)});
+        window_.markRendered(nextFrame);
+        return true;
+    }
+
+private:
+    bool setItemCount(int itemCount) {
+        itemCount = std::max(0, itemCount);
+        if (itemCount == itemCount_) {
+            return false;
+        }
+        itemCount_ = itemCount;
+        VirtualWindowConfig config = window_.config();
+        config.itemCount = itemCount_;
+        window_.configure(config);
+        return true;
+    }
+
+    [[nodiscard]] VirtualTableRowData loadRow(const VirtualTableDataSource& dataSource,
+                                              int rowIndex,
+                                              int poolIndex,
+                                              bool visible) const {
+        if (!dataSource.row) {
+            return {};
+        }
+        return dataSource.row({rowIndex,
+                               poolIndex,
+                               visible,
+                               geometry_.rowBackgroundId(poolIndex),
+                               geometry_.rowHandleId(poolIndex)});
+    }
+
+    [[nodiscard]] VirtualTableCellData loadCell(const VirtualTableDataSource& dataSource,
+                                                int rowIndex,
+                                                int poolIndex,
+                                                std::string_view columnId,
+                                                const std::string& cell,
+                                                bool visible) const {
+        if (!dataSource.cell) {
+            return {};
+        }
+        return dataSource.cell({rowIndex, poolIndex, visible, columnId, cell});
+    }
+
+    void appendRowAttributes(std::vector<AttributeUpdate>& attributes,
+                             const VirtualTableDataSource& dataSource,
+                             int rowIndex,
+                             int poolIndex,
+                             bool visible) const {
+        if (!visible) {
+            return;
+        }
+        VirtualTableRowData rowData = loadRow(dataSource, rowIndex, poolIndex, visible);
+        if (rowData.action.empty() && !renderConfig_.rowActionPrefix.empty()) {
+            rowData.action = renderConfig_.rowActionPrefix + std::to_string(rowIndex);
+        }
+        if (rowData.handleAction.empty()) {
+            rowData.handleAction = !renderConfig_.rowHandleActionPrefix.empty()
+                ? renderConfig_.rowHandleActionPrefix + std::to_string(rowIndex)
+                : rowData.action;
+        }
+
+        const std::string rowBg = geometry_.rowBackgroundId(poolIndex);
+        const std::string rowHandle = geometry_.rowHandleId(poolIndex);
+        attributes.push_back({rowBg, "data-action", rowData.action});
+        attributes.push_back({rowHandle, "data-action", rowData.handleAction});
+        attributes.push_back({rowBg, "class", rowClassName(rowData)});
+    }
+
+    [[nodiscard]] std::string rowClassName(const VirtualTableRowData& rowData) const {
+        if (!rowData.className.empty()) {
+            return rowData.className;
+        }
+        std::string result = renderConfig_.rowBaseClass;
+        if (rowData.selected) {
+            appendClass(result, renderConfig_.rowSelectedClass);
+        }
+        return result;
+    }
+
+    [[nodiscard]] std::string cellClassName(std::string_view columnId,
+                                            const VirtualTableCellData& cellData) const {
+        if (!cellData.className.empty()) {
+            return cellData.className;
+        }
+        std::string result = renderConfig_.cellBaseClass;
+        const std::string columnClass = renderConfig_.cellColumnClassPrefix + std::string(columnId);
+        appendClass(result, columnClass);
+        if (cellData.selected) {
+            appendClass(result, renderConfig_.cellSelectedClass);
+        }
+        return result;
+    }
+
+    static void appendClass(std::string& className, std::string_view nextClass) {
+        if (nextClass.empty()) {
+            return;
+        }
+        if (!className.empty()) {
+            className.push_back(' ');
+        }
+        className.append(nextClass);
+    }
+
+    VirtualTableGeometry geometry_;
+    VirtualTableRenderConfig renderConfig_;
+    VirtualWindowState window_;
+    VirtualWindowFrame frame_;
+    int itemCount_ = 0;
+    int syncedContentWidth_ = -1;
+    int syncedContentHeight_ = -1;
 };
 
 } // namespace skui

@@ -1,4 +1,5 @@
 #include "skui_runtime.h"
+#include "skui_dropdown.h"
 #include "skui_virtual_table.h"
 
 #include "include/core/SkData.h"
@@ -1066,6 +1067,75 @@ int main() {
     ok = expect(batchA == solidColor(0xAB, 0xCD, 0xEF), "batch style update should apply first node style") && ok;
     ok = expect(batchB == solidColor(0x77, 0x88, 0x99), "batch style update should apply second node style") && ok;
 
+    constexpr std::string_view dropdownHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      position: relative;
+      width: 140px;
+      height: 90px;
+      background-color: #000000;
+    }
+    .hidden {
+      display: none;
+    }
+    .option-selected {
+      color: #00ff00;
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <div id="selected">A</div>
+    <div id="arrow">v</div>
+    <div id="backdrop" class="hidden"></div>
+    <div id="menu" class="hidden">
+      <div id="option-0" class="option option-selected">A</div>
+      <div id="option-1" class="option">B</div>
+      <div id="option-2" class="option">C</div>
+    </div>
+  </div>
+</body>
+</html>
+)html";
+
+    skui::Runtime dropdownRuntime(options);
+    dropdownRuntime.resize(kWidth, kHeight, 1.0f);
+    if (!dropdownRuntime.loadDocumentFromString(dropdownHtml, "")) {
+        std::cerr << "dropdown load failed: " << dropdownRuntime.lastError() << "\n";
+        return 1;
+    }
+    skui::DropdownState dropdown({
+        "selected",
+        "arrow",
+        "menu",
+        "backdrop",
+        "option-",
+        "hidden",
+        "option-selected",
+        "^",
+        "v",
+        3,
+    });
+    dropdown.setOpen(dropdownRuntime, true);
+    ok = expect(dropdown.open(), "dropdown should report open state") && ok;
+    ok = expect(!dropdownRuntime.hasClassById("menu", "hidden"),
+                "dropdown open should show menu") && ok;
+    ok = expect(!dropdownRuntime.hasClassById("backdrop", "hidden"),
+                "dropdown open should show backdrop") && ok;
+    ok = expect(dropdown.select(dropdownRuntime, 2, "C"), "dropdown should select valid option") && ok;
+    ok = expect(dropdown.selectedIndex() == 2, "dropdown should store selected index") && ok;
+    ok = expect(dropdownRuntime.hasClassById("menu", "hidden"),
+                "dropdown select should close menu") && ok;
+    ok = expect(dropdownRuntime.hasClassById("option-2", "option-selected"),
+                "dropdown select should mark selected option") && ok;
+    ok = expect(!dropdownRuntime.hasClassById("option-0", "option-selected"),
+                "dropdown select should clear previous option") && ok;
+    ok = expect(!dropdown.select(dropdownRuntime, 9, "invalid"),
+                "dropdown should reject out-of-range options") && ok;
+
     constexpr std::string_view virtualScrollHtml = R"html(
 <!doctype html>
 <html>
@@ -1170,6 +1240,134 @@ int main() {
     const skui::VirtualWindowFrame windowFrame = windowState.update(44.0f, 88);
     ok = expect(windowFrame.firstItem == 2, "virtual window should calculate first visible item from scroll offset") && ok;
     ok = expect(tableGeometry.rowTop(windowFrame, 0) == 62, "virtual table row top should include header offset") && ok;
+
+    constexpr std::string_view tableAdapterHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      position: relative;
+      width: 180px;
+      height: 120px;
+      background-color: #000000;
+    }
+    .viewport {
+      position: absolute;
+      left: 10px;
+      top: 10px;
+      width: 130px;
+      height: 70px;
+      overflow-y: auto;
+      overflow-x: auto;
+      background-color: #111111;
+    }
+    .header,
+    .row-bg,
+    .row-handle,
+    .cell {
+      position: absolute;
+      height: 20px;
+    }
+    .header,
+    .row-bg {
+      background-color: #223344;
+    }
+    .row-selected {
+      background-color: #008877;
+    }
+    .cell {
+      display: flex;
+      align-items: center;
+      color: #ffffff;
+      font-size: 12px;
+    }
+    .cell-selected {
+      background-color: #005555;
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <div id="adapter-table" class="viewport">
+      <div id="adapter-handle-header" class="header" style="left:0px;top:0px;width:20px"></div>
+      <div id="adapter-header-id" class="header" style="left:20px;top:0px;width:40px"></div>
+      <div id="adapter-header-name" class="header" style="left:60px;top:0px;width:60px"></div>
+      <div id="adapter-row-1-bg" class="row-bg" style="left:0px;top:20px;width:120px"></div>
+      <div id="adapter-row-1-handle" class="row-handle" style="left:0px;top:20px;width:20px"></div>
+      <div id="adapter-cell-1-id" class="cell" style="left:20px;top:20px;width:40px"></div>
+      <div id="adapter-cell-1-name" class="cell" style="left:60px;top:20px;width:60px"></div>
+      <div id="adapter-row-2-bg" class="row-bg" style="left:0px;top:40px;width:120px"></div>
+      <div id="adapter-row-2-handle" class="row-handle" style="left:0px;top:40px;width:20px"></div>
+      <div id="adapter-cell-2-id" class="cell" style="left:20px;top:40px;width:40px"></div>
+      <div id="adapter-cell-2-name" class="cell" style="left:60px;top:40px;width:60px"></div>
+      <div id="adapter-row-3-bg" class="row-bg" style="left:0px;top:60px;width:120px"></div>
+      <div id="adapter-row-3-handle" class="row-handle" style="left:0px;top:60px;width:20px"></div>
+      <div id="adapter-cell-3-id" class="cell" style="left:20px;top:60px;width:40px"></div>
+      <div id="adapter-cell-3-name" class="cell" style="left:60px;top:60px;width:60px"></div>
+    </div>
+  </div>
+</body>
+</html>
+)html";
+
+    skui::Runtime tableAdapterRuntime(options);
+    tableAdapterRuntime.resize(180, 120, 1.0f);
+    ok = expect(tableAdapterRuntime.loadDocumentFromString(tableAdapterHtml),
+                "virtual table adapter document should load") && ok;
+    skui::VirtualTableGeometry adapterGeometry("adapter-row-",
+                                               "adapter-cell-",
+                                               "adapter-header-",
+                                               {{"id", 40}, {"name", 60}},
+                                               20,
+                                               20,
+                                               20);
+    skui::VirtualTableRenderConfig adapterRenderConfig{
+        "adapter-table",
+        "adapter-handle-header",
+        "row-bg",
+        "row-selected",
+        "row:",
+        "handle:",
+        "cell",
+        "cell-selected",
+        "col-",
+    };
+    skui::VirtualTableAdapter adapter(adapterGeometry,
+                                      {20, adapterGeometry.rowHeight(), adapterGeometry.headerHeight(), 3, 3, 0},
+                                      adapterRenderConfig);
+    skui::VirtualTableDataSource adapterData;
+    adapterData.itemCount = 20;
+    adapterData.row = [](const skui::VirtualTableRowContext& context) {
+        skui::VirtualTableRowData row;
+        row.selected = context.rowIndex == 2;
+        return row;
+    };
+    adapterData.cell = [](const skui::VirtualTableCellContext& context) {
+        skui::VirtualTableCellData cell;
+        cell.text = std::string(context.columnId) + "-" + std::to_string(context.rowIndex);
+        cell.action = "cell:" + std::to_string(context.rowIndex) + ":" + std::string(context.columnId);
+        cell.selected = context.rowIndex == 2 && context.columnId == "name";
+        return cell;
+    };
+    ok = expect(adapter.refresh(tableAdapterRuntime, 40.0f, 70, adapterData, true),
+                "virtual table adapter should render from a data source") && ok;
+    ok = expect(adapter.firstItem() == 2,
+                "virtual table adapter should expose the current first row") && ok;
+    ok = expect(tableAdapterRuntime.hasClassById("adapter-row-1-bg", "row-selected"),
+                "virtual table adapter should apply data-source row selection") && ok;
+    ok = expect(tableAdapterRuntime.hasClassById("adapter-cell-1-name", "cell-selected"),
+                "virtual table adapter should apply data-source cell selection") && ok;
+    std::string adapterAction;
+    tableAdapterRuntime.setElementEventCallback([&](const skui::ElementEvent& event) {
+        if (event.type == skui::ElementEventType::Click) {
+            adapterAction = event.action;
+        }
+    });
+    sendMouse(tableAdapterRuntime, skui::EventType::MouseDown, 72.0f, 72.0f);
+    sendMouse(tableAdapterRuntime, skui::EventType::MouseUp, 72.0f, 72.0f);
+    ok = expect(adapterAction == "cell:2:name",
+                "virtual table adapter should route data-source cell action") && ok;
 
     skui::VirtualTablePanelConfig panelConfig;
     panelConfig.panelLeft = 10;
