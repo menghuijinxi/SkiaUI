@@ -35,7 +35,7 @@ Demo target：
 }
 ```
 
-如果只接入 `Skui`，不需要 Win32/DX12 窗口和渲染相关系统库；但本地位图解码需要 Windows SDK 的 WIC/COM 库 `ole32`、`windowscodecs`，WebP 需要 `libwebp`。接入 `SkuiWin32Dx12` 时还需要链接 `user32`、`gdi32`、`dwmapi`、`shcore`、`d3d12`、`dxgi`、`dxguid`、`d3dcompiler`、`dbghelp`、`imm32`、`shell32`、`usp10`。
+如果只接入 `Skui`，不需要 Win32/DX12 窗口和渲染相关系统库；本地位图解码走 Skia codec，使用 vcpkg 时需要给 `skia` 启用常用格式 feature，例如 `png`、`jpeg`、`webp`。接入 `SkuiWin32Dx12` 时还需要链接 `user32`、`gdi32`、`dwmapi`、`shcore`、`d3d12`、`dxgi`、`dxguid`、`d3dcompiler`、`dbghelp`、`imm32`、`shell32`、`usp10`。
 
 ## 方案一：直接复制源码接入
 
@@ -275,7 +275,7 @@ SkUI 支持浏览器常见的窗口化思路，但业务层需要负责池化节
 2. `RuntimeOptions::assetRoot`。
 3. 原始路径。
 
-`img` 的位图资源首帧会先排队，由 renderer 后台 worker 读取和解码；PNG、JPEG 和 BMP 通过 WIC 解码，WebP 通过 libwebp 解码。自定义宿主如果不用 `SkuiWin32Dx12`，需要设置 `RuntimeOptions::requestRedraw`，用于在图片完成加载后安排重绘；Win32 宿主已经接入这个回调。SVG 文件仍按文本读取并交给 Skia SVG DOM 渲染。
+`img` 的位图资源首帧会先排队，由 renderer 后台 worker 读取并交给 Skia codec 解码；当前覆盖 PNG、JPEG、WebP 和 BMP。自定义宿主如果不用 `SkuiWin32Dx12`，需要设置 `RuntimeOptions::requestRedraw`，用于在图片完成加载后安排重绘；Win32 宿主已经接入这个回调。SVG 文件仍按文本读取并交给 Skia SVG DOM 渲染。
 
 Demo 构建后会把 `assets/skui_demo` 和 `assets/skui_relay_demo` 复制到 exe 目录。其他项目也应该在构建后复制自己的 HTML、SVG 等资源。
 

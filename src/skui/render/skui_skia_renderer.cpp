@@ -3,6 +3,7 @@
 #include "perf_trace.h"
 
 #include "include/core/SkCanvas.h"
+#include "include/core/SkData.h"
 #include "include/core/SkImage.h"
 #include "include/core/SkImageInfo.h"
 #include "include/core/SkPaint.h"
@@ -11,14 +12,10 @@
 #include "include/core/SkSamplingOptions.h"
 #include "include/core/SkShader.h"
 #include "include/core/SkStream.h"
+#include "include/codec/SkCodec.h"
 #include "include/effects/SkGradient.h"
 #include "include/ports/SkTypeface_win.h"
 #include "modules/svg/include/SkSVGDOM.h"
-
-#include <objbase.h>
-#include <webp/decode.h>
-#include <wincodec.h>
-#include <wrl/client.h>
 
 #include <algorithm>
 #include <array>
@@ -193,22 +190,6 @@ std::string lowerAscii(std::string_view value) {
     return out;
 }
 
-uint16_t readLe16(const std::vector<unsigned char>& data, size_t offset) {
-    return static_cast<uint16_t>(data[offset]) |
-           static_cast<uint16_t>(static_cast<uint16_t>(data[offset + 1]) << 8u);
-}
-
-uint32_t readLe32(const std::vector<unsigned char>& data, size_t offset) {
-    return static_cast<uint32_t>(data[offset]) |
-           (static_cast<uint32_t>(data[offset + 1]) << 8u) |
-           (static_cast<uint32_t>(data[offset + 2]) << 16u) |
-           (static_cast<uint32_t>(data[offset + 3]) << 24u);
-}
-
-int32_t readLeS32(const std::vector<unsigned char>& data, size_t offset) {
-    return static_cast<int32_t>(readLe32(data, offset));
-}
-
 bool imageBufferLayout(int width, int height, size_t& rowBytes, size_t& byteSize) {
     if (width <= 0 || height <= 0) {
         return false;
@@ -228,23 +209,6 @@ bool imageBufferLayout(int width, int height, size_t& rowBytes, size_t& byteSize
     byteSize = rowBytes * safeHeight;
     return byteSize <= static_cast<size_t>(std::numeric_limits<uint32_t>::max());
 }
-
-class ScopedComInit {
-public:
-    ScopedComInit() : hr_(CoInitializeEx(nullptr, COINIT_MULTITHREADED)) {}
-    ~ScopedComInit() {
-        if (SUCCEEDED(hr_)) {
-            CoUninitialize();
-        }
-    }
-
-    bool usable() const {
-        return SUCCEEDED(hr_) || hr_ == RPC_E_CHANGED_MODE;
-    }
-
-private:
-    HRESULT hr_ = E_FAIL;
-};
 
 }  // namespace
 
@@ -743,95 +707,6 @@ void SkiaRenderer::bitmapWorkerLoop(std::shared_ptr<BitmapImageState> state, Req
 }
 
 SkiaRenderer::BitmapImageEntry SkiaRenderer::loadBitmapImage(const std::string& path) {
-    if (isWebpSource(path)) {
-        BitmapImageEntry webpEntry = loadWebpBitmapImage(path);
-        if (webpEntry.state == ImageState::Ready) {
-            return webpEntry;
-        }
-    }
-
-    BitmapImageEntry wicEntry = loadWicBitmapImage(path);
-    if (wicEntry.state == ImageState::Ready) {
-        return wicEntry;
-    }
-
-    return loadBmpBitmapImage(path);
-}
-
-SkiaRenderer::BitmapImageEntry SkiaRenderer::loadWicBitmapImage(const std::string& path) {
-    using Microsoft::WRL::ComPtr;
-
-    BitmapImageEntry entry;
-    entry.state = ImageState::Failed;
-
-    ScopedComInit com;
-    if (!com.usable()) {
-        return entry;
-    }
-
-    ComPtr<IWICImagingFactory> factory;
-    HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
-                                  IID_PPV_ARGS(factory.GetAddressOf()));
-    if (FAILED(hr)) {
-        return entry;
-    }
-
-    const std::wstring filePath = std::filesystem::path(path).wstring();
-    ComPtr<IWICBitmapDecoder> decoder;
-    hr = factory->CreateDecoderFromFilename(filePath.c_str(), nullptr, GENERIC_READ,
-                                            WICDecodeMetadataCacheOnDemand, decoder.GetAddressOf());
-    if (FAILED(hr)) {
-        return entry;
-    }
-
-    ComPtr<IWICBitmapFrameDecode> frame;
-    hr = decoder->GetFrame(0, frame.GetAddressOf());
-    if (FAILED(hr)) {
-        return entry;
-    }
-
-    UINT width = 0;
-    UINT height = 0;
-    hr = frame->GetSize(&width, &height);
-    if (FAILED(hr) ||
-        width > static_cast<UINT>(std::numeric_limits<int>::max()) ||
-        height > static_cast<UINT>(std::numeric_limits<int>::max())) {
-        return entry;
-    }
-
-    size_t rowBytes = 0;
-    size_t byteSize = 0;
-    if (!imageBufferLayout(static_cast<int>(width), static_cast<int>(height), rowBytes, byteSize)) {
-        return entry;
-    }
-
-    ComPtr<IWICFormatConverter> converter;
-    hr = factory->CreateFormatConverter(converter.GetAddressOf());
-    if (FAILED(hr)) {
-        return entry;
-    }
-
-    hr = converter->Initialize(frame.Get(), GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone,
-                               nullptr, 0.0, WICBitmapPaletteTypeCustom);
-    if (FAILED(hr)) {
-        return entry;
-    }
-
-    auto pixels = std::make_shared<std::vector<unsigned char>>(byteSize);
-    hr = converter->CopyPixels(nullptr, static_cast<UINT>(rowBytes), static_cast<UINT>(byteSize), pixels->data());
-    if (FAILED(hr)) {
-        return entry;
-    }
-
-    entry.state = ImageState::Ready;
-    entry.width = static_cast<int>(width);
-    entry.height = static_cast<int>(height);
-    entry.rowBytes = rowBytes;
-    entry.pixels = std::move(pixels);
-    return entry;
-}
-
-SkiaRenderer::BitmapImageEntry SkiaRenderer::loadWebpBitmapImage(const std::string& path) {
     BitmapImageEntry entry;
     entry.state = ImageState::Failed;
 
@@ -840,9 +715,20 @@ SkiaRenderer::BitmapImageEntry SkiaRenderer::loadWebpBitmapImage(const std::stri
         return entry;
     }
 
-    int width = 0;
-    int height = 0;
-    if (!WebPGetInfo(data.data(), data.size(), &width, &height)) {
+    sk_sp<SkData> encoded = SkData::MakeWithCopy(data.data(), data.size());
+    if (!encoded) {
+        return entry;
+    }
+
+    std::unique_ptr<SkCodec> codec = SkCodec::MakeFromData(std::move(encoded));
+    if (!codec) {
+        return entry;
+    }
+
+    const SkImageInfo sourceInfo = codec->getInfo();
+    const int width = sourceInfo.width();
+    const int height = sourceInfo.height();
+    if (width <= 0 || height <= 0) {
         return entry;
     }
 
@@ -852,78 +738,16 @@ SkiaRenderer::BitmapImageEntry SkiaRenderer::loadWebpBitmapImage(const std::stri
         return entry;
     }
 
-    auto pixels = std::make_shared<std::vector<unsigned char>>(byteSize);
-    if (!WebPDecodeBGRAInto(data.data(), data.size(), pixels->data(), byteSize, static_cast<int>(rowBytes))) {
-        return entry;
-    }
-    premultiplyBgra(*pixels, rowBytes, width, height);
-
-    entry.state = ImageState::Ready;
-    entry.width = width;
-    entry.height = height;
-    entry.rowBytes = rowBytes;
-    entry.pixels = std::move(pixels);
-    return entry;
-}
-
-SkiaRenderer::BitmapImageEntry SkiaRenderer::loadBmpBitmapImage(const std::string& path) {
-    BitmapImageEntry entry;
-    entry.state = ImageState::Failed;
-
-    const std::vector<unsigned char> data = readBinaryFile(path);
-    if (data.size() < 54 || data[0] != 'B' || data[1] != 'M') {
-        return entry;
-    }
-
-    const uint32_t pixelOffset = readLe32(data, 10);
-    const uint32_t dibSize = readLe32(data, 14);
-    if (dibSize < 40 || pixelOffset >= data.size()) {
-        return entry;
-    }
-
-    const int32_t widthSigned = readLeS32(data, 18);
-    const int32_t heightSigned = readLeS32(data, 22);
-    const uint16_t planes = readLe16(data, 26);
-    const uint16_t bitsPerPixel = readLe16(data, 28);
-    const uint32_t compression = readLe32(data, 30);
-    if (widthSigned <= 0 || heightSigned == 0 || planes != 1 || compression != 0 ||
-        (bitsPerPixel != 24 && bitsPerPixel != 32)) {
-        return entry;
-    }
-
-    const int width = widthSigned;
-    const int height = std::abs(heightSigned);
-    const bool topDown = heightSigned < 0;
-    const size_t srcBytesPerPixel = static_cast<size_t>(bitsPerPixel / 8);
-    const size_t srcRowBytes = ((static_cast<size_t>(width) * bitsPerPixel + 31u) / 32u) * 4u;
-    if (srcRowBytes == 0 || static_cast<size_t>(height) > (data.size() - pixelOffset) / srcRowBytes) {
-        return entry;
-    }
-
-    size_t rowBytes = 0;
-    size_t byteSize = 0;
-    if (!imageBufferLayout(width, height, rowBytes, byteSize)) {
-        return entry;
-    }
     auto pixels = std::make_shared<std::vector<unsigned char>>(byteSize);
     if (pixels->empty()) {
         return entry;
     }
 
-    for (int y = 0; y < height; ++y) {
-        const int srcY = topDown ? y : (height - 1 - y);
-        const size_t srcRow = static_cast<size_t>(pixelOffset) + static_cast<size_t>(srcY) * srcRowBytes;
-        const size_t dstRow = static_cast<size_t>(y) * rowBytes;
-        for (int x = 0; x < width; ++x) {
-            const size_t src = srcRow + static_cast<size_t>(x) * srcBytesPerPixel;
-            const size_t dst = dstRow + static_cast<size_t>(x) * 4u;
-            (*pixels)[dst + 0] = data[src + 0];
-            (*pixels)[dst + 1] = data[src + 1];
-            (*pixels)[dst + 2] = data[src + 2];
-            (*pixels)[dst + 3] = bitsPerPixel == 32 ? data[src + 3] : 0xFF;
-        }
+    const SkImageInfo targetInfo = SkImageInfo::Make(width, height, kBGRA_8888_SkColorType, kPremul_SkAlphaType);
+    const SkCodec::Result result = codec->getPixels(targetInfo, pixels->data(), rowBytes);
+    if (result != SkCodec::kSuccess && result != SkCodec::kIncompleteInput) {
+        return entry;
     }
-    premultiplyBgra(*pixels, rowBytes, width, height);
 
     entry.state = ImageState::Ready;
     entry.width = width;
@@ -931,28 +755,6 @@ SkiaRenderer::BitmapImageEntry SkiaRenderer::loadBmpBitmapImage(const std::strin
     entry.rowBytes = rowBytes;
     entry.pixels = std::move(pixels);
     return entry;
-}
-
-void SkiaRenderer::premultiplyBgra(std::vector<unsigned char>& pixels, size_t rowBytes, int width, int height) {
-    for (int y = 0; y < height; ++y) {
-        const size_t row = static_cast<size_t>(y) * rowBytes;
-        for (int x = 0; x < width; ++x) {
-            const size_t offset = row + static_cast<size_t>(x) * 4u;
-            const unsigned alpha = pixels[offset + 3];
-            if (alpha == 0xFF) {
-                continue;
-            }
-            if (alpha == 0) {
-                pixels[offset + 0] = 0;
-                pixels[offset + 1] = 0;
-                pixels[offset + 2] = 0;
-                continue;
-            }
-            pixels[offset + 0] = static_cast<unsigned char>((static_cast<unsigned>(pixels[offset + 0]) * alpha + 127u) / 255u);
-            pixels[offset + 1] = static_cast<unsigned char>((static_cast<unsigned>(pixels[offset + 1]) * alpha + 127u) / 255u);
-            pixels[offset + 2] = static_cast<unsigned char>((static_cast<unsigned>(pixels[offset + 2]) * alpha + 127u) / 255u);
-        }
-    }
 }
 
 void SkiaRenderer::drawInlineSvg(SkCanvas& canvas, const Node& node) {
@@ -1285,13 +1087,6 @@ std::string SkiaRenderer::resolveAssetPath(const Document& document, std::string
 bool SkiaRenderer::isSvgSource(std::string_view src) {
     const std::string value = lowerAscii(trim(src));
     constexpr std::string_view suffix = ".svg";
-    return value.size() >= suffix.size() &&
-           value.compare(value.size() - suffix.size(), suffix.size(), suffix) == 0;
-}
-
-bool SkiaRenderer::isWebpSource(std::string_view src) {
-    const std::string value = lowerAscii(trim(src));
-    constexpr std::string_view suffix = ".webp";
     return value.size() >= suffix.size() &&
            value.compare(value.size() - suffix.size(), suffix.size(), suffix) == 0;
 }

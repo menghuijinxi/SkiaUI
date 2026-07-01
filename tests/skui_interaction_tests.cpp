@@ -1,9 +1,11 @@
 #include "skui_runtime.h"
 
-#include <objbase.h>
-#include <webp/encode.h>
-#include <wincodec.h>
-#include <wrl/client.h>
+#include "include/core/SkData.h"
+#include "include/core/SkImageInfo.h"
+#include "include/core/SkPixmap.h"
+#include "include/encode/SkJpegEncoder.h"
+#include "include/encode/SkPngEncoder.h"
+#include "include/encode/SkWebpEncoder.h"
 
 #include <array>
 #include <atomic>
@@ -143,23 +145,6 @@ bool expect(bool condition, std::string_view message) {
     return true;
 }
 
-class ScopedComInit {
-public:
-    ScopedComInit() : hr_(CoInitializeEx(nullptr, COINIT_MULTITHREADED)) {}
-    ~ScopedComInit() {
-        if (SUCCEEDED(hr_)) {
-            CoUninitialize();
-        }
-    }
-
-    bool usable() const {
-        return SUCCEEDED(hr_) || hr_ == RPC_E_CHANGED_MODE;
-    }
-
-private:
-    HRESULT hr_ = E_FAIL;
-};
-
 bool writeBytesFixture(const std::filesystem::path& path, const unsigned char* data, size_t size) {
     std::ofstream file(path, std::ios::binary);
     if (!file) {
@@ -183,98 +168,40 @@ bool writeRedBmpFixture(const std::filesystem::path& path) {
     return writeBytesFixture(path, kRedBmp, sizeof(kRedBmp));
 }
 
-bool writeRedWicFixture(const std::filesystem::path& path, REFGUID containerFormat) {
-    using Microsoft::WRL::ComPtr;
-
-    ScopedComInit com;
-    if (!com.usable()) {
-        return false;
-    }
-
-    ComPtr<IWICImagingFactory> factory;
-    HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
-                                  IID_PPV_ARGS(factory.GetAddressOf()));
-    if (FAILED(hr)) {
-        return false;
-    }
-
-    ComPtr<IWICStream> stream;
-    hr = factory->CreateStream(stream.GetAddressOf());
-    if (FAILED(hr)) {
-        return false;
-    }
-
-    const std::wstring filePath = path.wstring();
-    hr = stream->InitializeFromFilename(filePath.c_str(), GENERIC_WRITE);
-    if (FAILED(hr)) {
-        return false;
-    }
-
-    ComPtr<IWICBitmapEncoder> encoder;
-    hr = factory->CreateEncoder(containerFormat, nullptr, encoder.GetAddressOf());
-    if (FAILED(hr)) {
-        return false;
-    }
-    hr = encoder->Initialize(stream.Get(), WICBitmapEncoderNoCache);
-    if (FAILED(hr)) {
-        return false;
-    }
-
-    ComPtr<IWICBitmapFrameEncode> frame;
-    ComPtr<IPropertyBag2> properties;
-    hr = encoder->CreateNewFrame(frame.GetAddressOf(), properties.GetAddressOf());
-    if (FAILED(hr)) {
-        return false;
-    }
-    hr = frame->Initialize(properties.Get());
-    if (FAILED(hr)) {
-        return false;
-    }
-    hr = frame->SetSize(2, 2);
-    if (FAILED(hr)) {
-        return false;
-    }
-
-    WICPixelFormatGUID pixelFormat = GUID_WICPixelFormat24bppBGR;
-    hr = frame->SetPixelFormat(&pixelFormat);
-    if (FAILED(hr) || !IsEqualGUID(pixelFormat, GUID_WICPixelFormat24bppBGR)) {
-        return false;
-    }
-
-    static constexpr std::array<unsigned char, 12> kRedBgr = {
-        0x00, 0x00, 0xFF, 0x00, 0x00, 0xFF,
-        0x00, 0x00, 0xFF, 0x00, 0x00, 0xFF,
+SkPixmap redFixturePixmap() {
+    static constexpr std::array<unsigned char, 16> kRedRgba = {
+        0xFF, 0x00, 0x00, 0xFF, 0xFF, 0x00, 0x00, 0xFF,
+        0xFF, 0x00, 0x00, 0xFF, 0xFF, 0x00, 0x00, 0xFF,
     };
-    hr = frame->WritePixels(2, 2u * 3u, static_cast<UINT>(kRedBgr.size()), const_cast<BYTE*>(kRedBgr.data()));
-    if (FAILED(hr)) {
+    static const SkImageInfo kInfo =
+        SkImageInfo::Make(2, 2, kRGBA_8888_SkColorType, kPremul_SkAlphaType);
+    return SkPixmap(kInfo, kRedRgba.data(), 2u * 4u);
+}
+
+bool writeSkDataFixture(const std::filesystem::path& path, sk_sp<SkData> data) {
+    if (!data || data->size() == 0) {
         return false;
     }
-    return SUCCEEDED(frame->Commit()) && SUCCEEDED(encoder->Commit());
+    return writeBytesFixture(path,
+                             static_cast<const unsigned char*>(data->data()),
+                             data->size());
 }
 
 bool writeRedPngFixture(const std::filesystem::path& path) {
-    return writeRedWicFixture(path, GUID_ContainerFormatPng);
+    SkPngEncoder::Options options;
+    return writeSkDataFixture(path, SkPngEncoder::Encode(redFixturePixmap(), options));
 }
 
 bool writeRedJpegFixture(const std::filesystem::path& path) {
-    return writeRedWicFixture(path, GUID_ContainerFormatJpeg);
+    SkJpegEncoder::Options options;
+    options.fQuality = 95;
+    return writeSkDataFixture(path, SkJpegEncoder::Encode(redFixturePixmap(), options));
 }
 
 bool writeRedWebpFixture(const std::filesystem::path& path) {
-    static constexpr std::array<unsigned char, 16> kRedBgra = {
-        0x00, 0x00, 0xFF, 0xFF, 0x00, 0x00, 0xFF, 0xFF,
-        0x00, 0x00, 0xFF, 0xFF, 0x00, 0x00, 0xFF, 0xFF,
-    };
-
-    uint8_t* encoded = nullptr;
-    const size_t size = WebPEncodeLosslessBGRA(kRedBgra.data(), 2, 2, 2 * 4, &encoded);
-    if (size == 0 || !encoded) {
-        return false;
-    }
-
-    const bool written = writeBytesFixture(path, encoded, size);
-    WebPFree(encoded);
-    return written;
+    SkWebpEncoder::Options options;
+    options.fCompression = SkWebpEncoder::Compression::kLossless;
+    return writeSkDataFixture(path, SkWebpEncoder::Encode(redFixturePixmap(), options));
 }
 
 }  // namespace

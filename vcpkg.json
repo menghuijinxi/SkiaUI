@@ -8,14 +8,16 @@
       "default-features": false,
       "features": [
         "direct3d",
-        "gl"
+        "gl",
+        "jpeg",
+        "png",
+        "webp"
       ]
     },
     {
       "name": "rmlui",
       "default-features": false
     },
-    "libwebp",
     "lexbor",
     "yoga"
   ]

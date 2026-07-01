@@ -193,7 +193,7 @@
 
 ## 图片和 SVG
 
-- `img[src]` 支持本地资源路径。`.svg` 文件按 SVG 文本读取；位图支持 PNG、JPEG、WebP 和 BMP 异步读取和解码。
+- `img[src]` 支持本地资源路径。`.svg` 文件按 SVG 文本读取；位图通过 Skia codec 支持 PNG、JPEG、WebP 和 BMP 异步读取和解码。
 - 位图图片首次绘制时会进入 renderer 内部后台加载队列；加载完成前该节点不绘制图片内容，加载完成后通过 `RuntimeOptions::requestRedraw` 安排重绘。
 - 相同解析路径的位图图片会复用缓存，不会为多个 `<img>` 重复加载。
 - 位图绘制会按节点布局盒缩放，并裁剪到节点盒；节点设置 `border-radius` 时也会按圆角裁剪。

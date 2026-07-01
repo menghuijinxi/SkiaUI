@@ -411,14 +411,9 @@ private:
     void stopBitmapLoads(const std::shared_ptr<BitmapImageState>& state);
     static void bitmapWorkerLoop(std::shared_ptr<BitmapImageState> state, RequestRedrawCallback requestRedraw);
     static BitmapImageEntry loadBitmapImage(const std::string& path);
-    static BitmapImageEntry loadWicBitmapImage(const std::string& path);
-    static BitmapImageEntry loadWebpBitmapImage(const std::string& path);
-    static BitmapImageEntry loadBmpBitmapImage(const std::string& path);
-    static void premultiplyBgra(std::vector<unsigned char>& pixels, size_t rowBytes, int width, int height);
     std::optional<std::string> readSvgAsset(const Document& document, std::string_view src);
     std::string resolveAssetPath(const Document& document, std::string_view src) const;
     static bool isSvgSource(std::string_view src);
-    static bool isWebpSource(std::string_view src);
     const TextEntry& textEntry(std::string_view value, float size, bool bold);
     float textWidth(std::string_view value, float size, bool bold);
     std::unordered_map<std::string, SvgDomEntry> svgDomCache_;
