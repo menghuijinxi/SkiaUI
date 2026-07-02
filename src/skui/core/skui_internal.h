@@ -307,7 +307,6 @@ public:
     bool loadString(std::string_view html, std::string_view basePath, Document& outDocument, std::string& error);
 
 private:
-    float scale_ = 1.0f;
     Theme theme_;
 };
 

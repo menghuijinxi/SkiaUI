@@ -221,6 +221,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCmd) {
     options.logicalHeight = 800;
     options.documentPath = "assets/ui/main.html";
     options.runtime.assetRoot = "assets/ui";
+    options.useSystemDpiScale = true;
+    options.runtime.scale = 1.0f;
     options.onRuntimeReady = [](skui::Runtime& ui) {
         ui.setElementEventCallback([&ui](const skui::ElementEvent& event) {
             if (event.type == skui::ElementEventType::Click && event.action == "save") {
@@ -233,6 +235,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCmd) {
     return app.run(instance, showCmd);
 }
 ```
+
+`WindowOptions::useSystemDpiScale` 控制 Win32/DX12 宿主是否把系统 DPI 纳入 SkUI 的缩放计算，默认是 `true`。如果目标系统已有自己的 UI 缩放方案，例如宿主已经在 4K 下按 1.5 倍管理窗口和输入坐标，可以把它设为 `false`，让 SkUI 按 1.0 的平台 DPI 运行。
+
+`RuntimeOptions::scale` 是 SkUI 自身的用户缩放倍率，默认 `1.0f`。最终生效倍率为“Win32 系统 DPI 倍率（如果启用）乘以 `RuntimeOptions::scale`”。因此：
+
+- 跟随 Windows 150% 缩放：`useSystemDpiScale = true`，`runtime.scale = 1.0f`。
+- 忽略 Windows DPI，使用宿主自己的 150% 缩放：`useSystemDpiScale = false`，由宿主管理窗口尺寸和输入坐标，必要时设置 `runtime.scale = 1.5f`。
+- 需要运行时切换 UI 缩放时，调用 `Runtime::setScale(scale)`；`Runtime::effectiveScale()` 可以读取最终用于布局、绘制和事件坐标换算的倍率。
 
 ## 方案四：只接入运行时和自己的渲染循环
 
@@ -257,6 +267,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCmd) {
 5. 平台输入事件转成 `skui::Event` 后调用 `Runtime::handleEvent(event)`。
 6. 每帧拿到目标后端当前帧的 `SkCanvas`，调用 `Runtime::render(canvas)`，再由目标后端 present。
 7. 图片异步加载、状态更新或输入事件触发重绘时，由宿主根据 `requestRedraw` 或自己的 dirty flag 安排下一帧。
+
+自定义后端传给 `Runtime::resize(width, height, dpiScale)` 的 `dpiScale` 应只表示平台 DPI 倍率。如果宿主不希望 SkUI 跟随系统 DPI，就传 `1.0f`；如果还需要用户自定义 UI 缩放，设置 `RuntimeOptions::scale` 或运行时调用 `Runtime::setScale(scale)`。SkUI 内部会用 `dpiScale * scale` 统一处理逻辑视口、Skia 绘制缩放和输入命中坐标。
 
 最小宿主循环示例：
 
@@ -327,7 +339,7 @@ ui.render(canvas);
 | `ImeComposition` | 输入法组合字符串 |
 | `ImeEnd` | 输入法结束 |
 
-事件坐标应使用 SkUI 逻辑坐标。Win32 宿主内部会处理 DPI；自定义宿主要保证传入坐标和 `resize(width, height, dpiScale)` 的约定一致。
+事件坐标应使用绘制目标的像素坐标，并和 `Runtime::resize(width, height, dpiScale)` 里的 `width`、`height` 保持同一坐标系。Runtime 会用 `dpiScale * RuntimeOptions::scale` 反算 SkUI 逻辑坐标；如果宿主已经提前把输入转换成逻辑坐标，就应传 `dpiScale = 1.0f` 并避免重复设置 UI 缩放。
 
 ## 业务交互推荐写法
 

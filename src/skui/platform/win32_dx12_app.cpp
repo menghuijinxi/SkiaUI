@@ -101,7 +101,7 @@ public:
         SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0);
         const int workWidth = workArea.right - workArea.left;
         const int workHeight = workArea.bottom - workArea.top;
-        const float dpiScale = dpiScaleForDpi(dpi_);
+        const float dpiScale = effectiveWindowScale();
         const int desiredClientWidth = static_cast<int>(std::round(options_.logicalWidth * dpiScale));
         const int desiredClientHeight = static_cast<int>(std::round(options_.logicalHeight * dpiScale));
         RECT desired{0, 0, desiredClientWidth, desiredClientHeight};
@@ -173,6 +173,14 @@ private:
         return reinterpret_cast<Impl*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
     }
 
+    float runtimeDpiScale() const {
+        return options_.useSystemDpiScale ? dpiScaleForDpi(dpi_) : 1.0f;
+    }
+
+    float effectiveWindowScale() const {
+        return std::max(0.1f, runtimeDpiScale() * std::max(0.1f, options_.runtime.scale));
+    }
+
     RuntimeOptions configureRuntimeCallbacks(RuntimeOptions options) {
         const RequestRedrawCallback previous = std::move(options.requestRedraw);
         options.requestRedraw = [this, previous] {
@@ -215,7 +223,7 @@ private:
     void resizeRuntimeForRender(int width, int height) {
         const bool traceEnabled = perf::Trace::enabled();
         const auto traceStart = traceEnabled ? perf::Trace::now() : perf::Trace::Clock::time_point{};
-        const float dpiScale = dpiScaleForDpi(dpi_);
+        const float dpiScale = runtimeDpiScale();
         const bool layoutChanged = width != runtimeLayoutWidth_ ||
                                    height != runtimeLayoutHeight_ ||
                                    dpiScale != runtimeLayoutDpiScale_;
@@ -285,15 +293,19 @@ private:
         case WM_DPICHANGED: {
             app->dpi_ = HIWORD(wParam);
             app->markFrameDirty();
-            const auto* suggested = reinterpret_cast<RECT*>(lParam);
-            SetWindowPos(hwnd,
-                         nullptr,
-                         suggested->left,
-                         suggested->top,
-                         suggested->right - suggested->left,
-                         suggested->bottom - suggested->top,
-                         SWP_NOZORDER | SWP_NOACTIVATE);
-            app->requestRepaint(hwnd, true);
+            if (app->options_.useSystemDpiScale) {
+                const auto* suggested = reinterpret_cast<RECT*>(lParam);
+                SetWindowPos(hwnd,
+                             nullptr,
+                             suggested->left,
+                             suggested->top,
+                             suggested->right - suggested->left,
+                             suggested->bottom - suggested->top,
+                             SWP_NOZORDER | SWP_NOACTIVATE);
+                app->requestRepaint(hwnd, true);
+            } else {
+                app->requestRepaint(hwnd, false);
+            }
             return 0;
         }
         case WM_KEYDOWN:

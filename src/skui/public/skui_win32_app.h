@@ -20,6 +20,7 @@ struct WindowOptions {
     std::wstring title = L"SkiaUiDesk";
     int logicalWidth = 1672;
     int logicalHeight = 941;
+    bool useSystemDpiScale = true;
     COLORREF clearColor = RGB(7, 12, 18);
     std::string documentPath;
     RuntimeOptions runtime;

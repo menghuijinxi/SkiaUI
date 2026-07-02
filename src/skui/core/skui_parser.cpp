@@ -1489,7 +1489,7 @@ void parseInlineStyle(std::string_view declarations, Style& style) {
     parseDeclarations(declarations, style);
 }
 
-DocumentParser::DocumentParser(RuntimeOptions options) : scale_(options.scale), theme_(options.theme) {}
+DocumentParser::DocumentParser(RuntimeOptions options) : theme_(options.theme) {}
 
 bool DocumentParser::loadFile(const std::string& path, Document& outDocument, std::string& error) {
     std::string html;
@@ -1543,7 +1543,6 @@ bool DocumentParser::loadString(std::string_view html,
     outDocument.rules = std::move(rules);
     outDocument.basePath = std::string(basePath);
     RuntimeOptions styleOptions;
-    styleOptions.scale = scale_;
     styleOptions.theme = theme_;
     recomputeStyles(outDocument, styleOptions);
     return true;

@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <charconv>
 #include <cctype>
+#include <cmath>
 #include <cstdint>
 #include <string>
 #include <utility>
@@ -881,11 +882,19 @@ public:
         : options(std::move(runtimeOptions)), parser(options), renderer(options) {}
 
     float logicalWidth() const {
-        return static_cast<float>(width) / std::max(0.1f, dpiScale);
+        return static_cast<float>(width) / effectiveScale();
     }
 
     float logicalHeight() const {
-        return static_cast<float>(height) / std::max(0.1f, dpiScale);
+        return static_cast<float>(height) / effectiveScale();
+    }
+
+    float userScale() const {
+        return std::max(0.1f, options.scale);
+    }
+
+    float effectiveScale() const {
+        return std::max(0.1f, std::max(0.1f, dpiScale) * userScale());
     }
 
     void recomputeAndLayout() {
@@ -1115,7 +1124,7 @@ bool Runtime::handleEvent(const Event& event) {
         return false;
     }
 
-    const float scale = std::max(0.1f, impl_->dpiScale);
+    const float scale = impl_->effectiveScale();
     const float x = event.x / scale;
     const float y = event.y / scale;
     const bool pointerEvent = isPointerEvent(event.type);
@@ -1582,9 +1591,20 @@ void Runtime::render(SkCanvas& canvas) {
         return;
     }
 
-    impl_->renderer.draw(impl_->document, canvas, impl_->width, impl_->height, impl_->dpiScale);
+    impl_->renderer.draw(impl_->document, canvas, impl_->width, impl_->height, impl_->effectiveScale());
     impl_->dirty = false;
     perf::Trace::write("skui", "runtime_render", impl_->width, impl_->height, perf::Trace::elapsedMs(traceStart));
+}
+
+void Runtime::setScale(float scale) {
+    scale = std::max(0.1f, scale);
+    if (std::abs(scale - impl_->options.scale) <= 0.001f) {
+        impl_->flushLayout();
+        return;
+    }
+
+    impl_->options.scale = scale;
+    impl_->requestLayout();
 }
 
 bool Runtime::addClassById(std::string_view id, std::string_view className) {
@@ -1804,6 +1824,14 @@ int Runtime::height() const {
 
 float Runtime::dpiScale() const {
     return impl_->dpiScale;
+}
+
+float Runtime::scale() const {
+    return impl_->userScale();
+}
+
+float Runtime::effectiveScale() const {
+    return impl_->effectiveScale();
 }
 
 Cursor Runtime::cursor() const {

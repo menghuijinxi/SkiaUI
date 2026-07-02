@@ -1,4 +1,5 @@
 #include "skui_runtime.h"
+#include "skui_runtime_helpers.h"
 #include "skui_dropdown.h"
 #include "skui_virtual_table.h"
 
@@ -253,6 +254,28 @@ int main() {
     options.clearColor = SK_ColorBLACK;
 
     bool ok = true;
+    {
+        skui::RuntimeOptions scaledOptions = options;
+        scaledOptions.scale = 1.5f;
+        skui::Runtime scaledRuntime(scaledOptions);
+        scaledRuntime.resize(300, 150, 2.0f);
+
+        ok = expect(scaledRuntime.dpiScale() == 2.0f, "dpiScale should keep platform scale") && ok;
+        ok = expect(scaledRuntime.scale() > 1.49f && scaledRuntime.scale() < 1.51f,
+                    "runtime scale should expose user scale") && ok;
+        ok = expect(scaledRuntime.effectiveScale() > 2.99f && scaledRuntime.effectiveScale() < 3.01f,
+                    "effective scale should combine platform dpi and user scale") && ok;
+        ok = expect(skui::runtimeLogicalWidth(scaledRuntime) == 100,
+                    "logical width should use effective scale") && ok;
+        ok = expect(skui::runtimeLogicalHeight(scaledRuntime) == 50,
+                    "logical height should use effective scale") && ok;
+
+        scaledRuntime.setScale(0.5f);
+        ok = expect(scaledRuntime.effectiveScale() > 0.99f && scaledRuntime.effectiveScale() < 1.01f,
+                    "setScale should update effective scale") && ok;
+        ok = expect(skui::runtimeLogicalWidth(scaledRuntime) == 300,
+                    "setScale should update logical width") && ok;
+    }
     {
         skui::Runtime runtime(options);
         runtime.resize(kWidth, kHeight, 1.0f);

@@ -39,11 +39,11 @@ private:
 };
 
 [[nodiscard]] inline int runtimeLogicalWidth(const Runtime& runtime) {
-    return static_cast<int>(std::lround(static_cast<float>(runtime.width()) / std::max(0.1f, runtime.dpiScale())));
+    return static_cast<int>(std::lround(static_cast<float>(runtime.width()) / runtime.effectiveScale()));
 }
 
 [[nodiscard]] inline int runtimeLogicalHeight(const Runtime& runtime) {
-    return static_cast<int>(std::lround(static_cast<float>(runtime.height()) / std::max(0.1f, runtime.dpiScale())));
+    return static_cast<int>(std::lround(static_cast<float>(runtime.height()) / runtime.effectiveScale()));
 }
 
 [[nodiscard]] inline std::vector<std::string_view> splitActionPayload(std::string_view payload, char delimiter) {

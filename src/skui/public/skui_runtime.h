@@ -152,6 +152,7 @@ public:
     bool handleEvent(const Event& event);
     void render(SkCanvas& canvas);
     bool renderToBgraPixels(uint32_t* pixels, int width, int height, size_t rowBytes, float dpiScale);
+    void setScale(float scale);
     bool addClassById(std::string_view id, std::string_view className);
     bool removeClassById(std::string_view id, std::string_view className);
     bool setStyleById(std::string_view id, std::string_view declarations);
@@ -168,6 +169,8 @@ public:
     [[nodiscard]] int width() const;
     [[nodiscard]] int height() const;
     [[nodiscard]] float dpiScale() const;
+    [[nodiscard]] float scale() const;
+    [[nodiscard]] float effectiveScale() const;
     [[nodiscard]] Cursor cursor() const;
     [[nodiscard]] bool dirty() const;
     [[nodiscard]] std::string lastError() const;

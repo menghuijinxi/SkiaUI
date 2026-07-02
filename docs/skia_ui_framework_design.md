@@ -52,7 +52,7 @@
 ```cpp
 skui::RuntimeOptions options;
 options.assetRoot = "assets/ui";
-options.scale = 1.0f;
+options.scale = 1.0f; // 用户 UI 缩放倍率，会和 resize 传入的 dpiScale 相乘。
 options.theme = skui::Theme::Dark();
 
 skui::Runtime ui(options);
@@ -74,6 +74,8 @@ skui::win32::WindowOptions window;
 window.title = L"SkiaUiDesk";
 window.width = 1280;
 window.height = 800;
+window.useSystemDpiScale = true;
+window.runtime.scale = 1.0f;
 
 skui::win32::Dx12WindowApp app(window);
 app.ui().loadDocument("assets/ui/layers.html");
