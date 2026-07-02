@@ -15,9 +15,15 @@ find_package(lexbor CONFIG REQUIRED)
 
 option(SKIAUI_BUILD_DEMOS "Build SkiaUI demo applications" ON)
 option(SKIAUI_BUILD_TESTS "Build SkiaUI tests" ${BUILD_TESTING})
+option(SKIAUI_BUILD_WIN32 "Build the Win32 SkUI platform adapter target" ON)
+option(SKIAUI_INSTALL_WIN32 "Install the Win32 SkUI platform adapter target" ON)
 option(SKIAUI_BUILD_WIN32_DX12 "Build the Win32/DX12 SkUI host target" ON)
 option(SKIAUI_INSTALL_WIN32_DX12 "Install the Win32/DX12 SkUI host target" ON)
 option(SKIATEST_USE_SKIA_D3D "Render SkiaLayerDesk through Skia Ganesh D3D12 backend" ON)
+
+if(SKIAUI_BUILD_WIN32_DX12 AND NOT SKIAUI_BUILD_WIN32)
+    message(FATAL_ERROR "SKIAUI_BUILD_WIN32_DX12 requires SKIAUI_BUILD_WIN32.")
+endif()
 
 if(SKIAUI_BUILD_DEMOS AND NOT SKIAUI_BUILD_WIN32_DX12)
     message(FATAL_ERROR "SKIAUI_BUILD_DEMOS requires SKIAUI_BUILD_WIN32_DX12.")
@@ -35,9 +41,14 @@ add_library(Skui STATIC
     src/skui/render/skui_skia_renderer.cpp
 )
 
+if(SKIAUI_BUILD_WIN32)
+    add_library(SkuiWin32 STATIC
+        src/skui/platform/win32_event_adapter.cpp
+    )
+endif()
+
 if(SKIAUI_BUILD_WIN32_DX12)
     add_library(SkuiWin32Dx12 STATIC
-        src/skui/platform/win32_event_adapter.cpp
         src/skui/platform/win32_dx12_app.cpp
         src/d3d_presenter.cpp
     )
@@ -98,6 +109,29 @@ target_compile_definitions(Skui PUBLIC
     NOMINMAX
 )
 
+if(SKIAUI_BUILD_WIN32)
+    target_include_directories(SkuiWin32 PUBLIC
+        "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/skui/public>"
+        "$<INSTALL_INTERFACE:include/skiaui>"
+    )
+
+    target_link_libraries(SkuiWin32 PUBLIC
+        Skui
+    )
+
+    target_link_libraries(SkuiWin32 PRIVATE
+        user32
+        imm32
+    )
+
+    target_compile_definitions(SkuiWin32 PUBLIC
+        WIN32_LEAN_AND_MEAN
+        NOMINMAX
+        UNICODE
+        _UNICODE
+    )
+endif()
+
 if(SKIAUI_BUILD_WIN32_DX12)
     target_include_directories(SkuiWin32Dx12 PUBLIC
         "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>"
@@ -106,7 +140,7 @@ if(SKIAUI_BUILD_WIN32_DX12)
     )
 
     target_link_libraries(SkuiWin32Dx12 PUBLIC
-        Skui
+        SkuiWin32
     )
 
     target_link_libraries(SkuiWin32Dx12 PRIVATE
@@ -136,6 +170,9 @@ endif()
 
 if(MSVC)
     target_compile_options(Skui PRIVATE /utf-8 /permissive- /Zc:__cplusplus)
+    if(SKIAUI_BUILD_WIN32)
+        target_compile_options(SkuiWin32 PRIVATE /utf-8 /permissive- /Zc:__cplusplus)
+    endif()
     if(SKIAUI_BUILD_WIN32_DX12)
         target_compile_options(SkuiWin32Dx12 PRIVATE /utf-8 /permissive- /Zc:__cplusplus)
     endif()
@@ -312,6 +349,17 @@ endif()
 
 set(SKIAUI_INSTALL_TARGETS Skui)
 
+set(SKIAUI_INSTALL_WIN32_TARGET OFF)
+if(SKIAUI_BUILD_WIN32 AND SKIAUI_INSTALL_WIN32)
+    set(SKIAUI_INSTALL_WIN32_TARGET ON)
+endif()
+if(SKIAUI_BUILD_WIN32_DX12 AND SKIAUI_INSTALL_WIN32_DX12)
+    set(SKIAUI_INSTALL_WIN32_TARGET ON)
+endif()
+if(SKIAUI_INSTALL_WIN32_TARGET)
+    list(APPEND SKIAUI_INSTALL_TARGETS SkuiWin32)
+endif()
+
 if(SKIAUI_BUILD_WIN32_DX12 AND SKIAUI_INSTALL_WIN32_DX12)
     list(APPEND SKIAUI_INSTALL_TARGETS SkuiWin32Dx12)
 endif()
@@ -331,11 +379,17 @@ set(SKIAUI_PUBLIC_HEADERS
     src/skui/public/skui_virtual_window.h
 )
 
+if(SKIAUI_INSTALL_WIN32_TARGET)
+    list(APPEND SKIAUI_PUBLIC_HEADERS
+        src/skui/public/skui_win32_event_adapter.h
+    )
+endif()
+
 if(SKIAUI_BUILD_WIN32_DX12 AND SKIAUI_INSTALL_WIN32_DX12)
     list(APPEND SKIAUI_PUBLIC_HEADERS
-    src/skui/public/skui_win32_app.h
-    src/d3d_presenter.h
-    src/perf_trace.h
+        src/skui/public/skui_win32_app.h
+        src/d3d_presenter.h
+        src/perf_trace.h
     )
 endif()
 

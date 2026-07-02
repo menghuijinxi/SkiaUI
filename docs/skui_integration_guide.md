@@ -1,17 +1,18 @@
 # SkUI 项目集成指南
 
-这份文档说明如何把 `Skui` 集成到其他 CMake/C++ 项目里。SkUI 核心只依赖 Skia、Skia SVG 模块、Yoga 和 Lexbor；Win32 + DX12 宿主是可选层。
+这份文档说明如何把 `Skui` 集成到其他 CMake/C++ 项目里。SkUI 核心只依赖 Skia、Skia SVG 模块、Yoga 和 Lexbor；Win32 事件适配和 Win32 + DX12 宿主都是可选层。
 
 ## 模块边界
 
-当前代码分成两个可复用 target：
+当前代码分成三个可复用 target：
 
 | Target | 作用 | 适用场景 |
 | --- | --- | --- |
 | `Skui` | HTML/CSS 解析、DOM、样式、Yoga 布局、事件、Skia 绘制 | 已经有窗口和 Skia canvas 的项目 |
-| `SkuiWin32Dx12` | Win32 窗口、DX12 swapchain、鼠标键盘 IME、剪贴板、光标适配 | Windows 原生项目快速拉起一个 SkUI 窗口 |
+| `SkuiWin32` | Win32 消息、鼠标键盘、IME、剪贴板、光标适配 | Windows 上已有 OpenGL、Vulkan、DX12 或 CPU raster 宿主，只想复用平台事件转换 |
+| `SkuiWin32Dx12` | Win32 窗口、DX12 swapchain、D3D presenter | Windows 原生项目快速拉起一个 SkUI DX12 窗口 |
 
-`SkuiWin32Dx12` 只是当前仓库自带的一个宿主示例，不代表 SkUI 只能运行在 DX12 上。SkUI 核心 target 不创建窗口、不管理 swapchain，也不直接依赖 Win32/DX12；它只要求宿主在合适的时机提供一个有效的 `SkCanvas`，并把平台输入事件转成 `skui::Event`。
+`SkuiWin32Dx12` 只是当前仓库自带的一个宿主示例，不代表 SkUI 只能运行在 DX12 上。SkUI 核心 target 不创建窗口、不管理 swapchain，也不直接依赖 Win32/DX12；它只要求宿主在合适的时机提供一个有效的 `SkCanvas`，并把平台输入事件转成 `skui::Event`。Windows 平台的 OpenGL、Vulkan 或自研渲染后端可以链接 `SkuiWin32` 复用通用 Win32 事件适配，再自己管理 GPU 后端。
 
 Demo target：
 
@@ -21,7 +22,7 @@ Demo target：
 
 ## 依赖
 
-项目需要 C++23，以及这些 vcpkg 包。依赖必须由目标项目自己拉取和配置，不要直接复用本仓库 `build` 目录里已经编译好的 `Skui.lib`、`SkuiWin32Dx12.lib` 或 Skia/Yoga/Lexbor 等第三方 `.lib`。
+项目需要 C++23，以及这些 vcpkg 包。依赖必须由目标项目自己拉取和配置，不要直接复用本仓库 `build` 目录里已经编译好的 `Skui.lib`、`SkuiWin32.lib`、`SkuiWin32Dx12.lib` 或 Skia/Yoga/Lexbor 等第三方 `.lib`。
 
 原因是 SkUI 的第三方依赖和目标项目的渲染后端、资源格式、运行平台强相关。目标项目可能需要 Direct3D、OpenGL、Vulkan、CPU raster、不同图片 codec 或不同 CRT/编译参数；如果直接链接本项目预编译产物，这些选择会被本项目的构建方式固定住，后续也容易出现 ABI、运行库、Debug/Release、DPI/后端特性不一致的问题。
 
@@ -48,7 +49,7 @@ vcpkg manifest 示例：
 }
 ```
 
-这个 manifest 只是 Win32/DX12 demo 的参考起点，不是 SkUI 对使用者的固定要求。如果只接入 `Skui`，不需要 Win32/DX12 窗口和渲染相关系统库；本地位图解码走 Skia codec，使用 vcpkg 时需要给 `skia` 启用目标项目真正需要的图片格式 feature，例如 `png`、`jpeg`、`webp`。接入 `SkuiWin32Dx12` 时还需要链接 `user32`、`gdi32`、`dwmapi`、`shcore`、`d3d12`、`dxgi`、`dxguid`、`d3dcompiler`、`dbghelp`、`imm32`、`shell32`、`usp10`。
+这个 manifest 只是 Win32/DX12 demo 的参考起点，不是 SkUI 对使用者的固定要求。如果只接入 `Skui`，不需要 Win32/DX12 窗口和渲染相关系统库；本地位图解码走 Skia codec，使用 vcpkg 时需要给 `skia` 启用目标项目真正需要的图片格式 feature，例如 `png`、`jpeg`、`webp`。接入 `SkuiWin32` 时需要 Win32 输入相关系统库，例如 `user32`、`imm32`；接入 `SkuiWin32Dx12` 时还需要 `gdi32`、`dwmapi`、`shcore`、`d3d12`、`dxgi`、`dxguid`、`d3dcompiler`、`dbghelp`、`shell32`、`usp10`、`windowscodecs`。
 
 不要这样接入：
 
@@ -90,12 +91,19 @@ src/skui/render/
 | `skui_dropdown.h` | 普通 DOM 组合下拉框的状态控制 |
 | `skui_virtual_window.h` | 列表、聊天记录等单维窗口化渲染状态 |
 | `skui_virtual_table.h` | 表格窗口化渲染、表格面板布局、工具栏换行高度计算 |
+| `skui_win32_event_adapter.h` | Win32 消息、IME、剪贴板、光标到 SkUI 事件的适配；只用 `SkuiWin32` 或 `SkuiWin32Dx12` 时需要 |
 | `skui_win32_app.h` | Win32/DX12 宿主入口；只用 `SkuiWin32Dx12` 时需要 |
+
+如果需要复用通用 Win32 事件适配，再复制：
+
+```text
+src/skui/platform/win32_event_adapter.cpp
+```
 
 如果需要内置 Win32/DX12 宿主，再复制：
 
 ```text
-src/skui/platform/
+src/skui/platform/win32_dx12_app.cpp
 src/d3d_presenter.h
 src/d3d_presenter.cpp
 src/perf_trace.h
@@ -142,16 +150,31 @@ if(MSVC)
 endif()
 ```
 
-如果同时接入 `SkuiWin32Dx12`，还需要把 Win32 窗口宿主、Win32 事件适配器和 DX12 presenter 加进目标：
+如果 Windows 项目已经有自己的窗口和 OpenGL/Vulkan/DX12 后端，只想复用 Win32 事件适配，可以先增加 `SkuiWin32`：
+
+```cmake
+add_library(SkuiWin32 STATIC
+    src/skui/platform/win32_event_adapter.cpp
+)
+
+target_include_directories(SkuiWin32 PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/skui/public"
+)
+
+target_link_libraries(SkuiWin32 PUBLIC Skui)
+target_link_libraries(SkuiWin32 PRIVATE user32 imm32)
+target_compile_definitions(SkuiWin32 PUBLIC WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
+```
+
+如果同时接入 `SkuiWin32Dx12`，还需要把 Win32 窗口宿主和 DX12 presenter 加进目标。DX12 host public 依赖 `SkuiWin32`，不要再次把 `win32_event_adapter.cpp` 编入 DX12 target：
 
 ```cmake
 add_library(SkuiWin32Dx12 STATIC
-    src/skui/platform/win32_event_adapter.cpp
     src/skui/platform/win32_dx12_app.cpp
     src/d3d_presenter.cpp
 )
 
-target_link_libraries(SkuiWin32Dx12 PUBLIC Skui)
+target_link_libraries(SkuiWin32Dx12 PUBLIC SkuiWin32)
 
 target_link_libraries(SkuiWin32Dx12 PRIVATE
     user32
@@ -180,7 +203,7 @@ target_link_libraries(MyApp PRIVATE Skui)
 
 这个方式仍然必须使用目标项目自己的 toolchain、vcpkg manifest 或其他依赖解析方式；它只是复用源码目录，不是复用本仓库编译产物。不要把 `external/SkiaTest/build` 里的库文件提交给目标项目使用。
 
-这个方式会同时带入本仓库 demo target。后续如果要做成更干净的库，建议增加 `SKUI_BUILD_DEMOS` / `SKUI_BUILD_TESTS` 选项，把 demo 从库构建里隔离出去。对正式项目来说，当前更建议使用“方案一”的源码 target 接入方式，只复制 `Skui` / `SkuiWin32Dx12` 需要的源码和 public 头文件。
+这个方式会同时带入本仓库 demo target。后续如果要做成更干净的库，建议增加 `SKUI_BUILD_DEMOS` / `SKUI_BUILD_TESTS` 选项，把 demo 从库构建里隔离出去。对正式项目来说，当前更建议使用“方案一”的源码 target 接入方式，只复制 `Skui` / `SkuiWin32` / `SkuiWin32Dx12` 需要的源码和 public 头文件。
 
 ## 方案三：使用 Win32/DX12 宿主
 
@@ -222,12 +245,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCmd) {
 | HTML/CSS 解析、DOM、Yoga 布局、命中测试、控件状态 | `Skui` |
 | Skia 绘制命令输出 | `Skui`，通过 `Runtime::render(SkCanvas*)` |
 | 窗口创建、swapchain、GPU surface、present | 目标项目后端 |
-| 鼠标、键盘、输入法、剪贴板、光标 | 目标项目平台适配层 |
+| 鼠标、键盘、输入法、剪贴板、光标 | 目标项目平台适配层；Windows 项目可以复用 `SkuiWin32` |
 | 图片加载完成后的重绘调度 | 目标项目通过 `RuntimeOptions::requestRedraw` 接入 |
 
 接入流程：
 
-1. 在目标项目里按源码 target 编译 `Skui`，不要依赖 `SkuiWin32Dx12`。
+1. 在目标项目里按源码 target 编译 `Skui`。如果是 Windows 自定义后端，可以额外链接 `SkuiWin32`；不要为了复用 Win32 事件而依赖 `SkuiWin32Dx12`。
 2. 目标项目按自己的后端创建 Skia surface，例如 Direct3D、OpenGL、Vulkan、Metal、Raster surface 或已有引擎暴露的 `SkCanvas`。
 3. 创建 `skui::Runtime`，设置 `assetRoot`、剪贴板回调、重绘回调和业务事件回调。
 4. 窗口尺寸或 DPI 变化时调用 `Runtime::resize(width, height, dpiScale)`。
@@ -542,7 +565,7 @@ table.refresh(ui, currentScrollY, tableViewportHeight, source);
 2. `RuntimeOptions::assetRoot`。
 3. 原始路径。
 
-`img` 的位图资源首帧会先排队，由 renderer 后台 worker 读取并交给 Skia codec 解码；当前覆盖 PNG、JPEG、WebP 和 BMP。自定义宿主如果不用 `SkuiWin32Dx12`，需要设置 `RuntimeOptions::requestRedraw`，用于在图片完成加载后安排重绘；Win32 宿主已经接入这个回调。SVG 文件仍按文本读取并交给 Skia SVG DOM 渲染。
+`img` 的位图资源首帧会先排队，由 renderer 后台 worker 读取并交给 Skia codec 解码；当前覆盖 PNG、JPEG、WebP 和 BMP。自定义宿主如果不用 `SkuiWin32Dx12`，需要设置 `RuntimeOptions::requestRedraw`，用于在图片完成加载后安排重绘；Win32/DX12 宿主已经接入这个回调。SVG 文件仍按文本读取并交给 Skia SVG DOM 渲染。
 
 Demo 构建后会把 `assets/skui_demo` 和 `assets/skui_relay_demo` 复制到 exe 目录。其他项目也应该在构建后复制自己的 HTML、SVG 等资源。
 
@@ -582,11 +605,11 @@ $env:https_proxy = "http://127.0.0.1:10090"
 - Skia、Skia SVG、Yoga、Lexbor 由目标项目自己拉取、配置并能被 CMake 找到。
 - 没有链接本仓库 `build` 目录里的预编译 `.lib`，也没有把本仓库的第三方依赖产物当成 SDK 分发。
 - Skia feature 与目标项目后端一致，例如 DX12 项目启用 Direct3D，OpenGL 项目启用 OpenGL，离屏 CPU 渲染项目只保留必要 feature。
-- 如果目标项目不是 Win32/DX12，不需要链接 `SkuiWin32Dx12`；只要自己提供 `SkCanvas`、事件转换和重绘调度即可。
+- 如果目标项目不是 Win32/DX12，不需要链接 `SkuiWin32Dx12`；只要自己提供 `SkCanvas`、事件转换和重绘调度即可。Windows 自定义后端可以只链接 `SkuiWin32`。
 - 资源目录会随构建复制到运行目录，或 `assetRoot` 指到正确位置。
 - 平台事件已转成 `skui::Event`。
-- 剪贴板读写回调已设置；使用 `SkuiWin32Dx12` 时默认已设置。
-- 鼠标光标读取 `Runtime::cursor()` 并映射到平台光标；使用 `SkuiWin32Dx12` 时默认已设置。
+- 剪贴板读写回调已设置；使用 `SkuiWin32` 或 `SkuiWin32Dx12` 时默认已设置。
+- 鼠标光标读取 `Runtime::cursor()` 并映射到平台光标；使用 `SkuiWin32` 或 `SkuiWin32Dx12` 时默认已设置。
 - 普通 DOM 组合下拉框优先复用 `skui::DropdownState`，不要在每个页面重复写展开/关闭/选中同步逻辑。
 - 大量数据界面使用虚拟滚动，不创建全量 DOM 节点。
 - 大表格优先复用 `skui::VirtualTableAdapter`，由页面只提供列定义、池化 DOM id 规则和数据源。

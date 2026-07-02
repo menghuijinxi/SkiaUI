@@ -1,6 +1,6 @@
 #include "skui_win32_app.h"
 
-#include "win32_event_adapter.h"
+#include "skui_win32_event_adapter.h"
 
 #include "d3d_presenter.h"
 #include "perf_trace.h"
