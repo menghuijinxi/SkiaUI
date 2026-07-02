@@ -52,7 +52,8 @@ enum class Display {
 
 enum class Position {
     Relative,
-    Absolute
+    Absolute,
+    Sticky
 };
 
 enum class GradientKind {
@@ -438,6 +439,7 @@ float scrollMaxY(const Node& node);
 bool shouldShowScrollbarX(const Node& node);
 bool shouldShowScrollbarY(const Node& node);
 Rect scrollContentClipRect(const Node& node);
+float stickyVisualOffsetY(const Node& node);
 void parseInlineStyle(std::string_view declarations, Style& style);
 void recomputeStyles(Document& document, const RuntimeOptions& options, float viewportWidth = 0.0f, float viewportHeight = 0.0f);
 

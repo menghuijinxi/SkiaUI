@@ -887,7 +887,14 @@ void applyDeclaration(Style& style, std::string_view rawName, std::string_view r
         style.display = lower(value) == "none" ? Display::None : Display::Flex;
         style.flags.display = true;
     } else if (name == "position") {
-        style.position = lower(value) == "absolute" ? Position::Absolute : Position::Relative;
+        const std::string v = lower(value);
+        if (v == "absolute") {
+            style.position = Position::Absolute;
+        } else if (v == "sticky") {
+            style.position = Position::Sticky;
+        } else {
+            style.position = Position::Relative;
+        }
         style.flags.position = true;
     } else if (name == "flex-direction") {
         const std::string v = lower(value);

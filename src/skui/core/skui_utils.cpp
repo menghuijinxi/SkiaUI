@@ -101,6 +101,21 @@ Rect scrollContentClipRect(const Node& node) {
     return clip;
 }
 
+float stickyVisualOffsetY(const Node& node) {
+    if (node.style.position != Position::Sticky) {
+        return 0.0f;
+    }
+
+    for (const Node* ancestor = node.parent; ancestor; ancestor = ancestor->parent) {
+        const bool scrollsY = ancestor->style.overflowY == Overflow::Auto ||
+            ancestor->style.overflowY == Overflow::Scroll;
+        if (scrollsY && ancestor->scrollY > 0.0f) {
+            return ancestor->scrollY;
+        }
+    }
+    return 0.0f;
+}
+
 static bool parseHexByte(std::string_view text, unsigned& out) {
     unsigned value = 0;
     const auto* begin = text.data();

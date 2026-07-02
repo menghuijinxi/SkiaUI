@@ -100,6 +100,8 @@ const skui::VirtualTableRenderConfig kAttrTableRenderConfig{
     "attr-cell",
     "cell-selected-highlight",
     "col-",
+    "property-table-header-content",
+    false,
 };
 const skui::VirtualWindowConfig kAttrTableWindowConfig{
     kAttrTotalRows,
@@ -162,6 +164,7 @@ struct PropertyDemoState {
     skui::VirtualTablePanelLayout panelLayout{kPropertyPanelLayoutConfig, kPropertyPanelDefaultWidth};
     float dragStartX = 0.0f;
     int dragStartWidth = kPropertyPanelDefaultWidth;
+    float attrScrollX = 0.0f;
     float attrScrollY = 0.0f;
     skui::VirtualTableAdapter attrTable{kAttrTable, kAttrTableWindowConfig, kAttrTableRenderConfig};
     int selectedAttrRow = -1;
@@ -393,6 +396,7 @@ void showPage(skui::Runtime& runtime, std::string_view page) {
         runtime.addClassById("layer-page", "page-hidden");
         runtime.removeClassById("properties-page", "page-hidden");
         gPropertyState.attrTable.syncViewport(runtime, kAttrTotalRows);
+        gPropertyState.attrTable.syncHeaderScrollX(runtime, gPropertyState.attrScrollX, true);
         setPropertyPanelWidth(runtime, gPropertyState.panelLayout.requestedWidth());
         refreshAttrWindow(runtime, gPropertyState.attrScrollY, true);
     } else {
@@ -421,16 +425,17 @@ void selectNavItem(skui::Runtime& runtime, std::string_view navName) {
 bool setPropertyPanelWidth(skui::Runtime& runtime, int width) {
     const bool panelChanged = gPropertyState.panelLayout.update(runtime, width);
     const skui::VirtualTablePanelFrame& panel = gPropertyState.panelLayout.frame();
+    const int bodyHeight = std::max(0, panel.tableHeight - kAttrTable.headerHeight());
     const skui::VirtualWindowFrame frame =
-        gPropertyState.attrTable.updateWindow(gPropertyState.attrScrollY, panel.tableHeight);
+        gPropertyState.attrTable.updateWindow(gPropertyState.attrScrollY, bodyHeight);
     if (panelChanged) {
         runtime.setStylesById({
             {"property-panel", style({{"width", px(static_cast<float>(panel.panelWidth))}})},
             {"property-search", style({{"width", px(static_cast<float>(panel.contentWidth))}})},
             {"property-toolbar", style({{"width", px(static_cast<float>(panel.toolbarWidth))},
                                         {"height", px(static_cast<float>(panel.toolbarHeight))}})},
-            {"property-table-viewport", style({{"top", px(static_cast<float>(panel.tableTop))},
-                                               {"width", px(static_cast<float>(panel.contentWidth))}})},
+            {"property-table-frame", style({{"top", px(static_cast<float>(panel.tableTop))},
+                                            {"width", px(static_cast<float>(panel.contentWidth))}})},
             {"selected-cell-card", style({{"width", px(static_cast<float>(panel.contentWidth))}})},
             {"selected-cell-value-row", style({{"bottom", "132px"},
                                                {"width", px(static_cast<float>(std::max(0, panel.contentWidth - 40)))}})},
@@ -604,7 +609,8 @@ void handleFocusSelection(skui::Runtime& runtime) {
 
 void refreshAttrWindow(skui::Runtime& runtime, float scrollY, bool force) {
     const skui::VirtualTablePanelFrame& panel = gPropertyState.panelLayout.frame();
-    gPropertyState.attrTable.refresh(runtime, scrollY, panel.tableHeight, attrTableDataSource(), force);
+    const int bodyHeight = std::max(0, panel.tableHeight - kAttrTable.headerHeight());
+    gPropertyState.attrTable.refresh(runtime, scrollY, bodyHeight, attrTableDataSource(), force);
     gPropertyState.attrScrollY = gPropertyState.attrTable.scroll();
 }
 
@@ -632,6 +638,8 @@ void selectAttributeLayer(skui::Runtime& runtime, int index) {
 
 void handlePropertyAction(skui::Runtime& runtime, const skui::ElementEvent& event, std::string_view action) {
     if (event.type == skui::ElementEventType::Scroll && action == "attr-table-scroll") {
+        gPropertyState.attrScrollX = event.scrollX;
+        gPropertyState.attrTable.syncHeaderScrollX(runtime, event.scrollX);
         if (std::abs(event.scrollY - gPropertyState.attrScrollY) > 0.01f) {
             refreshAttrWindow(runtime, event.scrollY);
         }

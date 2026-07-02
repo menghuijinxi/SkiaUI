@@ -30,7 +30,10 @@ bool isRenderableNode(const Node& node) {
 }
 
 Node* hitTest(Node& node, float x, float y) {
-    if (!isRenderableNode(node) || !node.layout.contains(x, y)) {
+    const float stickyOffsetY = stickyVisualOffsetY(node);
+    Rect visualLayout = node.layout;
+    visualLayout.y += stickyOffsetY;
+    if (!isRenderableNode(node) || !visualLayout.contains(x, y)) {
         return nullptr;
     }
     const Rect contentClip = scrollContentClipRect(node);
@@ -39,7 +42,7 @@ Node* hitTest(Node& node, float x, float y) {
         return node.style.pointerEvents == PointerEvents::None ? nullptr : &node;
     }
     const float childX = x + node.scrollX;
-    const float childY = y + node.scrollY;
+    const float childY = y + node.scrollY - stickyOffsetY;
     for (auto it = node.children.rbegin(); it != node.children.rend(); ++it) {
         if (Node* hit = hitTest(**it, childX, childY)) {
             return hit;

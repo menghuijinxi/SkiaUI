@@ -196,7 +196,11 @@ void LayoutEngine::buildYoga(Node& node, YGNodeRef yogaNode) {
     }
     YGNodeStyleSetFlexGrow(yogaNode, s.flexGrow);
     YGNodeStyleSetFlexShrink(yogaNode, s.flexShrink);
-    YGNodeStyleSetPositionType(yogaNode, s.position == Position::Absolute ? YGPositionTypeAbsolute : YGPositionTypeRelative);
+    YGNodeStyleSetPositionType(yogaNode,
+                               (s.position == Position::Absolute ||
+                                s.position == Position::Sticky)
+                                   ? YGPositionTypeAbsolute
+                                   : YGPositionTypeRelative);
 
     setOptional(yogaNode, YGNodeStyleSetWidth, YGNodeStyleSetWidthPercent, YGNodeStyleSetWidthAuto, s.width);
     setOptional(yogaNode, YGNodeStyleSetHeight, YGNodeStyleSetHeightPercent, YGNodeStyleSetHeightAuto, s.height);

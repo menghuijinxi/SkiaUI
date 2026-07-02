@@ -358,6 +358,11 @@ void SkiaRenderer::drawNode(SkCanvas& canvas, const Document& document, const No
     if (node.style.display == Display::None) {
         return;
     }
+    const float stickyOffsetY = stickyVisualOffsetY(node);
+    if (stickyOffsetY != 0.0f) {
+        canvas.save();
+        canvas.translate(0.0f, stickyOffsetY);
+    }
     if (traceRender_) {
         ++traceNodeCount_;
     }
@@ -370,6 +375,9 @@ void SkiaRenderer::drawNode(SkCanvas& canvas, const Document& document, const No
                           node.layout.h > 0.0f &&
                           canvas.quickReject(node.layout.sk());
     if (rejected && (node.children.empty() || clipsChildren)) {
+        if (stickyOffsetY != 0.0f) {
+            canvas.restore();
+        }
         return;
     }
 
@@ -433,6 +441,9 @@ void SkiaRenderer::drawNode(SkCanvas& canvas, const Document& document, const No
     drawScrollbars(canvas, node);
     if (traceRender_) {
         traceScrollbarMs_ += perf::Trace::elapsedMs(scrollbarStart);
+    }
+    if (stickyOffsetY != 0.0f) {
+        canvas.restore();
     }
 }
 

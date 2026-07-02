@@ -5,6 +5,7 @@
 #include "skui_virtual_window.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <functional>
 #include <initializer_list>
@@ -223,6 +224,10 @@ public:
         return headerHeight_ + std::max(0, itemCount) * rowHeight_;
     }
 
+    [[nodiscard]] int bodyContentHeight(int itemCount) const {
+        return std::max(0, itemCount) * rowHeight_;
+    }
+
     [[nodiscard]] int headerHeight() const {
         return headerHeight_;
     }
@@ -233,6 +238,10 @@ public:
 
     [[nodiscard]] int rowTop(const VirtualWindowFrame& frame, int poolIndex) const {
         return frame.scrollOffset + headerHeight_ + poolIndex * rowHeight_;
+    }
+
+    [[nodiscard]] int bodyRowTop(const VirtualWindowFrame& frame, int poolIndex) const {
+        return frame.scrollOffset + poolIndex * rowHeight_;
     }
 
     [[nodiscard]] std::string rowId(int poolIndex) const {
@@ -257,12 +266,14 @@ public:
 
     void appendHeaderStyles(std::vector<StyleUpdate>& styles,
                             const VirtualWindowFrame& frame,
-                            std::string_view handleHeaderId) const {
-        styles.push_back({std::string(handleHeaderId), style({{"top", px(frame.scroll)}})});
+                            std::string_view handleHeaderId,
+                            bool headerInScroll) const {
+        const std::string top = headerInScroll ? px(frame.scroll) : "0px";
+        styles.push_back({std::string(handleHeaderId), style({{"top", top}})});
         for (const VirtualTableColumn& column : columns_) {
             styles.push_back({headerId(column.id),
                               style({{"left", px(static_cast<float>(columnLeft(column.id)))},
-                                     {"top", px(frame.scroll)},
+                                     {"top", top},
                                      {"width", px(static_cast<float>(columnWidth(column.id)))}})});
         }
     }
@@ -309,6 +320,8 @@ struct VirtualTableRenderConfig {
     std::string cellBaseClass;
     std::string cellSelectedClass;
     std::string cellColumnClassPrefix;
+    std::string headerContentId;
+    bool headerInScroll = true;
 };
 
 struct VirtualTableRowContext {
@@ -355,6 +368,9 @@ public:
         : geometry_(std::move(geometry)),
           renderConfig_(std::move(renderConfig)) {
         itemCount_ = std::max(0, windowConfig.itemCount);
+        if (!renderConfig_.headerInScroll) {
+            windowConfig.leadingExtent = 0;
+        }
         window_.configure(windowConfig);
     }
 
@@ -401,6 +417,12 @@ public:
         return geometry_.contentHeight(itemCount_);
     }
 
+    [[nodiscard]] int scrollContentHeight() const {
+        return renderConfig_.headerInScroll
+            ? geometry_.contentHeight(itemCount_)
+            : geometry_.bodyContentHeight(itemCount_);
+    }
+
     [[nodiscard]] const VirtualWindowConfig& windowConfig() const {
         return window_.config();
     }
@@ -412,7 +434,7 @@ public:
     bool syncViewport(Runtime& runtime, int itemCount) {
         const bool itemCountChanged = setItemCount(itemCount);
         const int nextContentWidth = contentWidth();
-        const int nextContentHeight = contentHeight();
+        const int nextContentHeight = scrollContentHeight();
         const bool viewportChanged = nextContentWidth != syncedContentWidth_ ||
             nextContentHeight != syncedContentHeight_;
         if (!renderConfig_.viewportId.empty() && viewportChanged) {
@@ -424,6 +446,23 @@ public:
             syncedContentHeight_ = nextContentHeight;
         }
         return itemCountChanged;
+    }
+
+    bool syncHeaderScrollX(Runtime& runtime, float scrollX, bool force = false) {
+        if (renderConfig_.headerContentId.empty()) {
+            return false;
+        }
+        scrollX = std::max(0.0f, scrollX);
+        if (!force && headerScrollSynced_ && std::abs(scrollX - syncedHeaderScrollX_) <= 0.01f) {
+            return false;
+        }
+
+        runtime.setStylesById({
+            {renderConfig_.headerContentId, style({{"left", px(-scrollX)}})},
+        });
+        syncedHeaderScrollX_ = scrollX;
+        headerScrollSynced_ = true;
+        return true;
     }
 
     [[nodiscard]] VirtualWindowFrame updateWindow(float scroll, int viewportExtent, bool force = false) {
@@ -450,13 +489,18 @@ public:
         texts.reserve(poolSize * geometry_.columnCount());
         attributes.reserve(poolSize * (geometry_.columnCount() * 2 + 3));
 
-        geometry_.appendHeaderStyles(styles, nextFrame, renderConfig_.handleHeaderId);
+        geometry_.appendHeaderStyles(styles,
+                                     nextFrame,
+                                     renderConfig_.handleHeaderId,
+                                     renderConfig_.headerInScroll);
 
         for (int poolIndex = 0; poolIndex < window_.config().poolSize; ++poolIndex) {
             const bool visible = poolIndex < nextFrame.cachedItems &&
                 nextFrame.firstItem + poolIndex < itemCount_;
             const int rowIndex = rowIndexForPool(poolIndex);
-            const int top = geometry_.rowTop(nextFrame, poolIndex);
+            const int top = renderConfig_.headerInScroll
+                ? geometry_.rowTop(nextFrame, poolIndex)
+                : geometry_.bodyRowTop(nextFrame, poolIndex);
             geometry_.appendRowStyles(styles, poolIndex, top, visible);
             appendRowAttributes(attributes, dataSource, rowIndex, poolIndex, visible);
 
@@ -589,6 +633,8 @@ private:
     int itemCount_ = 0;
     int syncedContentWidth_ = -1;
     int syncedContentHeight_ = -1;
+    float syncedHeaderScrollX_ = 0.0f;
+    bool headerScrollSynced_ = false;
 };
 
 } // namespace skui
