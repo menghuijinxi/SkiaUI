@@ -15,7 +15,13 @@ find_package(lexbor CONFIG REQUIRED)
 
 option(SKIAUI_BUILD_DEMOS "Build SkiaUI demo applications" ON)
 option(SKIAUI_BUILD_TESTS "Build SkiaUI tests" ${BUILD_TESTING})
+option(SKIAUI_BUILD_WIN32_DX12 "Build the Win32/DX12 SkUI host target" ON)
+option(SKIAUI_INSTALL_WIN32_DX12 "Install the Win32/DX12 SkUI host target" ON)
 option(SKIATEST_USE_SKIA_D3D "Render SkiaLayerDesk through Skia Ganesh D3D12 backend" ON)
+
+if(SKIAUI_BUILD_DEMOS AND NOT SKIAUI_BUILD_WIN32_DX12)
+    message(FATAL_ERROR "SKIAUI_BUILD_DEMOS requires SKIAUI_BUILD_WIN32_DX12.")
+endif()
 
 if(SKIAUI_BUILD_DEMOS)
     find_package(RmlUi CONFIG REQUIRED)
@@ -29,11 +35,13 @@ add_library(Skui STATIC
     src/skui/render/skui_skia_renderer.cpp
 )
 
-add_library(SkuiWin32Dx12 STATIC
-    src/skui/platform/win32_event_adapter.cpp
-    src/skui/platform/win32_dx12_app.cpp
-    src/d3d_presenter.cpp
-)
+if(SKIAUI_BUILD_WIN32_DX12)
+    add_library(SkuiWin32Dx12 STATIC
+        src/skui/platform/win32_event_adapter.cpp
+        src/skui/platform/win32_dx12_app.cpp
+        src/d3d_presenter.cpp
+    )
+endif()
 
 if(SKIAUI_BUILD_DEMOS)
     add_executable(SkiaRelayDesk WIN32
@@ -90,43 +98,47 @@ target_compile_definitions(Skui PUBLIC
     NOMINMAX
 )
 
-target_include_directories(SkuiWin32Dx12 PUBLIC
-    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>"
-    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/skui/public>"
-    "$<INSTALL_INTERFACE:include/skiaui>"
-)
+if(SKIAUI_BUILD_WIN32_DX12)
+    target_include_directories(SkuiWin32Dx12 PUBLIC
+        "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>"
+        "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/skui/public>"
+        "$<INSTALL_INTERFACE:include/skiaui>"
+    )
 
-target_link_libraries(SkuiWin32Dx12 PUBLIC
-    Skui
-)
+    target_link_libraries(SkuiWin32Dx12 PUBLIC
+        Skui
+    )
 
-target_link_libraries(SkuiWin32Dx12 PRIVATE
-    user32
-    gdi32
-    dwmapi
-    shcore
-    d3d12
-    dxgi
-    dxguid
-    d3dcompiler
-    dbghelp
-    ole32
-    imm32
-    shell32
-    usp10
-    windowscodecs
-)
+    target_link_libraries(SkuiWin32Dx12 PRIVATE
+        user32
+        gdi32
+        dwmapi
+        shcore
+        d3d12
+        dxgi
+        dxguid
+        d3dcompiler
+        dbghelp
+        ole32
+        imm32
+        shell32
+        usp10
+        windowscodecs
+    )
 
-target_compile_definitions(SkuiWin32Dx12 PUBLIC
-    WIN32_LEAN_AND_MEAN
-    NOMINMAX
-    UNICODE
-    _UNICODE
-)
+    target_compile_definitions(SkuiWin32Dx12 PUBLIC
+        WIN32_LEAN_AND_MEAN
+        NOMINMAX
+        UNICODE
+        _UNICODE
+    )
+endif()
 
 if(MSVC)
     target_compile_options(Skui PRIVATE /utf-8 /permissive- /Zc:__cplusplus)
-    target_compile_options(SkuiWin32Dx12 PRIVATE /utf-8 /permissive- /Zc:__cplusplus)
+    if(SKIAUI_BUILD_WIN32_DX12)
+        target_compile_options(SkuiWin32Dx12 PRIVATE /utf-8 /permissive- /Zc:__cplusplus)
+    endif()
 endif()
 
 if(SKIAUI_BUILD_DEMOS)
@@ -289,29 +301,46 @@ if(SKIAUI_BUILD_TESTS)
 endif()
 
 if(SKIATEST_USE_SKIA_D3D)
-    target_compile_definitions(SkuiWin32Dx12 PUBLIC SKIATEST_USE_SKIA_D3D=1)
+    if(SKIAUI_BUILD_WIN32_DX12)
+        target_compile_definitions(SkuiWin32Dx12 PUBLIC SKIATEST_USE_SKIA_D3D=1)
+    endif()
     if(SKIAUI_BUILD_DEMOS)
         target_compile_definitions(SkiaLayerDesk PRIVATE SKIATEST_USE_SKIA_D3D=1)
         target_compile_definitions(RmlLayerDesk PRIVATE SKIATEST_USE_SKIA_D3D=1)
     endif()
 endif()
 
-install(TARGETS Skui SkuiWin32Dx12
+set(SKIAUI_INSTALL_TARGETS Skui)
+
+if(SKIAUI_BUILD_WIN32_DX12 AND SKIAUI_INSTALL_WIN32_DX12)
+    list(APPEND SKIAUI_INSTALL_TARGETS SkuiWin32Dx12)
+endif()
+
+install(TARGETS ${SKIAUI_INSTALL_TARGETS}
     EXPORT SkiaUITargets
     ARCHIVE DESTINATION lib
     LIBRARY DESTINATION lib
     RUNTIME DESTINATION bin
 )
 
-install(FILES
+set(SKIAUI_PUBLIC_HEADERS
     src/skui/public/skui_dropdown.h
     src/skui/public/skui_runtime.h
     src/skui/public/skui_runtime_helpers.h
     src/skui/public/skui_virtual_table.h
     src/skui/public/skui_virtual_window.h
+)
+
+if(SKIAUI_BUILD_WIN32_DX12 AND SKIAUI_INSTALL_WIN32_DX12)
+    list(APPEND SKIAUI_PUBLIC_HEADERS
     src/skui/public/skui_win32_app.h
     src/d3d_presenter.h
     src/perf_trace.h
+    )
+endif()
+
+install(FILES
+    ${SKIAUI_PUBLIC_HEADERS}
     DESTINATION include/skiaui
 )
 
