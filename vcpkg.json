@@ -8,15 +8,10 @@
       "default-features": false,
       "features": [
         "direct3d",
-        "gl",
         "jpeg",
         "png",
         "webp"
       ]
-    },
-    {
-      "name": "rmlui",
-      "default-features": false
     },
     "lexbor",
     "yoga"

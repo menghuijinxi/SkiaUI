@@ -14,6 +14,8 @@ find_package(yoga CONFIG REQUIRED)
 find_package(lexbor CONFIG REQUIRED)
 
 option(SKIAUI_BUILD_DEMOS "Build SkiaUI demo applications" ON)
+option(SKIAUI_BUILD_SKIA_UI_DESK "Build the SkiaUiDesk demo application" ${SKIAUI_BUILD_DEMOS})
+option(SKIAUI_INSTALL_SKIA_UI_DESK "Install the SkiaUiDesk demo application" OFF)
 option(SKIAUI_BUILD_TESTS "Build SkiaUI tests" ${BUILD_TESTING})
 option(SKIAUI_BUILD_WIN32 "Build the Win32 SkUI platform adapter target" ON)
 option(SKIAUI_INSTALL_WIN32 "Install the Win32 SkUI platform adapter target" ON)
@@ -29,8 +31,8 @@ if(SKIAUI_BUILD_DEMOS AND NOT SKIAUI_BUILD_WIN32_DX12)
     message(FATAL_ERROR "SKIAUI_BUILD_DEMOS requires SKIAUI_BUILD_WIN32_DX12.")
 endif()
 
-if(SKIAUI_BUILD_DEMOS)
-    find_package(RmlUi CONFIG REQUIRED)
+if(SKIAUI_BUILD_SKIA_UI_DESK AND NOT SKIAUI_BUILD_WIN32_DX12)
+    message(FATAL_ERROR "SKIAUI_BUILD_SKIA_UI_DESK requires SKIAUI_BUILD_WIN32_DX12.")
 endif()
 
 add_library(Skui STATIC
@@ -63,18 +65,14 @@ if(SKIAUI_BUILD_DEMOS)
         src/layer_desk.cpp
         src/d3d_presenter.cpp
     )
-
-    add_executable(RmlLayerDesk WIN32
-        src/rml_layer_desk.cpp
-        src/d3d_presenter.cpp
-    )
-
-    add_executable(SkiaUiDesk WIN32
-        src/skui_demo/main.cpp
-    )
-
     add_executable(SkiaRelayDeskDemo WIN32
         src/skui_relay_demo/main.cpp
+    )
+endif()
+
+if(SKIAUI_BUILD_SKIA_UI_DESK)
+    add_executable(SkiaUiDesk WIN32
+        src/skui_demo/main.cpp
     )
 endif()
 
@@ -208,28 +206,9 @@ if(SKIAUI_BUILD_DEMOS)
         endif()
     endforeach()
 
-    target_include_directories(SkiaUiDesk PRIVATE
-        "${CMAKE_CURRENT_SOURCE_DIR}/src"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/skui/public"
-    )
-
     target_include_directories(SkiaRelayDeskDemo PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/src"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/skui/public"
-    )
-
-    target_link_libraries(SkiaUiDesk PRIVATE
-        SkuiWin32Dx12
-        user32
-        gdi32
-        dwmapi
-        shcore
-        d3d12
-        dxgi
-        dxguid
-        d3dcompiler
-        dbghelp
-        usp10
     )
 
     target_link_libraries(SkiaRelayDeskDemo PRIVATE
@@ -249,13 +228,6 @@ if(SKIAUI_BUILD_DEMOS)
         windowscodecs
     )
 
-    target_compile_definitions(SkiaUiDesk PRIVATE
-        WIN32_LEAN_AND_MEAN
-        NOMINMAX
-        UNICODE
-        _UNICODE
-    )
-
     target_compile_definitions(SkiaRelayDeskDemo PRIVATE
         WIN32_LEAN_AND_MEAN
         NOMINMAX
@@ -263,50 +235,9 @@ if(SKIAUI_BUILD_DEMOS)
         _UNICODE
     )
 
-    target_link_libraries(RmlLayerDesk PRIVATE
-        RmlUi::RmlUi
-        unofficial::skia::skia
-        unofficial::skia::modules::svg
-        user32
-        gdi32
-        dwmapi
-        ole32
-        shcore
-        shell32
-        windowscodecs
-        d3d12
-        dxgi
-        dxguid
-        d3dcompiler
-        dbghelp
-        usp10
-    )
-
-    target_compile_definitions(RmlLayerDesk PRIVATE
-        WIN32_LEAN_AND_MEAN
-        NOMINMAX
-        UNICODE
-        _UNICODE
-    )
-
     if(MSVC)
-        target_compile_options(RmlLayerDesk PRIVATE /utf-8 /permissive- /Zc:__cplusplus)
-        target_compile_options(SkiaUiDesk PRIVATE /utf-8 /permissive- /Zc:__cplusplus)
         target_compile_options(SkiaRelayDeskDemo PRIVATE /utf-8 /permissive- /Zc:__cplusplus)
     endif()
-
-    add_custom_command(TARGET RmlLayerDesk POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:RmlLayerDesk>/assets"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${CMAKE_CURRENT_SOURCE_DIR}/assets/rml_layer_desk.rml"
-                "$<TARGET_FILE_DIR:RmlLayerDesk>/assets/rml_layer_desk.rml"
-    )
-
-    add_custom_command(TARGET SkiaUiDesk POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-                "${CMAKE_CURRENT_SOURCE_DIR}/assets/skui_demo"
-                "$<TARGET_FILE_DIR:SkiaUiDesk>/assets/skui_demo"
-    )
 
     file(GLOB_RECURSE SKUI_RELAY_DEMO_ASSETS CONFIGURE_DEPENDS
         "${CMAKE_CURRENT_SOURCE_DIR}/assets/skui_relay_demo/*"
@@ -320,6 +251,44 @@ if(SKIAUI_BUILD_DEMOS)
     )
 
     add_dependencies(SkiaRelayDeskDemo SkiaRelayDeskDemoAssets)
+endif()
+
+if(SKIAUI_BUILD_SKIA_UI_DESK)
+    target_include_directories(SkiaUiDesk PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/skui/public"
+    )
+
+    target_link_libraries(SkiaUiDesk PRIVATE
+        SkuiWin32Dx12
+        user32
+        gdi32
+        dwmapi
+        shcore
+        d3d12
+        dxgi
+        dxguid
+        d3dcompiler
+        dbghelp
+        usp10
+    )
+
+    target_compile_definitions(SkiaUiDesk PRIVATE
+        WIN32_LEAN_AND_MEAN
+        NOMINMAX
+        UNICODE
+        _UNICODE
+    )
+
+    if(MSVC)
+        target_compile_options(SkiaUiDesk PRIVATE /utf-8 /permissive- /Zc:__cplusplus)
+    endif()
+
+    add_custom_command(TARGET SkiaUiDesk POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${CMAKE_CURRENT_SOURCE_DIR}/assets/skui_demo"
+                "$<TARGET_FILE_DIR:SkiaUiDesk>/assets/skui_demo"
+    )
 endif()
 
 if(SKIAUI_BUILD_TESTS)
@@ -343,7 +312,9 @@ if(SKIATEST_USE_SKIA_D3D)
     endif()
     if(SKIAUI_BUILD_DEMOS)
         target_compile_definitions(SkiaLayerDesk PRIVATE SKIATEST_USE_SKIA_D3D=1)
-        target_compile_definitions(RmlLayerDesk PRIVATE SKIATEST_USE_SKIA_D3D=1)
+    endif()
+    if(SKIAUI_BUILD_SKIA_UI_DESK)
+        target_compile_definitions(SkiaUiDesk PRIVATE SKIATEST_USE_SKIA_D3D=1)
     endif()
 endif()
 
@@ -397,6 +368,16 @@ install(FILES
     ${SKIAUI_PUBLIC_HEADERS}
     DESTINATION include/skiaui
 )
+
+if(SKIAUI_BUILD_SKIA_UI_DESK AND SKIAUI_INSTALL_SKIA_UI_DESK)
+    install(TARGETS SkiaUiDesk
+        RUNTIME DESTINATION tools/skiaui
+    )
+
+    install(DIRECTORY assets/skui_demo
+        DESTINATION tools/skiaui/assets
+    )
+endif()
 
 install(EXPORT SkiaUITargets
     NAMESPACE SkiaUI::
