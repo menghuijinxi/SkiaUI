@@ -52,6 +52,7 @@ endif()
 if(SKIAUI_BUILD_WIN32_DX12)
     add_library(SkuiWin32Dx12 STATIC
         src/skui/platform/win32_dx12_app.cpp
+        src/d3d_context.cpp
         src/d3d_presenter.cpp
     )
 endif()
@@ -63,6 +64,7 @@ if(SKIAUI_BUILD_DEMOS)
 
     add_executable(SkiaLayerDesk WIN32
         src/layer_desk.cpp
+        src/d3d_context.cpp
         src/d3d_presenter.cpp
     )
     add_executable(SkiaRelayDeskDemo WIN32
@@ -359,6 +361,7 @@ endif()
 if(SKIAUI_BUILD_WIN32_DX12 AND SKIAUI_INSTALL_WIN32_DX12)
     list(APPEND SKIAUI_PUBLIC_HEADERS
         src/skui/public/skui_win32_app.h
+        src/d3d_context.h
         src/d3d_presenter.h
         src/perf_trace.h
     )

@@ -26,6 +26,7 @@
 #include <array>
 #include <cstring>
 #include <memory>
+#include <utility>
 
 using Microsoft::WRL::ComPtr;
 
@@ -37,6 +38,26 @@ constexpr DXGI_FORMAT kSwapFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
 
 constexpr UINT alignTo(UINT value, UINT alignment) {
     return (value + alignment - 1u) & ~(alignment - 1u);
+}
+
+ComPtr<IDXGIAdapter1> findAdapterForDevice(IDXGIFactory4& factory, ID3D12Device& device) {
+    LUID deviceLuid = device.GetAdapterLuid();
+    for (UINT adapterIndex = 0;; ++adapterIndex) {
+        ComPtr<IDXGIAdapter1> adapter;
+        if (factory.EnumAdapters1(adapterIndex, &adapter) == DXGI_ERROR_NOT_FOUND) {
+            break;
+        }
+
+        DXGI_ADAPTER_DESC1 desc{};
+        if (FAILED(adapter->GetDesc1(&desc))) {
+            continue;
+        }
+        if (desc.AdapterLuid.HighPart == deviceLuid.HighPart &&
+            desc.AdapterLuid.LowPart == deviceLuid.LowPart) {
+            return adapter;
+        }
+    }
+    return nullptr;
 }
 
 #if defined(SKIATEST_USE_SKIA_D3D) && SKIATEST_USE_SKIA_D3D
@@ -92,7 +113,7 @@ private:
 
 }  // namespace
 
-struct D3DPresenter::Impl {
+struct D3DRenderer::Impl {
     explicit Impl(COLORREF background, bool retainGaneshFrames)
         : background_(background), retainGaneshFrames_(retainGaneshFrames) {}
     ~Impl() {
@@ -134,56 +155,29 @@ struct D3DPresenter::Impl {
     int lastGaneshHeight = 0;
 #endif
 
-    bool init(HWND hwnd, int width, int height) {
-        const auto traceStart = perf::Trace::now();
+    bool initialize(const D3DRenderContext& context) {
         tried = true;
-        width = std::max(1, width);
-        height = std::max(1, height);
-
-        UINT factoryFlags = 0;
-        if (FAILED(CreateDXGIFactory2(factoryFlags, IID_PPV_ARGS(&dxgiFactory)))) {
-            reset();
+        if (!context.device || !context.queue) {
+            releaseResources();
             return false;
         }
 
-        for (UINT adapterIndex = 0;; ++adapterIndex) {
-            ComPtr<IDXGIAdapter1> adapter;
-            if (dxgiFactory->EnumAdapters1(adapterIndex, &adapter) == DXGI_ERROR_NOT_FOUND) {
-                break;
-            }
+        dxgiFactory = context.dxgiFactory;
+        dxgiAdapter = context.adapter;
+        device = context.device;
+        queue = context.queue;
 
-            DXGI_ADAPTER_DESC1 desc{};
-            adapter->GetDesc1(&desc);
-            if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) {
-                continue;
-            }
-
-            if (SUCCEEDED(D3D12CreateDevice(adapter.Get(),
-                                            D3D_FEATURE_LEVEL_11_0,
-                                            __uuidof(ID3D12Device),
-                                            nullptr))) {
-                dxgiAdapter = adapter;
-                break;
-            }
-        }
-
-        if (!dxgiAdapter ||
-            FAILED(D3D12CreateDevice(dxgiAdapter.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)))) {
-            reset();
+        if (!dxgiFactory && FAILED(CreateDXGIFactory2(0, IID_PPV_ARGS(&dxgiFactory)))) {
+            releaseResources();
             return false;
         }
-
-        D3D12_COMMAND_QUEUE_DESC queueDesc{};
-        queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
-        queueDesc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
-        if (FAILED(device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&queue)))) {
-            reset();
-            return false;
+        if (!dxgiAdapter) {
+            dxgiAdapter = findAdapterForDevice(*dxgiFactory.Get(), *device.Get());
         }
 
         if (FAILED(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
                                                   IID_PPV_ARGS(&commandAllocator)))) {
-            reset();
+            releaseResources();
             return false;
         }
 
@@ -192,7 +186,7 @@ struct D3DPresenter::Impl {
                                              commandAllocator.Get(),
                                              nullptr,
                                              IID_PPV_ARGS(&commandList)))) {
-            reset();
+            releaseResources();
             return false;
         }
         commandList->Close();
@@ -200,7 +194,7 @@ struct D3DPresenter::Impl {
         for (TransitionFrame& frame : transitionFrames) {
             if (FAILED(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
                                                       IID_PPV_ARGS(&frame.allocator)))) {
-                reset();
+                releaseResources();
                 return false;
             }
 
@@ -209,7 +203,7 @@ struct D3DPresenter::Impl {
                                                  frame.allocator.Get(),
                                                  nullptr,
                                                  IID_PPV_ARGS(&frame.commandList)))) {
-                reset();
+                releaseResources();
                 return false;
             }
             frame.commandList->Close();
@@ -218,13 +212,13 @@ struct D3DPresenter::Impl {
         transitionFrameIndex = 0;
 
         if (FAILED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence)))) {
-            reset();
+            releaseResources();
             return false;
         }
 
         fenceEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
         if (!fenceEvent) {
-            reset();
+            releaseResources();
             return false;
         }
 
@@ -232,7 +226,9 @@ struct D3DPresenter::Impl {
         allocator = sk_make_sp<SimpleD3DMemoryAllocator>(device.Get());
 
         GrD3DBackendContext backendContext{};
-        backendContext.fAdapter.retain(dxgiAdapter.Get());
+        if (dxgiAdapter) {
+            backendContext.fAdapter.retain(dxgiAdapter.Get());
+        }
         backendContext.fDevice.retain(device.Get());
         backendContext.fQueue.retain(queue.Get());
         backendContext.fMemoryAllocator = allocator;
@@ -242,28 +238,36 @@ struct D3DPresenter::Impl {
         }
 #endif
 
+        ready = true;
+        return true;
+    }
+
+    bool ensureSwapChain(HWND hwnd, int width, int height) {
+        const auto traceStart = perf::Trace::now();
+        width = std::max(1, width);
+        height = std::max(1, height);
+
         if (!createSwapChain(hwnd, width, height)) {
-            reset();
+            releaseResources();
             return false;
         }
 #if defined(SKIATEST_USE_SKIA_D3D) && SKIATEST_USE_SKIA_D3D
         if (!grContext && !createUploadBuffer(width, height)) {
-            reset();
+            releaseResources();
             return false;
         }
 #else
         if (!createUploadBuffer(width, height)) {
-            reset();
+            releaseResources();
             return false;
         }
 #endif
 
-        ready = true;
-        perf::Trace::write("d3d", "init", width, height, perf::Trace::elapsedMs(traceStart));
+        perf::Trace::write("d3d", "create_swap_chain", width, height, perf::Trace::elapsedMs(traceStart));
         return true;
     }
 
-    void reset() {
+    void releaseResources() {
 #if defined(SKIATEST_USE_SKIA_D3D) && SKIATEST_USE_SKIA_D3D
         if (grContext) {
             grContext->flushAndSubmit(GrSyncCpu::kYes);
@@ -304,6 +308,10 @@ struct D3DPresenter::Impl {
         swapWidth = 0;
         swapHeight = 0;
         ready = false;
+    }
+
+    void reset() {
+        releaseResources();
         tried = false;
     }
 
@@ -504,7 +512,7 @@ struct D3DPresenter::Impl {
 
     sk_sp<SkImage> renderGaneshOffscreenImage(int width,
                                               int height,
-                                              const D3DPresenter::GaneshDrawCallback& drawGanesh) {
+                                              const D3DRenderer::GaneshDrawCallback& drawGanesh) {
         if (!grContext || !drawGanesh) {
             return nullptr;
         }
@@ -690,7 +698,7 @@ struct D3DPresenter::Impl {
 
     bool renderRetainedThenPreparedGaneshFrame(int width,
                                                int height,
-                                               const D3DPresenter::GaneshDrawCallback& drawGanesh) {
+                                               const D3DRenderer::GaneshDrawCallback& drawGanesh) {
         if (lastGaneshFrame) {
             (void)presentLastGaneshFrameAtSize(width, height);
         }
@@ -701,7 +709,7 @@ struct D3DPresenter::Impl {
         return renderPreparedGaneshFrameToSwapChain(width, height, std::move(preparedFrame));
     }
 
-    bool renderDirectGaneshFrame(int width, int height, const D3DPresenter::GaneshDrawCallback& drawGanesh) {
+    bool renderDirectGaneshFrame(int width, int height, const D3DRenderer::GaneshDrawCallback& drawGanesh) {
         const auto traceStart = perf::Trace::now();
         ComPtr<ID3D12Resource> backBuffer;
         GrBackendRenderTarget backendTarget;
@@ -720,7 +728,7 @@ struct D3DPresenter::Impl {
         return ok;
     }
 
-    bool renderOffscreenGaneshFrame(int width, int height, const D3DPresenter::GaneshDrawCallback& drawGanesh) {
+    bool renderOffscreenGaneshFrame(int width, int height, const D3DRenderer::GaneshDrawCallback& drawGanesh) {
         sk_sp<SkImage> preparedFrame = renderGaneshOffscreenImage(width, height, drawGanesh);
         if (!preparedFrame) {
             return false;
@@ -732,14 +740,14 @@ struct D3DPresenter::Impl {
         return retainGaneshFrames_;
     }
 
-    bool renderStableSizeGaneshD3D(int width, int height, const D3DPresenter::GaneshDrawCallback& drawGanesh) {
+    bool renderStableSizeGaneshD3D(int width, int height, const D3DRenderer::GaneshDrawCallback& drawGanesh) {
         if (shouldRetainEveryGaneshFrame()) {
             return renderOffscreenGaneshFrame(width, height, drawGanesh);
         }
         return renderDirectGaneshFrame(width, height, drawGanesh);
     }
 
-    bool renderResizedGaneshD3D(int width, int height, const D3DPresenter::GaneshDrawCallback& drawGanesh) {
+    bool renderResizedGaneshD3D(int width, int height, const D3DRenderer::GaneshDrawCallback& drawGanesh) {
         if (!shouldRetainEveryGaneshFrame()) {
             if (!resizeSwapChain(width, height)) {
                 return false;
@@ -753,7 +761,7 @@ struct D3DPresenter::Impl {
         return renderOffscreenGaneshFrame(width, height, drawGanesh);
     }
 
-    bool renderSkiaGaneshD3D(int width, int height, const D3DPresenter::GaneshDrawCallback& drawGanesh) {
+    bool renderSkiaGaneshD3D(int width, int height, const D3DRenderer::GaneshDrawCallback& drawGanesh) {
         if (!grContext || !drawGanesh) {
             return false;
         }
@@ -764,12 +772,12 @@ struct D3DPresenter::Impl {
         return renderStableSizeGaneshD3D(width, height, drawGanesh);
     }
 #else
-    bool renderSkiaGaneshD3D(int, int, const D3DPresenter::GaneshDrawCallback&) {
+    bool renderSkiaGaneshD3D(int, int, const D3DRenderer::GaneshDrawCallback&) {
         return false;
     }
 #endif
 
-    bool copyCpuSurfaceToUpload(int width, int height, const D3DPresenter::CpuDrawCallback& drawCpu) {
+    bool copyCpuSurfaceToUpload(int width, int height, const D3DRenderer::CpuDrawCallback& drawCpu) {
         if (!uploadMapped || !drawCpu) {
             return false;
         }
@@ -779,7 +787,7 @@ struct D3DPresenter::Impl {
         return true;
     }
 
-    bool renderCpuUpload(int width, int height, const D3DPresenter::CpuDrawCallback& drawCpu) {
+    bool renderCpuUpload(int width, int height, const D3DRenderer::CpuDrawCallback& drawCpu) {
         if (!createUploadBuffer(width, height) || !copyCpuSurfaceToUpload(width, height, drawCpu)) {
             return false;
         }
@@ -846,17 +854,18 @@ struct D3DPresenter::Impl {
     bool render(HWND hwnd,
                 int width,
                 int height,
-                const D3DPresenter::GaneshDrawCallback& drawGanesh,
-                const D3DPresenter::CpuDrawCallback& drawCpu) {
+                const D3DRenderer::GaneshDrawCallback& drawGanesh,
+                const D3DRenderer::CpuDrawCallback& drawCpu) {
         const auto traceStart = perf::Trace::now();
         if (width <= 0 || height <= 0) {
             return false;
         }
 
         if (!ready) {
-            if (tried || !init(hwnd, width, height)) {
-                return false;
-            }
+            return false;
+        }
+        if (!swapChain && !ensureSwapChain(hwnd, width, height)) {
+            return false;
         }
 
 #if defined(SKIATEST_USE_SKIA_D3D) && SKIATEST_USE_SKIA_D3D
@@ -876,14 +885,56 @@ struct D3DPresenter::Impl {
     }
 };
 
+D3DRenderer::D3DRenderer(COLORREF background) : D3DRenderer(background, false) {}
+
+D3DRenderer::D3DRenderer(COLORREF background, bool retainGaneshFrames)
+    : impl_(std::make_unique<Impl>(background, retainGaneshFrames)) {}
+
+D3DRenderer::~D3DRenderer() = default;
+
+bool D3DRenderer::initialize(const D3DRenderContext& context) {
+    return impl_->ready || (!impl_->tried && impl_->initialize(context));
+}
+
+void D3DRenderer::reset() {
+    impl_->reset();
+}
+
+bool D3DRenderer::render(HWND hwnd,
+                         int width,
+                         int height,
+                         const GaneshDrawCallback& drawGanesh,
+                         const CpuDrawCallback& drawCpu) {
+    return impl_->render(hwnd, width, height, drawGanesh, drawCpu);
+}
+
+bool D3DRenderer::tried() const {
+    return impl_->tried;
+}
+
+bool D3DRenderer::ready() const {
+    return impl_->ready;
+}
+
+struct D3DPresenter::Impl {
+    explicit Impl(COLORREF background, bool retainGaneshFrames)
+        : renderer(background, retainGaneshFrames) {}
+
+    D3DContext context;
+    D3DRenderer renderer;
+
+    void reset() {
+        renderer.reset();
+        context.reset();
+    }
+};
+
 D3DPresenter::D3DPresenter(COLORREF background) : D3DPresenter(background, false) {}
 
 D3DPresenter::D3DPresenter(COLORREF background, bool retainGaneshFrames)
-    : impl_(new Impl(background, retainGaneshFrames)) {}
+    : impl_(std::make_unique<Impl>(background, retainGaneshFrames)) {}
 
-D3DPresenter::~D3DPresenter() {
-    delete impl_;
-}
+D3DPresenter::~D3DPresenter() = default;
 
 void D3DPresenter::reset() {
     impl_->reset();
@@ -894,13 +945,19 @@ bool D3DPresenter::render(HWND hwnd,
                           int height,
                           const GaneshDrawCallback& drawGanesh,
                           const CpuDrawCallback& drawCpu) {
-    return impl_->render(hwnd, width, height, drawGanesh, drawCpu);
+    if (!impl_->context.ready() && !impl_->context.initialize()) {
+        return false;
+    }
+    if (!impl_->renderer.ready() && !impl_->renderer.initialize(impl_->context.renderContext())) {
+        return false;
+    }
+    return impl_->renderer.render(hwnd, width, height, drawGanesh, drawCpu);
 }
 
 bool D3DPresenter::tried() const {
-    return impl_->tried;
+    return impl_->context.tried() || impl_->renderer.tried();
 }
 
 bool D3DPresenter::ready() const {
-    return impl_->ready;
+    return impl_->context.ready() && impl_->renderer.ready();
 }
