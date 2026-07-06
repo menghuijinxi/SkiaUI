@@ -7,6 +7,14 @@
 
 namespace skui {
 
+namespace {
+
+bool isTextareaScrollableNode(const Node& node) {
+    return node.tag == "textarea";
+}
+
+} // namespace
+
 Theme Theme::dark() {
     return {};
 }
@@ -79,12 +87,14 @@ float scrollMaxY(const Node& node) {
 
 bool shouldShowScrollbarX(const Node& node) {
     return node.style.overflowX == Overflow::Scroll ||
-           (node.style.overflowX == Overflow::Auto && scrollMaxX(node) > 0.0f);
+           ((node.style.overflowX == Overflow::Auto || isTextareaScrollableNode(node)) &&
+            scrollMaxX(node) > 0.0f);
 }
 
 bool shouldShowScrollbarY(const Node& node) {
     return node.style.overflowY == Overflow::Scroll ||
-           (node.style.overflowY == Overflow::Auto && scrollMaxY(node) > 0.0f);
+           ((node.style.overflowY == Overflow::Auto || isTextareaScrollableNode(node)) &&
+            scrollMaxY(node) > 0.0f);
 }
 
 Rect scrollContentClipRect(const Node& node) {

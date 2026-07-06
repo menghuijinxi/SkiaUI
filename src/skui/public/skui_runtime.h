@@ -158,6 +158,7 @@ public:
     bool setStyleById(std::string_view id, std::string_view declarations);
     bool setStylesById(const std::vector<StyleUpdate>& updates);
     bool setTextById(std::string_view id, std::string_view text);
+    bool setValueById(std::string_view id, std::string_view value);
     bool setTextsById(const std::vector<TextUpdate>& updates);
     bool setAttributeById(std::string_view id, std::string_view name, std::string_view value);
     bool setAttributesById(const std::vector<AttributeUpdate>& updates);

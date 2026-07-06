@@ -186,6 +186,7 @@ void appendText(Node& node, std::string_view text) {
             node.text.push_back(' ');
         }
         node.text += compact;
+        ++node.textRevision;
     }
 }
 
@@ -1458,6 +1459,7 @@ std::unique_ptr<Node> convertElement(lxb_dom_element_t* element, Node* parent, s
                 std::string_view text(reinterpret_cast<const char*>(data->data.data), data->data.length);
                 if (tag == "textarea" && node->value.empty()) {
                     node->value += trim(text);
+                    ++node->textRevision;
                 } else {
                     appendText(*node, text);
                 }

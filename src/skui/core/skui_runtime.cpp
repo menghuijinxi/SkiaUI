@@ -13,6 +13,7 @@
 #include <cmath>
 #include <cstdint>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -191,11 +192,11 @@ Cursor cursorForNode(Node* leaf) {
 }
 
 bool canScrollX(const Node& node) {
-    return (node.style.overflowX == Overflow::Auto || node.style.overflowX == Overflow::Scroll) && scrollMaxX(node) > 0.0f;
+    return shouldShowScrollbarX(node) && scrollMaxX(node) > 0.0f;
 }
 
 bool canScrollY(const Node& node) {
-    return (node.style.overflowY == Overflow::Auto || node.style.overflowY == Overflow::Scroll) && scrollMaxY(node) > 0.0f;
+    return shouldShowScrollbarY(node) && scrollMaxY(node) > 0.0f;
 }
 
 enum class ScrollbarAxis {
@@ -433,8 +434,14 @@ struct TextLine {
     size_t end = 0;
 };
 
-std::vector<TextLine> editableLines(std::string_view value) {
+struct EditableLineCacheEntry {
+    uint64_t revision = 0;
+    size_t size = 0;
     std::vector<TextLine> lines;
+};
+
+void buildEditableLines(std::string_view value, std::vector<TextLine>& lines) {
+    lines.clear();
     size_t start = 0;
     for (size_t i = 0; i < value.size(); ++i) {
         if (value[i] == '\n') {
@@ -443,11 +450,17 @@ std::vector<TextLine> editableLines(std::string_view value) {
         }
     }
     lines.push_back({start, value.size()});
-    return lines;
 }
 
 float editableLineHeight(const Node& node) {
     return std::max(12.0f, node.style.fontSize * 1.38f);
+}
+
+float lengthPxOrZero(const std::optional<Length>& value) {
+    if (!value || value->unit != LengthUnit::Px) {
+        return 0.0f;
+    }
+    return value->value;
 }
 
 size_t currentLineStart(const std::string& value, size_t cursor) {
@@ -497,6 +510,10 @@ void pushInputUndo(Node& node) {
     }
 }
 
+void markTextChanged(Node& node) {
+    ++node.textRevision;
+}
+
 bool restoreInputUndo(Node& node) {
     if (!isEditableNode(&node) || node.undoStack.empty()) {
         return false;
@@ -510,26 +527,52 @@ bool restoreInputUndo(Node& node) {
     node.selectionEnd = snapshot.selectionEnd;
     node.compositionText.clear();
     clampInputCursor(node);
+    markTextChanged(node);
     return true;
 }
 
-void clearInputSelection(Node& node) {
+bool clearInputSelection(Node& node) {
+    const size_t oldCursor = node.cursorIndex;
+    const size_t oldAnchor = node.selectionAnchor;
+    const size_t oldStart = node.selectionStart;
+    const size_t oldEnd = node.selectionEnd;
     clampInputCursor(node);
     node.selectionAnchor = node.cursorIndex;
     node.selectionStart = node.cursorIndex;
     node.selectionEnd = node.cursorIndex;
+    return oldCursor != node.cursorIndex ||
+           oldAnchor != node.selectionAnchor ||
+           oldStart != node.selectionStart ||
+           oldEnd != node.selectionEnd;
 }
 
-void setInputCursor(Node& node, size_t index) {
+bool setInputCursor(Node& node, size_t index) {
+    const size_t oldCursor = node.cursorIndex;
+    const size_t oldAnchor = node.selectionAnchor;
+    const size_t oldStart = node.selectionStart;
+    const size_t oldEnd = node.selectionEnd;
     node.cursorIndex = clampUtf8Index(node.value, index);
     clearInputSelection(node);
+    return oldCursor != node.cursorIndex ||
+           oldAnchor != node.selectionAnchor ||
+           oldStart != node.selectionStart ||
+           oldEnd != node.selectionEnd;
 }
 
-void setInputSelection(Node& node, size_t anchor, size_t cursor) {
-    node.selectionAnchor = clampUtf8Index(node.value, anchor);
-    node.cursorIndex = clampUtf8Index(node.value, cursor);
-    node.selectionStart = std::min(node.selectionAnchor, node.cursorIndex);
-    node.selectionEnd = std::max(node.selectionAnchor, node.cursorIndex);
+bool setInputSelection(Node& node, size_t anchor, size_t cursor) {
+    const size_t nextAnchor = clampUtf8Index(node.value, anchor);
+    const size_t nextCursor = clampUtf8Index(node.value, cursor);
+    const size_t nextStart = std::min(nextAnchor, nextCursor);
+    const size_t nextEnd = std::max(nextAnchor, nextCursor);
+    const bool changed = node.selectionAnchor != nextAnchor ||
+                         node.cursorIndex != nextCursor ||
+                         node.selectionStart != nextStart ||
+                         node.selectionEnd != nextEnd;
+    node.selectionAnchor = nextAnchor;
+    node.cursorIndex = nextCursor;
+    node.selectionStart = nextStart;
+    node.selectionEnd = nextEnd;
+    return changed;
 }
 
 bool eraseInputSelection(Node& node) {
@@ -545,6 +588,7 @@ bool eraseInputSelection(Node& node) {
     node.cursorIndex = node.selectionStart;
     node.compositionText.clear();
     clearInputSelection(node);
+    markTextChanged(node);
     return true;
 }
 
@@ -563,6 +607,7 @@ bool insertInputText(Node& node, std::string_view text) {
     node.value.insert(node.cursorIndex, text.data(), text.size());
     node.cursorIndex += text.size();
     clearInputSelection(node);
+    markTextChanged(node);
     return true;
 }
 
@@ -583,6 +628,7 @@ bool erasePreviousInputChar(Node& node) {
     node.cursorIndex = previous;
     node.compositionText.clear();
     clearInputSelection(node);
+    markTextChanged(node);
     return true;
 }
 
@@ -602,6 +648,7 @@ bool eraseNextInputChar(Node& node) {
     node.value.erase(node.cursorIndex, next - node.cursorIndex);
     node.compositionText.clear();
     clearInputSelection(node);
+    markTextChanged(node);
     return true;
 }
 
@@ -654,20 +701,35 @@ bool clearSelectableSelection(Node& node) {
     return true;
 }
 
-void setSelectableCursor(Node& node, size_t index) {
+bool setSelectableCursor(Node& node, size_t index) {
     const std::string& value = selectableTextValue(node);
-    node.cursorIndex = clampUtf8Index(value, index);
-    node.selectionAnchor = node.cursorIndex;
-    node.selectionStart = node.cursorIndex;
-    node.selectionEnd = node.cursorIndex;
+    const size_t nextCursor = clampUtf8Index(value, index);
+    const bool changed = node.cursorIndex != nextCursor ||
+                         node.selectionAnchor != nextCursor ||
+                         node.selectionStart != nextCursor ||
+                         node.selectionEnd != nextCursor;
+    node.cursorIndex = nextCursor;
+    node.selectionAnchor = nextCursor;
+    node.selectionStart = nextCursor;
+    node.selectionEnd = nextCursor;
+    return changed;
 }
 
-void setSelectableSelection(Node& node, size_t anchor, size_t cursor) {
+bool setSelectableSelection(Node& node, size_t anchor, size_t cursor) {
     const std::string& value = selectableTextValue(node);
-    node.selectionAnchor = clampUtf8Index(value, anchor);
-    node.cursorIndex = clampUtf8Index(value, cursor);
-    node.selectionStart = std::min(node.selectionAnchor, node.cursorIndex);
-    node.selectionEnd = std::max(node.selectionAnchor, node.cursorIndex);
+    const size_t nextAnchor = clampUtf8Index(value, anchor);
+    const size_t nextCursor = clampUtf8Index(value, cursor);
+    const size_t nextStart = std::min(nextAnchor, nextCursor);
+    const size_t nextEnd = std::max(nextAnchor, nextCursor);
+    const bool changed = node.selectionAnchor != nextAnchor ||
+                         node.cursorIndex != nextCursor ||
+                         node.selectionStart != nextStart ||
+                         node.selectionEnd != nextEnd;
+    node.selectionAnchor = nextAnchor;
+    node.cursorIndex = nextCursor;
+    node.selectionStart = nextStart;
+    node.selectionEnd = nextEnd;
+    return changed;
 }
 
 bool selectAllSelectable(Node& node) {
@@ -831,7 +893,10 @@ void syncNodeAttribute(Node& node, const std::string& name) {
         node.classes = splitWhitespace(value);
     } else if (name == "value") {
         value = editableText(node, std::move(value));
-        node.value = value;
+        if (node.value != value) {
+            node.value = value;
+            markTextChanged(node);
+        }
         node.numericValue = 0.0f;
         const char* begin = value.data();
         const char* end = value.data() + value.size();
@@ -939,7 +1004,10 @@ public:
             return false;
         }
         if (focusedNode) {
-            focusedNode->compositionText.clear();
+            if (!focusedNode->compositionText.empty()) {
+                focusedNode->compositionText.clear();
+                markTextChanged(*focusedNode);
+            }
             clearInputSelection(*focusedNode);
             focusedNode->focused = false;
         }
@@ -984,15 +1052,29 @@ public:
         if (!isTextareaNode(&input)) {
             return inputIndexAtX(input, x);
         }
-        const std::vector<TextLine> lines = editableLines(input.value);
+        const std::vector<TextLine>& lines = editableLinesFor(input);
         const float lineHeight = editableLineHeight(input);
-        const float relativeY = std::max(0.0f, y - visualY(input));
+        const float contentX = visualX(input) + lengthPxOrZero(input.style.padding.left);
+        const float contentY = visualY(input) + lengthPxOrZero(input.style.padding.top);
+        const float relativeY = std::max(0.0f, y - contentY + input.scrollY);
         const size_t lineIndex = std::min(lines.size() - 1,
                                           static_cast<size_t>(relativeY / std::max(1.0f, lineHeight)));
         const TextLine line = lines[lineIndex];
         const std::string_view text(input.value.data() + line.start, line.end - line.start);
-        const float offset = x - visualX(input);
+        const float offset = x - contentX + input.scrollX;
         return line.start + renderer.textIndexAtOffset(text, input.style.fontSize, input.style.fontBold, offset);
+    }
+
+    const std::vector<TextLine>& editableLinesFor(const Node& input) {
+        EditableLineCacheEntry& entry = editableLineCache[&input];
+        if (entry.revision == input.textRevision && entry.size == input.value.size()) {
+            return entry.lines;
+        }
+
+        entry.revision = input.textRevision;
+        entry.size = input.value.size();
+        buildEditableLines(input.value, entry.lines);
+        return entry.lines;
     }
 
     RuntimeOptions options;
@@ -1019,6 +1101,7 @@ public:
     ScrollbarAxis scrollingAxis = ScrollbarAxis::None;
     float scrollbarDragOffset = 0.0f;
     Cursor currentCursor = Cursor::Default;
+    std::unordered_map<const Node*, EditableLineCacheEntry> editableLineCache;
     std::string lastError;
 };
 
@@ -1038,6 +1121,8 @@ bool Runtime::loadDocument(const std::string& path) {
         return false;
     }
     impl_->document = std::move(next);
+    impl_->renderer.clearCaches();
+    impl_->editableLineCache.clear();
     if (impl_->document.root) {
         rebindParents(*impl_->document.root, nullptr);
     }
@@ -1068,6 +1153,8 @@ bool Runtime::loadDocumentFromString(std::string_view html, std::string_view bas
         return false;
     }
     impl_->document = std::move(next);
+    impl_->renderer.clearCaches();
+    impl_->editableLineCache.clear();
     if (impl_->document.root) {
         rebindParents(*impl_->document.root, nullptr);
     }
@@ -1162,15 +1249,15 @@ bool Runtime::handleEvent(const Event& event) {
             consumed = true;
         } else if (impl_->selectingInput && impl_->mousePressed) {
             const size_t index = impl_->editableIndexAtPoint(*impl_->selectingInput, x, y);
-            setInputSelection(*impl_->selectingInput, impl_->selectingInput->selectionAnchor, index);
-            stateChanged = true;
-            layoutNeeded = true;
+            stateChanged = setInputSelection(*impl_->selectingInput,
+                                             impl_->selectingInput->selectionAnchor,
+                                             index) || stateChanged;
             consumed = true;
         } else if (impl_->selectingText && impl_->mousePressed) {
             const size_t index = impl_->selectableIndexAtX(*impl_->selectingText, x);
-            setSelectableSelection(*impl_->selectingText, impl_->selectingText->selectionAnchor, index);
-            stateChanged = true;
-            layoutNeeded = true;
+            stateChanged = setSelectableSelection(*impl_->selectingText,
+                                                  impl_->selectingText->selectionAnchor,
+                                                  index) || stateChanged;
             consumed = true;
         }
         if (hit != impl_->hoveredLeaf) {
@@ -1220,9 +1307,9 @@ bool Runtime::handleEvent(const Event& event) {
             layoutNeeded = true;
             const size_t index = impl_->editableIndexAtPoint(*input, x, y);
             if (event.shiftKey) {
-                setInputSelection(*input, selectionAnchor, index);
+                stateChanged = setInputSelection(*input, selectionAnchor, index) || stateChanged;
             } else {
-                setInputCursor(*input, index);
+                stateChanged = setInputCursor(*input, index) || stateChanged;
             }
             impl_->selectingInput = input;
             impl_->selectingText = nullptr;
@@ -1324,17 +1411,17 @@ bool Runtime::handleEvent(const Event& event) {
         const bool click = pressedAction && pressedAction == releasedAction && event.button == impl_->pressedButton;
         if (impl_->selectingInput) {
             const size_t index = impl_->editableIndexAtPoint(*impl_->selectingInput, x, y);
-            setInputSelection(*impl_->selectingInput, impl_->selectingInput->selectionAnchor, index);
+            stateChanged = setInputSelection(*impl_->selectingInput,
+                                             impl_->selectingInput->selectionAnchor,
+                                             index) || stateChanged;
             impl_->selectingInput = nullptr;
-            stateChanged = true;
-            layoutNeeded = true;
         }
         if (impl_->selectingText) {
             const size_t index = impl_->selectableIndexAtX(*impl_->selectingText, x);
-            setSelectableSelection(*impl_->selectingText, impl_->selectingText->selectionAnchor, index);
+            stateChanged = setSelectableSelection(*impl_->selectingText,
+                                                  impl_->selectingText->selectionAnchor,
+                                                  index) || stateChanged;
             impl_->selectingText = nullptr;
-            stateChanged = true;
-            layoutNeeded = true;
         }
         if (Node* target = releasedAction ? releasedAction : pressedAction; target && impl_->options.onElementEvent) {
             impl_->options.onElementEvent(makeElementEvent(ElementEventType::MouseUp, *target, event, x, y));
@@ -1458,12 +1545,10 @@ bool Runtime::handleEvent(const Event& event) {
             if (previous != input->cursorIndex || hasInputSelection(*input)) {
                 if (event.shiftKey) {
                     const size_t anchor = hasInputSelection(*input) ? input->selectionAnchor : input->cursorIndex;
-                    setInputSelection(*input, anchor, previous);
+                    stateChanged = setInputSelection(*input, anchor, previous) || stateChanged;
                 } else {
-                    setInputCursor(*input, previous);
+                    stateChanged = setInputCursor(*input, previous) || stateChanged;
                 }
-                stateChanged = true;
-                layoutNeeded = true;
             }
             consumed = true;
             break;
@@ -1475,12 +1560,10 @@ bool Runtime::handleEvent(const Event& event) {
             if (next != input->cursorIndex || hasInputSelection(*input)) {
                 if (event.shiftKey) {
                     const size_t anchor = hasInputSelection(*input) ? input->selectionAnchor : input->cursorIndex;
-                    setInputSelection(*input, anchor, next);
+                    stateChanged = setInputSelection(*input, anchor, next) || stateChanged;
                 } else {
-                    setInputCursor(*input, next);
+                    stateChanged = setInputCursor(*input, next) || stateChanged;
                 }
-                stateChanged = true;
-                layoutNeeded = true;
             }
             consumed = true;
             break;
@@ -1490,12 +1573,10 @@ bool Runtime::handleEvent(const Event& event) {
                 input->cursorIndex != target || hasInputSelection(*input)) {
                 if (event.shiftKey) {
                     const size_t anchor = hasInputSelection(*input) ? input->selectionAnchor : input->cursorIndex;
-                    setInputSelection(*input, anchor, target);
+                    stateChanged = setInputSelection(*input, anchor, target) || stateChanged;
                 } else {
-                    setInputCursor(*input, target);
+                    stateChanged = setInputCursor(*input, target) || stateChanged;
                 }
-                stateChanged = true;
-                layoutNeeded = true;
             }
             consumed = true;
             break;
@@ -1504,12 +1585,10 @@ bool Runtime::handleEvent(const Event& event) {
                 input->cursorIndex != target || hasInputSelection(*input)) {
                 if (event.shiftKey) {
                     const size_t anchor = hasInputSelection(*input) ? input->selectionAnchor : input->cursorIndex;
-                    setInputSelection(*input, anchor, target);
+                    stateChanged = setInputSelection(*input, anchor, target) || stateChanged;
                 } else {
-                    setInputCursor(*input, target);
+                    stateChanged = setInputCursor(*input, target) || stateChanged;
                 }
-                stateChanged = true;
-                layoutNeeded = true;
             }
             consumed = true;
             break;
@@ -1537,6 +1616,7 @@ bool Runtime::handleEvent(const Event& event) {
         }
         if (impl_->focusedNode->compositionText != event.text) {
             impl_->focusedNode->compositionText = event.text;
+            markTextChanged(*impl_->focusedNode);
             stateChanged = true;
             layoutNeeded = true;
         }
@@ -1548,6 +1628,7 @@ bool Runtime::handleEvent(const Event& event) {
         }
         if (!impl_->focusedNode->compositionText.empty()) {
             impl_->focusedNode->compositionText.clear();
+            markTextChanged(*impl_->focusedNode);
             stateChanged = true;
             layoutNeeded = true;
         }
@@ -1671,6 +1752,37 @@ bool Runtime::setTextById(std::string_view id, std::string_view text) {
         return false;
     }
     node->text = std::string(text);
+    markTextChanged(*node);
+    impl_->requestLayout();
+    return true;
+}
+
+bool Runtime::setValueById(std::string_view id, std::string_view value) {
+    if (!impl_->hasDocument || !impl_->document.root || id.empty()) {
+        return false;
+    }
+    Node* node = findById(*impl_->document.root, id);
+    if (!isEditableNode(node)) {
+        return false;
+    }
+
+    std::string normalizedValue = editableText(*node, std::string(value));
+    if (node->value == normalizedValue) {
+        return true;
+    }
+
+    node->value = std::move(normalizedValue);
+    markTextChanged(*node);
+    node->numericValue = 0.0f;
+    const char* begin = node->value.data();
+    const char* end = node->value.data() + node->value.size();
+    std::from_chars(begin, end, node->numericValue);
+    node->cursorIndex = std::min(node->cursorIndex, node->value.size());
+    node->selectionAnchor = std::min(node->selectionAnchor, node->value.size());
+    node->selectionStart = std::min(node->selectionStart, node->value.size());
+    node->selectionEnd = std::min(node->selectionEnd, node->value.size());
+    node->undoStack.clear();
+    clampInputCursor(*node);
     impl_->requestLayout();
     return true;
 }
@@ -1731,6 +1843,7 @@ bool Runtime::applyUpdates(const RuntimeUpdates& updates) {
             continue;
         }
         node->text = update.text;
+        markTextChanged(*node);
         changed = true;
     }
 

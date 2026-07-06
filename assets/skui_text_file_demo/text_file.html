@@ -1,0 +1,115 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    .screen {
+      flex-grow: 1;
+      position: relative;
+      background: linear-gradient(to bottom, #07111c, #0b1724);
+      color: rgba(238,246,252,0.94);
+      font-size: 16px;
+    }
+    .toolbar {
+      position: absolute;
+      left: 24px;
+      top: 20px;
+      right: 24px;
+      height: 86px;
+      background-color: rgba(14,28,43,0.86);
+      border-color: rgba(128,164,192,0.45);
+      border-width: 1px;
+      border-style: solid;
+      border-radius: 8px;
+    }
+    .title {
+      position: absolute;
+      left: 22px;
+      top: 12px;
+      width: 320px;
+      height: 30px;
+      font-size: 24px;
+      font-weight: bold;
+    }
+    .subtitle {
+      position: absolute;
+      left: 22px;
+      top: 48px;
+      right: 300px;
+      height: 24px;
+      color: rgba(186,204,220,0.86);
+      font-size: 15px;
+    }
+    .open-button {
+      position: absolute;
+      right: 22px;
+      top: 21px;
+      width: 220px;
+      height: 44px;
+      align-items: center;
+      justify-content: center;
+      background: linear-gradient(to right, rgba(24,196,183,0.66), rgba(10,103,116,0.68));
+      border-color: rgba(72,242,229,0.75);
+      border-width: 1px;
+      border-style: solid;
+      border-radius: 7px;
+      color: rgba(246,252,255,0.96);
+      font-size: 17px;
+      font-weight: bold;
+    }
+    .open-button:hover {
+      background: linear-gradient(to right, rgba(38,224,211,0.78), rgba(12,122,136,0.76));
+      border-color: rgba(113,255,244,0.88);
+    }
+    .open-button:active {
+      background: linear-gradient(to right, rgba(10,151,142,0.82), rgba(7,76,88,0.82));
+    }
+    .status {
+      position: absolute;
+      left: 24px;
+      top: 118px;
+      right: 24px;
+      height: 32px;
+      color: rgba(190,209,225,0.88);
+      font-size: 15px;
+    }
+    .viewer {
+      position: absolute;
+      left: 24px;
+      top: 160px;
+      right: 24px;
+      bottom: 24px;
+      overflow: auto;
+      overflow-x: auto;
+      overflow-y: auto;
+      scrollbar-gutter: stable;
+      scrollbar-gutter: stable;
+      padding-left: 14px;
+      padding-right: 14px;
+      padding-top: 14px;
+      padding-bottom: 14px;
+      background-color: rgba(4,11,18,0.72);
+      border-color: rgba(128,164,192,0.48);
+      border-width: 1px;
+      border-style: solid;
+      border-radius: 8px;
+      color: rgba(238,246,252,0.94);
+      font-size: 15px;
+    }
+    .viewer:focus {
+      border-color: rgba(67,238,226,0.76);
+    }
+  </style>
+</head>
+<body>
+  <div class="screen">
+    <div class="toolbar">
+      <div class="title">Text Render Perf</div>
+      <div id="file-name" class="subtitle">Choose a text file to render inside SkUI textarea.</div>
+      <div class="open-button" data-action="open-text-file">Open Text File</div>
+    </div>
+    <div id="status-main" class="status">Ready.</div>
+    <textarea id="text-viewer" class="viewer" placeholder="Loaded text will be rendered here."></textarea>
+  </div>
+</body>
+</html>

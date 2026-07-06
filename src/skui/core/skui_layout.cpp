@@ -4,33 +4,55 @@
 
 #include <algorithm>
 #include <cctype>
+#include <optional>
+#include <string_view>
 
 namespace skui {
 namespace {
+
+float estimateTextCharWidth(unsigned char ch, float fontSize) {
+    if (ch < 0x80) {
+        return fontSize * (std::isspace(ch) ? 0.32f : 0.56f);
+    }
+    if ((ch & 0xE0) == 0xC0) {
+        return fontSize * 0.92f;
+    }
+    if ((ch & 0xF0) == 0xE0 || (ch & 0xF8) == 0xF0) {
+        return fontSize * 1.02f;
+    }
+    return fontSize * 0.56f;
+}
+
+size_t utf8Advance(unsigned char ch) {
+    if (ch < 0x80) {
+        return 1;
+    }
+    if ((ch & 0xE0) == 0xC0) {
+        return 2;
+    }
+    if ((ch & 0xF0) == 0xE0) {
+        return 3;
+    }
+    if ((ch & 0xF8) == 0xF0) {
+        return 4;
+    }
+    return 1;
+}
 
 float estimateTextWidth(std::string_view value, float fontSize) {
     float width = 0.0f;
     for (size_t i = 0; i < value.size();) {
         const unsigned char ch = static_cast<unsigned char>(value[i]);
-        if (ch < 0x80) {
-            width += fontSize * (std::isspace(ch) ? 0.32f : 0.56f);
-            ++i;
-        } else if ((ch & 0xE0) == 0xC0) {
-            width += fontSize * 0.92f;
-            i += 2;
-        } else if ((ch & 0xF0) == 0xE0) {
-            width += fontSize * 1.02f;
-            i += 3;
-        } else if ((ch & 0xF8) == 0xF0) {
-            width += fontSize * 1.02f;
-            i += 4;
-        } else {
-            width += fontSize * 0.56f;
-            ++i;
-        }
+        width += estimateTextCharWidth(ch, fontSize);
+        i += std::min(utf8Advance(ch), value.size() - i);
     }
     return width;
 }
+
+struct TextareaScrollMetrics {
+    float width = 0.0f;
+    float height = 0.0f;
+};
 
 YGSize measureTextNode(YGNodeConstRef node,
                        float width,
@@ -58,6 +80,53 @@ YGSize measureTextNode(YGNodeConstRef node,
         measuredHeight = std::min(measuredHeight, height);
     }
     return {std::max(0.0f, measuredWidth), std::max(0.0f, measuredHeight)};
+}
+
+float lengthPxOrZero(const std::optional<Length>& value) {
+    if (!value || value->unit != LengthUnit::Px) {
+        return 0.0f;
+    }
+    return value->value;
+}
+
+size_t textLineCount(std::string_view value) {
+    size_t count = 1;
+    for (char ch : value) {
+        if (ch == '\n') {
+            ++count;
+        }
+    }
+    return count;
+}
+
+TextareaScrollMetrics textareaScrollMetrics(const Node& node) {
+    const std::string& value = !node.value.empty() ? node.value : node.placeholder;
+    const float lineHeight = std::max(12.0f, node.style.fontSize * 1.38f);
+    const float paddingTop = lengthPxOrZero(node.style.padding.top);
+    const float paddingBottom = lengthPxOrZero(node.style.padding.bottom);
+    const float paddingLeft = lengthPxOrZero(node.style.padding.left);
+    const float paddingRight = lengthPxOrZero(node.style.padding.right);
+
+    float currentLineWidth = 0.0f;
+    float maxLineWidth = 0.0f;
+    size_t lines = 1;
+    for (size_t i = 0; i < value.size();) {
+        const unsigned char ch = static_cast<unsigned char>(value[i]);
+        if (ch == '\n') {
+            maxLineWidth = std::max(maxLineWidth, currentLineWidth);
+            currentLineWidth = 0.0f;
+            ++lines;
+            ++i;
+            continue;
+        }
+        currentLineWidth += estimateTextCharWidth(ch, node.style.fontSize);
+        i += std::min(utf8Advance(ch), value.size() - i);
+    }
+    maxLineWidth = std::max(maxLineWidth, currentLineWidth);
+    return {
+        paddingLeft + paddingRight + maxLineWidth,
+        paddingTop + paddingBottom + static_cast<float>(lines) * lineHeight,
+    };
 }
 
 void setOptional(YGNodeRef node,
@@ -99,6 +168,15 @@ void updateScrollMetrics(Node& node) {
     if (node.virtualContentWidth > 0.0f && node.virtualContentHeight > 0.0f) {
         node.scrollContentWidth = std::max(node.layout.w, node.virtualContentWidth);
         node.scrollContentHeight = std::max(node.layout.h, node.virtualContentHeight);
+        node.scrollX = clampf(node.scrollX, 0.0f, scrollMaxX(node));
+        node.scrollY = clampf(node.scrollY, 0.0f, scrollMaxY(node));
+        return;
+    }
+
+    if (node.tag == "textarea") {
+        const TextareaScrollMetrics metrics = textareaScrollMetrics(node);
+        node.scrollContentWidth = std::max(node.layout.w, metrics.width);
+        node.scrollContentHeight = std::max(node.layout.h, metrics.height);
         node.scrollX = clampf(node.scrollX, 0.0f, scrollMaxX(node));
         node.scrollY = clampf(node.scrollY, 0.0f, scrollMaxY(node));
         return;

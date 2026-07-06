@@ -9,6 +9,7 @@
 #include "include/core/SkFontStyle.h"
 #include "include/core/SkPaint.h"
 #include "include/core/SkPath.h"
+#include "include/core/SkImage.h"
 #include "include/core/SkRRect.h"
 #include "include/core/SkRect.h"
 #include "include/core/SkRefCnt.h"
@@ -17,6 +18,7 @@
 #include <yoga/Yoga.h>
 
 #include <condition_variable>
+#include <cstdint>
 #include <deque>
 #include <memory>
 #include <mutex>
@@ -217,6 +219,7 @@ struct Node {
     std::string value;
     std::string placeholder;
     std::string compositionText;
+    uint64_t textRevision = 0;
     std::string src;
     std::string action;
     std::string svgMarkup;
@@ -338,6 +341,31 @@ private:
         SkFontMetrics metrics{};
     };
 
+    struct TextLine {
+        size_t start = 0;
+        size_t end = 0;
+    };
+
+    struct TextLineCacheEntry {
+        uint64_t revision = 0;
+        const std::string* value = nullptr;
+        size_t size = 0;
+        std::vector<TextLine> lines;
+    };
+
+    struct BoxCacheEntry {
+        Rect layout;
+        int imageWidth = 0;
+        int imageHeight = 0;
+        SkColor backgroundColor = SK_ColorTRANSPARENT;
+        Gradient backgroundGradient;
+        CornerRadii borderRadius;
+        BorderStyle borderStyle = BorderStyle::None;
+        float borderWidth = 0.0f;
+        SkColor borderColor = SK_ColorTRANSPARENT;
+        sk_sp<SkImage> image;
+    };
+
     struct SvgDomEntry {
         sk_sp<SkSVGDOM> dom;
     };
@@ -391,9 +419,11 @@ private:
     SkFont font(float size, bool bold) const;
     SkPaint fill(SkColor color) const;
     SkPaint stroke(SkColor color, float width) const;
-    SkPaint backgroundPaint(const Node& node) const;
+    SkPaint backgroundPaint(const Node& node, const Rect& rect) const;
     void drawNode(SkCanvas& canvas, const Document& document, const Node& node);
     void drawBox(SkCanvas& canvas, const Node& node);
+    void drawBoxDirect(SkCanvas& canvas, const Node& node, const Rect& rect);
+    bool drawCachedBox(SkCanvas& canvas, const Node& node, const Rect& rect, SkColor borderColor);
     void drawProgress(SkCanvas& canvas, const Node& node);
     void drawImage(SkCanvas& canvas, const Document& document, const Node& node);
     void drawInlineSvg(SkCanvas& canvas, const Node& node);
@@ -416,8 +446,11 @@ private:
     static bool isSvgSource(std::string_view src);
     const TextEntry& textEntry(std::string_view value, float size, bool bold);
     float textWidth(std::string_view value, float size, bool bold);
+    const std::vector<TextLine>& textLines(const Node& node, const std::string& value);
     std::unordered_map<std::string, SvgDomEntry> svgDomCache_;
     std::unordered_map<std::string, std::string> svgFileCache_;
+    std::unordered_map<const Node*, TextLineCacheEntry> textLineCache_;
+    std::unordered_map<const Node*, BoxCacheEntry> boxCache_;
     std::shared_ptr<BitmapImageState> bitmapState_;
 };
 
