@@ -8,6 +8,7 @@
 #include "skui_win32_app.h"
 
 #include "include/core/SkColor.h"
+#include "skui/core/skui_internal.h"
 
 #include <windows.h>
 #include <commdlg.h>
@@ -40,7 +41,7 @@ std::string defaultDocumentPath() {
     const std::filesystem::path working =
         std::filesystem::current_path() / "assets" / "skui_text_file_demo" / "text_file.html";
     if (std::filesystem::exists(working)) {
-        return working.string();
+        return skui::pathToUtf8(working);
     }
 
     wchar_t modulePath[MAX_PATH]{};
@@ -51,9 +52,9 @@ std::string defaultDocumentPath() {
     const std::filesystem::path local =
         exe.parent_path() / "assets" / "skui_text_file_demo" / "text_file.html";
     if (std::filesystem::exists(local)) {
-        return local.string();
+        return skui::pathToUtf8(local);
     }
-    return working.string();
+    return skui::pathToUtf8(working);
 }
 
 std::string utf8FromWide(std::wstring_view text) {
@@ -290,7 +291,7 @@ bool writeBenchmarkRows(const std::filesystem::path& outputPath,
         return false;
     }
 
-    file << "input," << inputPath.string() << "\n";
+    file << "input," << skui::pathToUtf8(inputPath) << "\n";
     file << "metric,frames,total_ms,avg_ms\n";
     for (const BenchmarkRow& row : rows) {
         const double averageMs = row.frames > 0 ? row.totalMs / static_cast<double>(row.frames) : 0.0;

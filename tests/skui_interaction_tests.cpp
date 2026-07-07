@@ -10,6 +10,17 @@
 #include "include/encode/SkPngEncoder.h"
 #include "include/encode/SkWebpEncoder.h"
 
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 #include <array>
 #include <atomic>
 #include <cstdint>
@@ -37,6 +48,39 @@ uint32_t pixelAt(const std::vector<uint32_t>& pixels, int width, int x, int y) {
 
 constexpr uint32_t solidColor(unsigned r, unsigned g, unsigned b) {
     return 0xFF000000u | (r << 16u) | (g << 8u) | b;
+}
+
+std::string utf8PathText(const std::filesystem::path& path) {
+#ifdef _WIN32
+    const std::wstring wide = path.wstring();
+    if (wide.empty()) {
+        return {};
+    }
+    const int utf8Size = WideCharToMultiByte(CP_UTF8,
+                                             0,
+                                             wide.data(),
+                                             static_cast<int>(wide.size()),
+                                             nullptr,
+                                             0,
+                                             nullptr,
+                                             nullptr);
+    if (utf8Size <= 0) {
+        return path.string();
+    }
+    std::string utf8(static_cast<size_t>(utf8Size), '\0');
+    WideCharToMultiByte(CP_UTF8,
+                        0,
+                        wide.data(),
+                        static_cast<int>(wide.size()),
+                        utf8.data(),
+                        utf8Size,
+                        nullptr,
+                        nullptr);
+    return utf8;
+#else
+    const auto value = path.u8string();
+    return std::string(value.begin(), value.end());
+#endif
 }
 
 bool isMostlyRed(uint32_t color) {
@@ -912,6 +956,39 @@ int main() {
                     std::string("async bitmap image should render after loading: ") + fixture.fileName) && ok;
     }
 
+    {
+        const std::filesystem::path unicodeImageDir = imageFixtureDir / std::filesystem::path(L"中文目录");
+        std::filesystem::create_directories(unicodeImageDir, ec);
+        const std::filesystem::path unicodeImagePath = unicodeImageDir / std::filesystem::path(L"红色图片.png");
+        ok = expect(writeRedPngFixture(unicodeImagePath), "unicode bitmap test fixture should be written") && ok;
+
+        std::atomic_int unicodeImageRedraws{0};
+        skui::RuntimeOptions unicodeImageOptions = options;
+        unicodeImageOptions.requestRedraw = [&] {
+            unicodeImageRedraws.fetch_add(1);
+        };
+        skui::Runtime unicodeImageRuntime(unicodeImageOptions);
+        unicodeImageRuntime.resize(kWidth, kHeight, 1.0f);
+        if (!unicodeImageRuntime.loadDocumentFromString(imageHtmlForSource("红色图片.png"),
+                                                        utf8PathText(unicodeImageDir))) {
+            std::cerr << "unicode image load failed: " << unicodeImageRuntime.lastError() << "\n";
+            return 1;
+        }
+        uint32_t unicodeImageBefore = 0;
+        uint32_t unicodeImageAfter = 0;
+        ok = renderPixel(unicodeImageRuntime, 20, 20, unicodeImageBefore) && ok;
+        for (int i = 0; i < 100 && !unicodeImageRuntime.dirty(); ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        ok = renderPixel(unicodeImageRuntime, 20, 20, unicodeImageAfter) && ok;
+        ok = expect(unicodeImageBefore == solidColor(0x00, 0x00, 0x00),
+                    "unicode bitmap image should not block the first render") && ok;
+        ok = expect(unicodeImageRedraws.load() > 0,
+                    "unicode bitmap image load should request redraw") && ok;
+        ok = expect(isMostlyRed(unicodeImageAfter),
+                    "unicode bitmap image should render after loading") && ok;
+    }
+
     constexpr std::string_view responsiveHtml = R"html(
 <!doctype html>
 <html>
@@ -1230,7 +1307,7 @@ int main() {
     }
     uint32_t virtualScrollbar = 0;
     ok = renderPixel(virtualRuntime, 75, 25, virtualScrollbar) && ok;
-    ok = expect(virtualScrollbar == solidColor(0xB8, 0xC3, 0xD0), "virtual content height should create a scrollbar without real child height") && ok;
+    ok = expect(virtualScrollbar == solidColor(0x44, 0xDC, 0xD2), "virtual content height should create a scrollbar without real child height") && ok;
     sendWheel(virtualRuntime, 20.0f, 20.0f, -240.0f);
     ok = expect(scrollEvents == 1, "virtual scroll container should emit a scroll event") && ok;
     ok = expect(virtualScrollY > 0.0f, "scroll event should expose vertical scroll offset") && ok;
@@ -1579,8 +1656,8 @@ int main() {
     ok = renderPixel(scrollRuntime, 20, 20, verticalTrackScrolled) && ok;
     ok = expect(verticalInitial == solidColor(0x22, 0x33, 0x44), "scroll container should show initial child content") && ok;
     ok = expect(verticalClipped == solidColor(0x11, 0x11, 0x11), "overflow-y container should clip offscreen children") && ok;
-    ok = expect(verticalScrollbar == solidColor(0xB8, 0xC3, 0xD0), "overflow-y container should render a vertical scrollbar thumb") && ok;
-    ok = expect(horizontalScrollbar == solidColor(0xB8, 0xC3, 0xD0), "overflow-x container should render a horizontal scrollbar thumb") && ok;
+    ok = expect(verticalScrollbar == solidColor(0x45, 0xDE, 0xD5), "overflow-y container should render a vertical scrollbar thumb") && ok;
+    ok = expect(horizontalScrollbar == solidColor(0x44, 0xDC, 0xD2), "overflow-x container should render a horizontal scrollbar thumb") && ok;
     ok = expect(verticalScrolled == solidColor(0xAB, 0xCD, 0xEF), "mouse wheel should scroll vertical overflow content") && ok;
     ok = expect(horizontalInitial == solidColor(0x11, 0x11, 0x11), "overflow-x container should clip horizontal children before scrolling") && ok;
     ok = expect(horizontalScrolled == solidColor(0x77, 0x88, 0x99), "Shift+mouse wheel should scroll horizontal overflow content") && ok;
@@ -1641,8 +1718,8 @@ int main() {
     ok = renderPixel(stableScrollbarRuntime, 52, 45, stableGutter) && ok;
     ok = renderPixel(stableScrollbarRuntime, 55, 25, stableThumb) && ok;
     ok = expect(stableContent == solidColor(0xAB, 0xCD, 0xEF), "stable scrollbar container should still render visible child content") && ok;
-    ok = expect(stableGutter == solidColor(0x11, 0x11, 0x11), "scrollbar-gutter stable should reserve space outside child content") && ok;
-    ok = expect(stableThumb == solidColor(0xB8, 0xC3, 0xD0), "scrollbar-gutter stable should still render a vertical thumb") && ok;
+    ok = expect(stableGutter == solidColor(0x1D, 0x24, 0x2B), "scrollbar-gutter stable should reserve space outside child content") && ok;
+    ok = expect(stableThumb == solidColor(0x44, 0xDC, 0xD2), "scrollbar-gutter stable should still render a vertical thumb") && ok;
 
     constexpr std::string_view textareaHtml = R"html(
 <!doctype html>

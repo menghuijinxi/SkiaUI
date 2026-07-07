@@ -1053,6 +1053,9 @@ public:
             return inputIndexAtX(input, x);
         }
         const std::vector<TextLine>& lines = editableLinesFor(input);
+        if (lines.empty()) {
+            return 0;
+        }
         const float lineHeight = editableLineHeight(input);
         const float contentX = visualX(input) + lengthPxOrZero(input.style.padding.left);
         const float contentY = visualY(input) + lengthPxOrZero(input.style.padding.top);
@@ -1067,7 +1070,8 @@ public:
 
     const std::vector<TextLine>& editableLinesFor(const Node& input) {
         EditableLineCacheEntry& entry = editableLineCache[&input];
-        if (entry.revision == input.textRevision && entry.size == input.value.size()) {
+        if (entry.revision == input.textRevision && entry.size == input.value.size() &&
+            !entry.lines.empty()) {
             return entry.lines;
         }
 

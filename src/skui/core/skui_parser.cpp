@@ -1475,7 +1475,7 @@ std::unique_ptr<Node> convertElement(lxb_dom_element_t* element, Node* parent, s
 }
 
 bool readFile(const std::string& path, std::string& out) {
-    std::ifstream file(path, std::ios::binary);
+    std::ifstream file(pathFromUtf8(path), std::ios::binary);
     if (!file) {
         return false;
     }
@@ -1499,8 +1499,8 @@ bool DocumentParser::loadFile(const std::string& path, Document& outDocument, st
         error = "无法读取 HTML 文件: " + path;
         return false;
     }
-    const std::filesystem::path base = std::filesystem::path(path).parent_path();
-    return loadString(html, base.string(), outDocument, error);
+    const std::filesystem::path base = pathFromUtf8(path).parent_path();
+    return loadString(html, pathToUtf8(base), outDocument, error);
 }
 
 bool DocumentParser::loadString(std::string_view html,

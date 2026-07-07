@@ -16,6 +16,7 @@ find_package(lexbor CONFIG REQUIRED)
 option(SKIAUI_BUILD_DEMOS "Build SkiaUI demo applications" ON)
 option(SKIAUI_BUILD_SKIA_UI_DESK "Build the SkiaUiDesk demo application" ${SKIAUI_BUILD_DEMOS})
 option(SKIAUI_BUILD_TEXT_FILE_DEMO "Build the text file rendering performance demo" ${SKIAUI_BUILD_DEMOS})
+option(SKIAUI_BUILD_IMAGE_SCROLLER_DEMO "Build the image scroller memory demo" ${SKIAUI_BUILD_DEMOS})
 option(SKIAUI_INSTALL_SKIA_UI_DESK "Install the SkiaUiDesk demo application" OFF)
 option(SKIAUI_BUILD_TESTS "Build SkiaUI tests" ${BUILD_TESTING})
 option(SKIAUI_BUILD_WIN32 "Build the Win32 SkUI platform adapter target" ON)
@@ -38,6 +39,10 @@ endif()
 
 if(SKIAUI_BUILD_TEXT_FILE_DEMO AND NOT SKIAUI_BUILD_WIN32_DX12)
     message(FATAL_ERROR "SKIAUI_BUILD_TEXT_FILE_DEMO requires SKIAUI_BUILD_WIN32_DX12.")
+endif()
+
+if(SKIAUI_BUILD_IMAGE_SCROLLER_DEMO AND NOT SKIAUI_BUILD_WIN32_DX12)
+    message(FATAL_ERROR "SKIAUI_BUILD_IMAGE_SCROLLER_DEMO requires SKIAUI_BUILD_WIN32_DX12.")
 endif()
 
 add_library(Skui STATIC
@@ -86,6 +91,12 @@ endif()
 if(SKIAUI_BUILD_TEXT_FILE_DEMO)
     add_executable(SkiaTextFileDemo WIN32
         src/skui_text_file_demo/main.cpp
+    )
+endif()
+
+if(SKIAUI_BUILD_IMAGE_SCROLLER_DEMO)
+    add_executable(SkiaImageScrollerDemo WIN32
+        src/skui_image_scroller_demo/main.cpp
     )
 endif()
 
@@ -343,6 +354,38 @@ if(SKIAUI_BUILD_TEXT_FILE_DEMO)
     )
 endif()
 
+if(SKIAUI_BUILD_IMAGE_SCROLLER_DEMO)
+    target_include_directories(SkiaImageScrollerDemo PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/skui/public"
+    )
+
+    target_link_libraries(SkiaImageScrollerDemo PRIVATE
+        SkuiWin32Dx12
+        user32
+        gdi32
+        dwmapi
+        shcore
+        d3d12
+        dxgi
+        dxguid
+        d3dcompiler
+        dbghelp
+        usp10
+    )
+
+    target_compile_definitions(SkiaImageScrollerDemo PRIVATE
+        WIN32_LEAN_AND_MEAN
+        NOMINMAX
+        UNICODE
+        _UNICODE
+    )
+
+    if(MSVC)
+        target_compile_options(SkiaImageScrollerDemo PRIVATE /utf-8 /permissive- /Zc:__cplusplus)
+    endif()
+endif()
+
 if(SKIAUI_BUILD_TESTS)
     target_link_libraries(SkuiInteractionTests PRIVATE
         Skui
@@ -370,6 +413,9 @@ if(SKIATEST_USE_SKIA_D3D)
     endif()
     if(SKIAUI_BUILD_TEXT_FILE_DEMO)
         target_compile_definitions(SkiaTextFileDemo PRIVATE SKIATEST_USE_SKIA_D3D=1)
+    endif()
+    if(SKIAUI_BUILD_IMAGE_SCROLLER_DEMO)
+        target_compile_definitions(SkiaImageScrollerDemo PRIVATE SKIATEST_USE_SKIA_D3D=1)
     endif()
 endif()
 

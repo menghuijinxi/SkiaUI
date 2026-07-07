@@ -20,6 +20,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
+#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -472,6 +473,8 @@ bool shouldShowScrollbarX(const Node& node);
 bool shouldShowScrollbarY(const Node& node);
 Rect scrollContentClipRect(const Node& node);
 float stickyVisualOffsetY(const Node& node);
+std::filesystem::path pathFromUtf8(std::string_view text);
+std::string pathToUtf8(const std::filesystem::path& path);
 void parseInlineStyle(std::string_view declarations, Style& style);
 void recomputeStyles(Document& document, const RuntimeOptions& options, float viewportWidth = 0.0f, float viewportHeight = 0.0f);
 

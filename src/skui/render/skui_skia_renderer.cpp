@@ -75,12 +75,43 @@ std::string readTextFile(const std::filesystem::path& path) {
     return stream.str();
 }
 
-std::vector<unsigned char> readBinaryFile(const std::string& path) {
+std::vector<unsigned char> readBinaryFile(const std::filesystem::path& path) {
     std::ifstream file(path, std::ios::binary);
     if (!file) {
         return {};
     }
     return {std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
+}
+
+int hexDigitValue(char ch) {
+    if (ch >= '0' && ch <= '9') {
+        return ch - '0';
+    }
+    if (ch >= 'a' && ch <= 'f') {
+        return ch - 'a' + 10;
+    }
+    if (ch >= 'A' && ch <= 'F') {
+        return ch - 'A' + 10;
+    }
+    return -1;
+}
+
+std::string decodeUrlPath(std::string_view value) {
+    std::string decoded;
+    decoded.reserve(value.size());
+    for (size_t i = 0; i < value.size(); ++i) {
+        if (value[i] == '%' && i + 2 < value.size()) {
+            const int high = hexDigitValue(value[i + 1]);
+            const int low = hexDigitValue(value[i + 2]);
+            if (high >= 0 && low >= 0) {
+                decoded.push_back(static_cast<char>((high << 4) | low));
+                i += 2;
+                continue;
+            }
+        }
+        decoded.push_back(value[i]);
+    }
+    return decoded;
 }
 
 std::string normalizeSvgMarkup(std::string svg) {
@@ -857,7 +888,7 @@ SkiaRenderer::BitmapImageEntry SkiaRenderer::loadBitmapImage(const std::string& 
     BitmapImageEntry entry;
     entry.state = ImageState::Failed;
 
-    const std::vector<unsigned char> data = readBinaryFile(path);
+    const std::vector<unsigned char> data = readBinaryFile(pathFromUtf8(path));
     if (data.empty()) {
         return entry;
     }
@@ -1227,7 +1258,7 @@ std::optional<std::string> SkiaRenderer::readSvgAsset(const Document& document, 
         return it->second;
     }
 
-    std::string svg = readTextFile(std::filesystem::path(path));
+    std::string svg = readTextFile(pathFromUtf8(path));
     if (svg.empty()) {
         return std::nullopt;
     }
@@ -1242,26 +1273,27 @@ std::string SkiaRenderer::resolveAssetPath(const Document& document, std::string
         return {};
     }
 
-    fs::path path{std::string(src)};
+    const std::string decodedSrc = decodeUrlPath(src);
+    fs::path path = pathFromUtf8(decodedSrc);
     if (path.is_absolute()) {
-        return path.string();
+        return pathToUtf8(path);
     }
 
     if (!document.basePath.empty()) {
-        fs::path candidate = fs::path(document.basePath) / path;
+        fs::path candidate = pathFromUtf8(document.basePath) / path;
         if (fs::exists(candidate)) {
-            return candidate.string();
+            return pathToUtf8(candidate);
         }
     }
 
     if (!assetRoot_.empty()) {
-        fs::path candidate = fs::path(assetRoot_) / path;
+        fs::path candidate = pathFromUtf8(assetRoot_) / path;
         if (fs::exists(candidate)) {
-            return candidate.string();
+            return pathToUtf8(candidate);
         }
     }
 
-    return path.string();
+    return pathToUtf8(path);
 }
 
 bool SkiaRenderer::isSvgSource(std::string_view src) {

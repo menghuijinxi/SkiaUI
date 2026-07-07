@@ -1,8 +1,20 @@
 #include "skui_internal.h"
 
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 #include <algorithm>
 #include <charconv>
 #include <cctype>
+#include <limits>
 #include <sstream>
 
 namespace skui {
@@ -124,6 +136,82 @@ float stickyVisualOffsetY(const Node& node) {
         }
     }
     return 0.0f;
+}
+
+std::filesystem::path pathFromUtf8(std::string_view text) {
+#ifdef _WIN32
+    if (text.empty()) {
+        return {};
+    }
+    if (text.size() > static_cast<size_t>(std::numeric_limits<int>::max())) {
+        return std::filesystem::path(std::string(text));
+    }
+
+    const int sourceSize = static_cast<int>(text.size());
+    const int wideSize = MultiByteToWideChar(CP_UTF8,
+                                             MB_ERR_INVALID_CHARS,
+                                             text.data(),
+                                             sourceSize,
+                                             nullptr,
+                                             0);
+    if (wideSize <= 0) {
+        return std::filesystem::path(std::string(text));
+    }
+
+    std::wstring wide(static_cast<size_t>(wideSize), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, text.data(), sourceSize, wide.data(), wideSize);
+    return std::filesystem::path(wide);
+#else
+#ifdef __cpp_char8_t
+    std::u8string value;
+    value.reserve(text.size());
+    for (char ch : text) {
+        value.push_back(static_cast<char8_t>(ch));
+    }
+    return std::filesystem::path(value);
+#else
+    return std::filesystem::path(std::string(text));
+#endif
+#endif
+}
+
+std::string pathToUtf8(const std::filesystem::path& path) {
+#ifdef _WIN32
+    const std::wstring wide = path.wstring();
+    if (wide.empty()) {
+        return {};
+    }
+    if (wide.size() > static_cast<size_t>(std::numeric_limits<int>::max())) {
+        return path.string();
+    }
+
+    const int sourceSize = static_cast<int>(wide.size());
+    const int utf8Size = WideCharToMultiByte(CP_UTF8,
+                                             0,
+                                             wide.data(),
+                                             sourceSize,
+                                             nullptr,
+                                             0,
+                                             nullptr,
+                                             nullptr);
+    if (utf8Size <= 0) {
+        return path.string();
+    }
+
+    std::string utf8(static_cast<size_t>(utf8Size), '\0');
+    WideCharToMultiByte(CP_UTF8,
+                        0,
+                        wide.data(),
+                        sourceSize,
+                        utf8.data(),
+                        utf8Size,
+                        nullptr,
+                        nullptr);
+    return utf8;
+#else
+    const auto value = path.u8string();
+    return std::string(value.begin(), value.end());
+#endif
 }
 
 static bool parseHexByte(std::string_view text, unsigned& out) {
