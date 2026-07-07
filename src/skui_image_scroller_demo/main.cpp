@@ -211,8 +211,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCmd) {
     options.logicalHeight = 860;
     options.clearColor = colorRefFromSkColor(kClearColor);
     options.runtime.clearColor = kClearColor;
-    options.onRuntimeReady = [folder](skui::Runtime& runtime) {
-        runtime.loadDocumentFromString(buildImageDocument(folder), widePathText(folder));
+    options.onRuntimeResize = [folder, loaded = false](skui::Runtime& runtime) mutable {
+        if (loaded) {
+            return;
+        }
+        loaded = runtime.loadDocumentFromString(buildImageDocument(folder), widePathText(folder));
     };
 
     skui::win32::Dx12WindowApp app(std::move(options));

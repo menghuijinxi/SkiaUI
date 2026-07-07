@@ -304,6 +304,7 @@ bool imageBufferLayout(int width, int height, size_t& rowBytes, size_t& byteSize
 SkiaRenderer::SkiaRenderer(RuntimeOptions options)
     : assetRoot_(std::move(options.assetRoot)),
       clearColor_(options.clearColor),
+      bitmapCacheBudgetBytes_(options.bitmapCacheBudgetBytes),
       requestRedraw_(std::move(options.requestRedraw)) {
     fontMgr_ = SkFontMgr_New_DirectWrite();
     if (!fontMgr_) {
@@ -420,6 +421,7 @@ void SkiaRenderer::draw(Document& document, SkCanvas& canvas, int width, int hei
     traceTextCount_ = 0;
     traceSvgCount_ = 0;
     traceNodeCount_ = 0;
+    beginBitmapFrame();
     canvas.clear(clearColor_);
     const float scale = std::max(0.1f, dpiScale);
     canvas.save();
@@ -428,6 +430,7 @@ void SkiaRenderer::draw(Document& document, SkCanvas& canvas, int width, int hei
         drawNode(canvas, document, *document.root);
     }
     canvas.restore();
+    endBitmapFrame();
     if (traceEnabled) {
         std::ostringstream detail;
         detail << "nodes=" << traceNodeCount_
@@ -787,18 +790,40 @@ void SkiaRenderer::drawImage(SkCanvas& canvas, const Document& document, const N
     drawSvgMarkup(canvas, *svg, node.layout, node.style.color);
 }
 
+void SkiaRenderer::beginBitmapFrame() {
+    std::shared_ptr<BitmapImageState> state = bitmapState_;
+    if (!state) {
+        return;
+    }
+    std::lock_guard lock(state->mutex);
+    ++state->frame;
+}
+
+void SkiaRenderer::endBitmapFrame() {
+    std::shared_ptr<BitmapImageState> state = bitmapState_;
+    if (!state) {
+        return;
+    }
+    std::lock_guard lock(state->mutex);
+    pruneBitmapCacheLocked(*state);
+}
+
 SkiaRenderer::BitmapImageEntry SkiaRenderer::bitmapImageEntry(const std::string& path) {
     if (!bitmapState_) {
         bitmapState_ = std::make_shared<BitmapImageState>();
+        bitmapState_->budgetBytes = bitmapCacheBudgetBytes_;
     }
     std::shared_ptr<BitmapImageState> state = bitmapState_;
     {
         std::lock_guard lock(state->mutex);
         auto it = state->cache.find(path);
         if (it != state->cache.end()) {
+            it->second.lastUsedFrame = state->frame;
             return it->second;
         }
-        state->cache.emplace(path, BitmapImageEntry{});
+        BitmapImageEntry pending;
+        pending.lastUsedFrame = state->frame;
+        state->cache.emplace(path, std::move(pending));
     }
     enqueueBitmapLoad(state, path);
     return {};
@@ -836,12 +861,43 @@ void SkiaRenderer::stopBitmapLoads(const std::shared_ptr<BitmapImageState>& stat
         std::lock_guard lock(state->mutex);
         state->queue.clear();
         state->cache.clear();
+        state->cacheBytes = 0;
         state->dirty = false;
         state->stop = true;
     }
     state->cv.notify_all();
     if (state->worker.joinable()) {
         state->worker.join();
+    }
+}
+
+void SkiaRenderer::pruneBitmapCacheLocked(BitmapImageState& state) {
+    if (state.cacheBytes <= state.budgetBytes) {
+        return;
+    }
+
+    while (state.cacheBytes > state.budgetBytes) {
+        auto candidate = state.cache.end();
+        uint64_t oldestFrame = std::numeric_limits<uint64_t>::max();
+        for (auto it = state.cache.begin(); it != state.cache.end(); ++it) {
+            const BitmapImageEntry& entry = it->second;
+            if (entry.state != ImageState::Ready || entry.byteSize == 0) {
+                continue;
+            }
+            if (entry.lastUsedFrame == state.frame) {
+                continue;
+            }
+            if (entry.lastUsedFrame < oldestFrame) {
+                oldestFrame = entry.lastUsedFrame;
+                candidate = it;
+            }
+        }
+        if (candidate == state.cache.end()) {
+            return;
+        }
+        const size_t byteSize = candidate->second.byteSize;
+        state.cacheBytes = state.cacheBytes >= byteSize ? state.cacheBytes - byteSize : 0;
+        state.cache.erase(candidate);
     }
 }
 
@@ -873,7 +929,14 @@ void SkiaRenderer::bitmapWorkerLoop(std::shared_ptr<BitmapImageState> state, Req
             }
             auto it = state->cache.find(path);
             if (it != state->cache.end()) {
+                const size_t oldByteSize = it->second.byteSize;
+                state->cacheBytes = state->cacheBytes >= oldByteSize ? state->cacheBytes - oldByteSize : 0;
+                loaded.lastUsedFrame = it->second.lastUsedFrame;
                 it->second = std::move(loaded);
+                if (it->second.state == ImageState::Ready) {
+                    state->cacheBytes += it->second.byteSize;
+                }
+                pruneBitmapCacheLocked(*state);
                 state->dirty = true;
                 updated = true;
             }
@@ -931,6 +994,7 @@ SkiaRenderer::BitmapImageEntry SkiaRenderer::loadBitmapImage(const std::string& 
     entry.width = width;
     entry.height = height;
     entry.rowBytes = rowBytes;
+    entry.byteSize = byteSize;
     entry.pixels = std::move(pixels);
     return entry;
 }

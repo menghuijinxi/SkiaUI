@@ -111,6 +111,7 @@ struct RuntimeOptions {
     std::string assetRoot;
     float scale = 1.0f;
     SkColor clearColor = SkColorSetRGB(7, 12, 18);
+    size_t bitmapCacheBudgetBytes = 192u * 1024u * 1024u;
     Theme theme = Theme::dark();
     ElementEventCallback onElementEvent;
     ClipboardReadCallback readClipboardText;

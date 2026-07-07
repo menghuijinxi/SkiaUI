@@ -888,19 +888,25 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCmd) {
         LocalFree(argv);
     }
 
+    const std::string documentPath = defaultDocumentPath();
+
     skui::win32::WindowOptions options;
     options.title = L"SkiaUiDesk";
     options.logicalWidth = 1672;
     options.logicalHeight = 941;
     options.clearColor = colorRefFromSkColor(kDemoClearColor);
-    options.documentPath = defaultDocumentPath();
     options.runtime.assetRoot = "assets/skui_demo";
     options.runtime.clearColor = kDemoClearColor;
     options.onRuntimeReady = [](skui::Runtime& runtime) {
         installDemoInteractions(runtime);
     };
-    options.onRuntimeResize = [](skui::Runtime& runtime) {
-        layoutPropertyPage(runtime);
+    options.onRuntimeResize = [documentPath, loaded = false](skui::Runtime& runtime) mutable {
+        if (!loaded) {
+            loaded = runtime.loadDocument(documentPath);
+        }
+        if (loaded) {
+            layoutPropertyPage(runtime);
+        }
     };
 
     skui::win32::Dx12WindowApp app(std::move(options));

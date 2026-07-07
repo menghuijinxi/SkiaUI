@@ -93,6 +93,13 @@ bool isMostlyRed(uint32_t color) {
     return red > 180u && green < 80u && blue < 80u;
 }
 
+bool isMostlyBlue(uint32_t color) {
+    const unsigned red = (color >> 16u) & 0xFFu;
+    const unsigned green = (color >> 8u) & 0xFFu;
+    const unsigned blue = color & 0xFFu;
+    return blue > 180u && red < 80u && green < 80u;
+}
+
 bool renderPixel(skui::Runtime& runtime, int x, int y, uint32_t& out) {
     std::vector<uint32_t> pixels;
     pixels.assign(static_cast<size_t>(kWidth) * kHeight, 0);
@@ -248,6 +255,24 @@ bool writeSkDataFixture(const std::filesystem::path& path, sk_sp<SkData> data) {
 bool writeRedPngFixture(const std::filesystem::path& path) {
     SkPngEncoder::Options options;
     return writeSkDataFixture(path, SkPngEncoder::Encode(redFixturePixmap(), options));
+}
+
+bool writeSolidPngFixture(const std::filesystem::path& path,
+                          unsigned char red,
+                          unsigned char green,
+                          unsigned char blue) {
+    const std::array<unsigned char, 16> rgba = {
+        red, green, blue, 0xFF, red, green, blue, 0xFF,
+        red, green, blue, 0xFF, red, green, blue, 0xFF,
+    };
+    const SkImageInfo info = SkImageInfo::Make(2, 2, kRGBA_8888_SkColorType, kPremul_SkAlphaType);
+    SkPixmap pixmap(info, rgba.data(), 2u * 4u);
+    SkPngEncoder::Options options;
+    return writeSkDataFixture(path, SkPngEncoder::Encode(pixmap, options));
+}
+
+bool writeBluePngFixture(const std::filesystem::path& path) {
+    return writeSolidPngFixture(path, 0x00, 0x00, 0xFF);
 }
 
 bool writeRedJpegFixture(const std::filesystem::path& path) {
@@ -1105,6 +1130,77 @@ int main() {
                     "unicode bitmap image load should request redraw") && ok;
         ok = expect(isMostlyRed(unicodeImageAfter),
                     "unicode bitmap image should render after loading") && ok;
+    }
+
+    {
+        const std::filesystem::path cacheDir = std::filesystem::temp_directory_path() / "skui_bitmap_cache_budget";
+        std::filesystem::create_directories(cacheDir);
+        const std::filesystem::path redPath = cacheDir / "red.png";
+        const std::filesystem::path bluePath = cacheDir / "blue.png";
+        ok = expect(writeRedPngFixture(redPath), "red bitmap budget fixture should be written") && ok;
+        ok = expect(writeBluePngFixture(bluePath), "blue bitmap budget fixture should be written") && ok;
+
+        constexpr std::string_view budgetHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      position: relative;
+      width: 140px;
+      height: 90px;
+      background-color: #000000;
+    }
+    .photo {
+      position: absolute;
+      left: 0px;
+      top: 0px;
+      width: 40px;
+      height: 40px;
+    }
+  </style>
+</head>
+<body>
+  <div class="root"><img id="photo" class="photo" src="red.png"></div>
+</body>
+</html>
+)html";
+
+        skui::RuntimeOptions budgetOptions = options;
+        budgetOptions.assetRoot = utf8PathText(cacheDir);
+        budgetOptions.bitmapCacheBudgetBytes = 16;
+        skui::Runtime budgetRuntime(budgetOptions);
+        budgetRuntime.resize(kWidth, kHeight, 1.0f);
+        ok = expect(budgetRuntime.loadDocumentFromString(budgetHtml, utf8PathText(cacheDir)),
+                    "bitmap cache budget document should load") && ok;
+
+        uint32_t budgetPixel = 0;
+        ok = renderPixel(budgetRuntime, 20, 20, budgetPixel) && ok;
+        ok = expect(budgetPixel == solidColor(0x00, 0x00, 0x00),
+                    "budgeted bitmap should not block the first red render") && ok;
+        waitForDirty(budgetRuntime);
+        ok = renderPixel(budgetRuntime, 20, 20, budgetPixel) && ok;
+        ok = expect(isMostlyRed(budgetPixel), "red bitmap should render after async load") && ok;
+
+        ok = expect(budgetRuntime.setAttributeById("photo", "src", "blue.png"),
+                    "bitmap src should switch to blue") && ok;
+        ok = renderPixel(budgetRuntime, 20, 20, budgetPixel) && ok;
+        ok = expect(budgetPixel == solidColor(0x00, 0x00, 0x00),
+                    "budgeted bitmap should not block the first blue render") && ok;
+        waitForDirty(budgetRuntime);
+        ok = renderPixel(budgetRuntime, 20, 20, budgetPixel) && ok;
+        ok = expect(isMostlyBlue(budgetPixel), "blue bitmap should render after async load") && ok;
+
+        ok = expect(budgetRuntime.setAttributeById("photo", "src", "red.png"),
+                    "bitmap src should switch back to red") && ok;
+        ok = renderPixel(budgetRuntime, 20, 20, budgetPixel) && ok;
+        ok = expect(budgetPixel == solidColor(0x00, 0x00, 0x00),
+                    "evicted red bitmap should be loaded again after switching back") && ok;
+        waitForDirty(budgetRuntime);
+        ok = renderPixel(budgetRuntime, 20, 20, budgetPixel) && ok;
+        ok = expect(isMostlyRed(budgetPixel), "evicted red bitmap should render after reload") && ok;
+
+        std::filesystem::remove_all(cacheDir);
     }
 
     {

@@ -381,6 +381,8 @@ private:
         ImageState state = ImageState::Loading;
         std::shared_ptr<std::vector<unsigned char>> pixels;
         size_t rowBytes = 0;
+        size_t byteSize = 0;
+        uint64_t lastUsedFrame = 0;
         int width = 0;
         int height = 0;
     };
@@ -391,6 +393,9 @@ private:
         std::thread worker;
         std::mutex mutex;
         std::condition_variable cv;
+        size_t cacheBytes = 0;
+        size_t budgetBytes = 0;
+        uint64_t frame = 0;
         bool dirty = false;
         bool workerStarted = false;
         bool stop = false;
@@ -398,6 +403,7 @@ private:
 
     std::string assetRoot_;
     SkColor clearColor_ = SkColorSetRGB(7, 12, 18);
+    size_t bitmapCacheBudgetBytes_ = 0;
     RequestRedrawCallback requestRedraw_;
     sk_sp<SkFontMgr> fontMgr_;
     sk_sp<SkTypeface> regular_;
@@ -436,10 +442,13 @@ private:
     void drawText(SkCanvas& canvas, const Node& node);
     void drawInputCompositionUnderline(SkCanvas& canvas, const Node& node);
     void drawInputCaret(SkCanvas& canvas, const Node& node);
+    void beginBitmapFrame();
+    void endBitmapFrame();
     BitmapImageEntry bitmapImageEntry(const std::string& path);
     void enqueueBitmapLoad(const std::shared_ptr<BitmapImageState>& state, const std::string& path) const;
     void ensureBitmapWorker(const std::shared_ptr<BitmapImageState>& state) const;
     void stopBitmapLoads(const std::shared_ptr<BitmapImageState>& state);
+    static void pruneBitmapCacheLocked(BitmapImageState& state);
     static void bitmapWorkerLoop(std::shared_ptr<BitmapImageState> state, RequestRedrawCallback requestRedraw);
     static BitmapImageEntry loadBitmapImage(const std::string& path);
     std::optional<std::string> readSvgAsset(const Document& document, std::string_view src);
