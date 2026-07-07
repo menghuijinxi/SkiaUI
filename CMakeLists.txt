@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(SkiaRelayDesk LANGUAGES CXX)
+project(SkiaRelayDesk VERSION 0.1.4 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -477,6 +477,15 @@ install(FILES
     DESTINATION include/skiaui
 )
 
+install(FILES README.md
+    DESTINATION share/skiaui
+)
+
+install(DIRECTORY docs/
+    DESTINATION share/skiaui/docs
+    FILES_MATCHING PATTERN "*.md"
+)
+
 if(SKIAUI_BUILD_SKIA_UI_DESK AND SKIAUI_INSTALL_SKIA_UI_DESK)
     install(TARGETS SkiaUiDesk
         RUNTIME DESTINATION tools/skiaui
@@ -500,7 +509,7 @@ configure_package_config_file(
 
 write_basic_package_version_file(
     "${CMAKE_CURRENT_BINARY_DIR}/SkiaUIConfigVersion.cmake"
-    VERSION 0.1.0
+    VERSION ${PROJECT_VERSION}
     COMPATIBILITY SameMajorVersion
 )
 
