@@ -2,6 +2,9 @@
 #include "skui_runtime_helpers.h"
 #include "skui_dropdown.h"
 #include "skui_virtual_table.h"
+#ifdef _WIN32
+#include "skui_win32_event_adapter.h"
+#endif
 
 #include "include/core/SkData.h"
 #include "include/core/SkImageInfo.h"
@@ -119,6 +122,12 @@ bool renderPixels(skui::Runtime& runtime, std::vector<uint32_t>& pixels) {
         return false;
     }
     return true;
+}
+
+void waitForDirty(skui::Runtime& runtime) {
+    for (int i = 0; i < 100 && !runtime.dirty(); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
 }
 
 bool isBrightPixel(uint32_t color) {
@@ -252,6 +261,57 @@ bool writeRedWebpFixture(const std::filesystem::path& path) {
     options.fCompression = SkWebpEncoder::Compression::kLossless;
     return writeSkDataFixture(path, SkWebpEncoder::Encode(redFixturePixmap(), options));
 }
+
+#ifdef _WIN32
+LRESULT CALLBACK testWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
+    return DefWindowProcW(hwnd, message, wParam, lParam);
+}
+
+class TestWin32Window {
+public:
+    TestWin32Window() {
+        WNDCLASSW wc{};
+        wc.hInstance = GetModuleHandleW(nullptr);
+        wc.lpfnWndProc = testWindowProc;
+        wc.lpszClassName = L"SkuiInteractionTestsWindow";
+        if (!RegisterClassW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
+            return;
+        }
+        hwnd_ = CreateWindowExW(WS_EX_TOOLWINDOW,
+                                wc.lpszClassName,
+                                L"SkuiInteractionTestsWindow",
+                                WS_OVERLAPPEDWINDOW,
+                                0,
+                                0,
+                                80,
+                                60,
+                                nullptr,
+                                nullptr,
+                                wc.hInstance,
+                                nullptr);
+        if (hwnd_) {
+            ShowWindow(hwnd_, SW_SHOWNORMAL);
+            UpdateWindow(hwnd_);
+        }
+    }
+
+    ~TestWin32Window() {
+        if (hwnd_) {
+            DestroyWindow(hwnd_);
+        }
+    }
+
+    TestWin32Window(const TestWin32Window&) = delete;
+    TestWin32Window& operator=(const TestWin32Window&) = delete;
+
+    [[nodiscard]] HWND hwnd() const {
+        return hwnd_;
+    }
+
+private:
+    HWND hwnd_ = nullptr;
+};
+#endif
 
 }  // namespace
 
@@ -421,6 +481,68 @@ int main() {
         sendMouse(buttonRuntime, skui::EventType::MouseUp, 20.0f, 20.0f);
         ok = expect(buttonClicks == 2, "double-click press should also emit a button click") && ok;
     }
+
+#ifdef _WIN32
+    {
+        skui::Runtime adapterRuntime(options);
+        adapterRuntime.resize(kWidth, kHeight, 1.0f);
+        ok = expect(adapterRuntime.loadDocumentFromString(html, ""),
+                    "win32 adapter action document should load") && ok;
+
+        int mouseDowns = 0;
+        int clicks = 0;
+        adapterRuntime.setElementEventCallback([&](const skui::ElementEvent& event) {
+            if (event.action != "tile-click") {
+                return;
+            }
+            if (event.type == skui::ElementEventType::MouseDown) {
+                ++mouseDowns;
+            } else if (event.type == skui::ElementEventType::Click) {
+                ++clicks;
+            }
+        });
+
+        uint32_t normal = 0;
+        uint32_t active = 0;
+        ok = renderPixel(adapterRuntime, 20, 20, normal) && ok;
+        adapterRuntime.clearDirty();
+
+        int dirtyCallbacks = 0;
+        skui::win32::Win32EventAdapter adapter(adapterRuntime);
+        adapter.setRuntimeDirtyCallback([&] {
+            ++dirtyCallbacks;
+        });
+
+        TestWin32Window window;
+        ok = expect(window.hwnd() != nullptr, "win32 adapter test window should be created") && ok;
+        if (window.hwnd()) {
+            SetFocus(nullptr);
+            const std::optional<LRESULT> downResult =
+                adapter.handleMessage(window.hwnd(),
+                                      WM_LBUTTONDOWN,
+                                      MK_LBUTTON,
+                                      MAKELPARAM(20, 20));
+            ok = expect(downResult.has_value() && *downResult == 0,
+                        "win32 adapter should consume left button down") && ok;
+            ok = expect(mouseDowns == 1,
+                        "win32 adapter should emit mouse down for data-action elements") && ok;
+            ok = expect(dirtyCallbacks == 1,
+                        "win32 adapter mouse down should request a repaint") && ok;
+            ok = expect(GetFocus() == window.hwnd(),
+                        "win32 adapter mouse down should focus the host window") && ok;
+            ok = renderPixel(adapterRuntime, 20, 20, active) && ok;
+            ok = expect(normal != active,
+                        "win32 adapter mouse down should render the active state") && ok;
+
+            const std::optional<LRESULT> upResult =
+                adapter.handleMessage(window.hwnd(), WM_LBUTTONUP, 0, MAKELPARAM(20, 20));
+            ok = expect(upResult.has_value() && *upResult == 0,
+                        "win32 adapter should consume left button up") && ok;
+            ok = expect(clicks == 1,
+                        "win32 adapter should emit click after left button up") && ok;
+        }
+    }
+#endif
 
     constexpr std::string_view pointerEventsHtml = R"html(
 <!doctype html>
@@ -944,9 +1066,7 @@ int main() {
         uint32_t imageBefore = 0;
         uint32_t imageAfter = 0;
         ok = renderPixel(imageRuntime, 20, 20, imageBefore) && ok;
-        for (int i = 0; i < 100 && !imageRuntime.dirty(); ++i) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        }
+        waitForDirty(imageRuntime);
         ok = renderPixel(imageRuntime, 20, 20, imageAfter) && ok;
         ok = expect(imageBefore == solidColor(0x00, 0x00, 0x00),
                     std::string("async bitmap image should not block the first render: ") + fixture.fileName) && ok;
@@ -977,9 +1097,7 @@ int main() {
         uint32_t unicodeImageBefore = 0;
         uint32_t unicodeImageAfter = 0;
         ok = renderPixel(unicodeImageRuntime, 20, 20, unicodeImageBefore) && ok;
-        for (int i = 0; i < 100 && !unicodeImageRuntime.dirty(); ++i) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        }
+        waitForDirty(unicodeImageRuntime);
         ok = renderPixel(unicodeImageRuntime, 20, 20, unicodeImageAfter) && ok;
         ok = expect(unicodeImageBefore == solidColor(0x00, 0x00, 0x00),
                     "unicode bitmap image should not block the first render") && ok;
@@ -987,6 +1105,103 @@ int main() {
                     "unicode bitmap image load should request redraw") && ok;
         ok = expect(isMostlyRed(unicodeImageAfter),
                     "unicode bitmap image should render after loading") && ok;
+    }
+
+    {
+        constexpr std::string_view imageScrollerShellHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .screen {
+      flex-grow: 1;
+      position: relative;
+      background-color: #07111c;
+      color: #eef6fc;
+      font-size: 16px;
+    }
+    .toolbar {
+      position: absolute;
+      left: 8px;
+      top: 8px;
+      right: 8px;
+      height: 30px;
+      background-color: #0e1c2b;
+      border-color: #80a4c0;
+      border-width: 1px;
+      border-style: solid;
+      border-radius: 4px;
+    }
+    .title {
+      position: absolute;
+      left: 6px;
+      top: 4px;
+      width: 100px;
+      height: 18px;
+      font-size: 14px;
+    }
+    .viewer {
+      position: absolute;
+      left: 8px;
+      top: 46px;
+      right: 8px;
+      bottom: 8px;
+      overflow-y: auto;
+      background-color: #040b12;
+    }
+  </style>
+</head>
+<body>
+  <div class="screen">
+    <div class="toolbar"><div class="title">Images</div></div>
+    <div class="viewer"></div>
+  </div>
+</body>
+</html>
+)html";
+
+        skui::Runtime imageScrollerShellRuntime(options);
+        imageScrollerShellRuntime.resize(kWidth, kHeight, 1.0f);
+        if (!imageScrollerShellRuntime.loadDocumentFromString(imageScrollerShellHtml, "")) {
+            std::cerr << "image scroller shell load failed: "
+                      << imageScrollerShellRuntime.lastError() << "\n";
+            return 1;
+        }
+
+        uint32_t toolbarPixel = 0;
+        uint32_t viewerPixel = 0;
+        ok = renderPixel(imageScrollerShellRuntime, 12, 12, toolbarPixel) && ok;
+        ok = renderPixel(imageScrollerShellRuntime, 12, 50, viewerPixel) && ok;
+        ok = expect(toolbarPixel != solidColor(0x00, 0x00, 0x00),
+                    "image scroller shell toolbar should render on the first frame") && ok;
+        ok = expect(viewerPixel != solidColor(0x00, 0x00, 0x00),
+                    "image scroller shell viewer should render on the first frame") && ok;
+    }
+
+    {
+        const std::filesystem::path relayDocument =
+            std::filesystem::current_path() / "assets" / "skui_relay_demo" / "relaydesk.html";
+        skui::RuntimeOptions relayOptions;
+        relayOptions.assetRoot = utf8PathText(relayDocument.parent_path());
+        relayOptions.clearColor = SkColorSetRGB(248, 250, 252);
+        skui::Runtime relayRuntime(relayOptions);
+        relayRuntime.resize(1100, 760, 1.0f);
+        ok = expect(relayRuntime.loadDocument(utf8PathText(relayDocument)),
+                    "relay demo document should load") && ok;
+
+        constexpr int relayWidth = 1100;
+        constexpr int relayHeight = 760;
+        std::vector<uint32_t> relayPixels(static_cast<size_t>(relayWidth) *
+                                              static_cast<size_t>(relayHeight),
+                                          solidColor(248, 250, 252));
+        ok = expect(relayRuntime.renderToBgraPixels(relayPixels.data(),
+                                                    relayWidth,
+                                                    relayHeight,
+                                                    static_cast<size_t>(relayWidth) * sizeof(uint32_t),
+                                                    1.0f),
+                    "relay demo document should render through renderToBgraPixels") && ok;
+        ok = expect(pixelAt(relayPixels, relayWidth, 48, 48) != solidColor(248, 250, 252),
+                    "relay demo first frame should draw visible content") && ok;
     }
 
     constexpr std::string_view responsiveHtml = R"html(

@@ -159,6 +159,14 @@ std::wstring imeCompositionString(HWND hwnd, DWORD index) {
     return out;
 }
 
+void beginMousePress(HWND hwnd) {
+    if (!hwnd) {
+        return;
+    }
+    SetFocus(hwnd);
+    SetCapture(hwnd);
+}
+
 }  // namespace
 
 RuntimeOptions withWin32PlatformCallbacks(RuntimeOptions options) {
@@ -197,11 +205,11 @@ std::optional<LRESULT> Win32EventAdapter::handleMessage(HWND hwnd,
         }
         break;
     case WM_LBUTTONDOWN:
-        SetCapture(hwnd);
+        beginMousePress(hwnd);
         sendMouseEvent(EventType::MouseDown, lParam, MouseButton::Left);
         return 0;
     case WM_LBUTTONDBLCLK:
-        SetCapture(hwnd);
+        beginMousePress(hwnd);
         sendMouseEvent(EventType::MouseDoubleClick, lParam, MouseButton::Left);
         return 0;
     case WM_LBUTTONUP:
@@ -211,7 +219,7 @@ std::optional<LRESULT> Win32EventAdapter::handleMessage(HWND hwnd,
         sendMouseEvent(EventType::MouseUp, lParam, MouseButton::Left);
         return 0;
     case WM_MBUTTONDOWN:
-        SetCapture(hwnd);
+        beginMousePress(hwnd);
         sendMouseEvent(EventType::MouseDown, lParam, MouseButton::Middle);
         return 0;
     case WM_MBUTTONUP:
@@ -221,7 +229,7 @@ std::optional<LRESULT> Win32EventAdapter::handleMessage(HWND hwnd,
         sendMouseEvent(EventType::MouseUp, lParam, MouseButton::Middle);
         return 0;
     case WM_RBUTTONDOWN:
-        SetCapture(hwnd);
+        beginMousePress(hwnd);
         sendMouseEvent(EventType::MouseDown, lParam, MouseButton::Right);
         return 0;
     case WM_RBUTTONUP:

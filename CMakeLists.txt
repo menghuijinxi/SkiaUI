@@ -392,6 +392,12 @@ if(SKIAUI_BUILD_TESTS)
         usp10
     )
 
+    if(SKIAUI_BUILD_WIN32)
+        target_link_libraries(SkuiInteractionTests PRIVATE
+            SkuiWin32
+        )
+    endif()
+
     if(MSVC)
         target_compile_options(SkuiInteractionTests PRIVATE /utf-8 /permissive- /Zc:__cplusplus)
     endif()
