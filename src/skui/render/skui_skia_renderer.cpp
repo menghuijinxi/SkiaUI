@@ -7,6 +7,8 @@
 #include "include/core/SkImage.h"
 #include "include/core/SkImageInfo.h"
 #include "include/core/SkPaint.h"
+#include "include/core/SkPath.h"
+#include "include/core/SkPathBuilder.h"
 #include "include/core/SkPixmap.h"
 #include "include/core/SkPoint.h"
 #include "include/core/SkSamplingOptions.h"
@@ -149,6 +151,25 @@ bool isTextareaNode(const Node& node) {
 
 float lineHeightForNode(const Node& node) {
     return std::max(12.0f, node.style.fontSize * 1.38f);
+}
+
+float selectableLineTop(const SkRect& content, float lineHeight, size_t lineCount, size_t lineIndex) {
+    if (lineCount <= 1) {
+        return content.top() + (content.height() - lineHeight) * 0.5f;
+    }
+    return content.top() + static_cast<float>(lineIndex) * lineHeight;
+}
+
+SkRect lineSelectionRect(float x, float y, float width, float height) {
+    const float left = std::floor(x);
+    const float top = std::round(y);
+    const float right = std::ceil(x + width);
+    const float bottom = std::round(y + height);
+    return SkRect::MakeLTRB(left, top, right, bottom);
+}
+
+void addLineSelectionRect(SkPathBuilder& path, float x, float y, float width, float height) {
+    path.addRect(lineSelectionRect(x, y, width, height));
 }
 
 struct TextLineRange {
@@ -472,10 +493,32 @@ void SkiaRenderer::drawNode(SkCanvas& canvas, const Document& document, const No
     if (node.style.display == Display::None) {
         return;
     }
+    const int saveCount = canvas.getSaveCount();
     const float stickyOffsetY = stickyVisualOffsetY(node);
     if (stickyOffsetY != 0.0f) {
         canvas.save();
         canvas.translate(0.0f, stickyOffsetY);
+    }
+    const bool hasTransform = !node.style.transform.isIdentity();
+    if (hasTransform) {
+        const float centerX = node.layout.x + node.layout.w * 0.5f;
+        const float centerY = node.layout.y + node.layout.h * 0.5f;
+        canvas.save();
+        canvas.translate(centerX + node.style.transform.translateX,
+                         centerY + node.style.transform.translateY);
+        canvas.rotate(node.style.transform.rotateDeg);
+        canvas.scale(node.style.transform.scaleX, node.style.transform.scaleY);
+        canvas.translate(-centerX, -centerY);
+    }
+    const float opacity = clampf(node.style.opacity, 0.0f, 1.0f);
+    if (opacity <= 0.0f) {
+        canvas.restoreToCount(saveCount);
+        return;
+    }
+    if (opacity < 1.0f) {
+        SkPaint paint;
+        paint.setAlphaf(opacity);
+        canvas.saveLayer(nullptr, &paint);
     }
     if (traceRender_) {
         ++traceNodeCount_;
@@ -485,13 +528,12 @@ void SkiaRenderer::drawNode(SkCanvas& canvas, const Document& document, const No
                                node.style.overflowY != Overflow::Visible ||
                                node.scrollX > 0.0f ||
                                node.scrollY > 0.0f;
-    const bool rejected = node.layout.w > 0.0f &&
+    const bool rejected = !hasTransform &&
+                          node.layout.w > 0.0f &&
                           node.layout.h > 0.0f &&
                           canvas.quickReject(node.layout.sk());
     if (rejected && (node.children.empty() || clipsChildren)) {
-        if (stickyOffsetY != 0.0f) {
-            canvas.restore();
-        }
+        canvas.restoreToCount(saveCount);
         return;
     }
 
@@ -557,9 +599,7 @@ void SkiaRenderer::drawNode(SkCanvas& canvas, const Document& document, const No
     if (traceRender_) {
         traceScrollbarMs_ += perf::Trace::elapsedMs(scrollbarStart);
     }
-    if (stickyOffsetY != 0.0f) {
-        canvas.restore();
-    }
+    canvas.restoreToCount(saveCount);
 }
 
 void SkiaRenderer::drawBox(SkCanvas& canvas, const Node& node) {
@@ -1114,13 +1154,13 @@ void SkiaRenderer::drawInputSelection(SkCanvas& canvas, const Node& node) {
     canvas.clipRect(node.layout.sk(), SkClipOp::kIntersect, true);
     if (isTextareaNode(node)) {
         const float lineHeight = lineHeightForNode(node);
-        const float selectionHeight = std::max(12.0f, node.style.fontSize * 1.22f);
         const std::vector<TextLine>& lines = textLines(node, node.value);
         const TextLineRange lineRange = visibleTextLineRange(content,
                                                              node.layout,
                                                              node.scrollY,
                                                              lineHeight,
                                                              lines.size());
+        SkPathBuilder selectionPath;
         for (size_t lineIndex = lineRange.first; lineIndex < lineRange.last; ++lineIndex) {
             const TextLine line = lines[lineIndex];
             const size_t lineSelectionStart = std::max(start, line.start);
@@ -1157,10 +1197,12 @@ void SkiaRenderer::drawInputSelection(SkCanvas& canvas, const Node& node) {
             const float right = std::min(content.right(), x + selected);
             if (right > x) {
                 const float y = content.top() - node.scrollY +
-                                static_cast<float>(lineIndex) * lineHeight +
-                                (lineHeight - selectionHeight) * 0.5f;
-                canvas.drawRect(SkRect::MakeXYWH(x, y, right - x, selectionHeight), p);
+                                static_cast<float>(lineIndex) * lineHeight;
+                addLineSelectionRect(selectionPath, x, y, right - x, lineHeight);
             }
+        }
+        if (!selectionPath.isEmpty()) {
+            canvas.drawPath(selectionPath.detach(), p);
         }
     } else {
         const float before = start == 0 ? 0.0f : textWidth(std::string_view(node.value.data(), start), node.style.fontSize, node.style.fontBold);
@@ -1188,22 +1230,53 @@ void SkiaRenderer::drawSelectableSelection(SkCanvas& canvas, const Node& node) {
         return;
     }
 
-    const float before = start == 0 ? 0.0f : textWidth(std::string_view(value.data(), start), node.style.fontSize, node.style.fontBold);
-    const float selected = textWidth(std::string_view(value.data() + start, end - start), node.style.fontSize, node.style.fontBold);
     const SkRect content = contentRectForText(node);
-    const float x = std::max(content.left(), textStartX(node, value) + before);
-    const float right = std::min(content.right(), x + selected);
-    if (right <= x) {
-        return;
-    }
-
-    const TextEntry& entry = textEntry(value, node.style.fontSize, node.style.fontBold);
-    const float selectionHeight = std::max(12.0f, node.style.fontSize * 1.35f);
-    const float y = content.top() + content.height() * 0.5f - selectionHeight * 0.5f;
-    (void)entry;
+    const std::vector<TextLine>& lines = textLines(node, value);
+    const float lineHeight = lineHeightForNode(node);
     canvas.save();
     canvas.clipRect(node.layout.sk(), SkClipOp::kIntersect, true);
-    canvas.drawRect(SkRect::MakeXYWH(x, y, right - x, selectionHeight), fill(SkColorSetARGB(96, 36, 232, 219)));
+    SkPathBuilder selectionPath;
+    for (size_t lineIndex = 0; lineIndex < lines.size(); ++lineIndex) {
+        const TextLine line = lines[lineIndex];
+        const size_t lineStart = line.start;
+        const size_t lineEnd = line.end;
+        const size_t lineSelectionStart = std::max(start, lineStart);
+        const size_t lineSelectionEnd = std::min(end, lineEnd);
+        const bool selectsLineBreak = start <= lineEnd && end > lineEnd && lineEnd >= lineStart;
+        if (lineSelectionStart >= lineSelectionEnd && !selectsLineBreak) {
+            continue;
+        }
+
+        const std::string_view lineText(value.data() + lineStart, lineEnd - lineStart);
+        const float lineX = textStartX(node, lineText);
+        const float before = lineSelectionStart == lineStart
+                                 ? 0.0f
+                                 : textWidth(std::string_view(value.data() + lineStart,
+                                                              lineSelectionStart - lineStart),
+                                             node.style.fontSize,
+                                             node.style.fontBold);
+        float selected = 0.0f;
+        if (lineSelectionEnd > lineSelectionStart) {
+            selected = textWidth(std::string_view(value.data() + lineSelectionStart,
+                                                  lineSelectionEnd - lineSelectionStart),
+                                 node.style.fontSize,
+                                 node.style.fontBold);
+        }
+        if (selectsLineBreak) {
+            selected = std::max(selected, content.right() - lineX - before);
+        }
+        const float x = std::max(content.left(), lineX + before);
+        const float right = std::min(content.right(), x + selected);
+        if (right <= x) {
+            continue;
+        }
+
+        const float y = selectableLineTop(content, lineHeight, lines.size(), lineIndex);
+        addLineSelectionRect(selectionPath, x, y, right - x, lineHeight);
+    }
+    if (!selectionPath.isEmpty()) {
+        canvas.drawPath(selectionPath.detach(), fill(SkColorSetARGB(96, 36, 232, 219)));
+    }
     canvas.restore();
 }
 
@@ -1271,15 +1344,35 @@ void SkiaRenderer::drawText(SkCanvas& canvas, const Node& node) {
         return;
     }
 
-    const TextEntry& entry = textEntry(*value, node.style.fontSize, node.style.fontBold);
     const SkRect content = contentRectForText(node);
-    const float availableWidth = std::max(0.0f, content.width());
-    const float x = textStartX(node, *value);
-    const float y = content.top() + content.height() * 0.5f - (entry.metrics.fAscent + entry.metrics.fDescent) * 0.5f;
     SkColor textColor = node.style.color;
     if (inputPlaceholder) {
         textColor = SkColorSetA(textColor, static_cast<U8CPU>(std::min(150, static_cast<int>(SkColorGetA(textColor)))));
     }
+    if (node.tag == "selectable") {
+        const float lineHeight = lineHeightForNode(node);
+        const std::vector<TextLine>& lines = textLines(node, *value);
+        canvas.save();
+        canvas.clipRect(node.layout.sk(), SkClipOp::kIntersect, true);
+        for (size_t i = 0; i < lines.size(); ++i) {
+            const TextLine line = lines[i];
+            if (line.end <= line.start) {
+                continue;
+            }
+            const std::string_view lineText(value->data() + line.start, line.end - line.start);
+            const TextEntry& entry = textEntry(lineText, node.style.fontSize, node.style.fontBold);
+            const float baseline = selectableLineTop(content, lineHeight, lines.size(), i) +
+                                   lineHeight * 0.5f -
+                                   (entry.metrics.fAscent + entry.metrics.fDescent) * 0.5f;
+            canvas.drawTextBlob(entry.blob, textStartX(node, lineText), baseline, fill(textColor));
+        }
+        canvas.restore();
+        return;
+    }
+
+    const TextEntry& entry = textEntry(*value, node.style.fontSize, node.style.fontBold);
+    const float x = textStartX(node, *value);
+    const float y = content.top() + content.height() * 0.5f - (entry.metrics.fAscent + entry.metrics.fDescent) * 0.5f;
     if (editable) {
         canvas.save();
         canvas.clipRect(node.layout.sk(), SkClipOp::kIntersect, true);
@@ -1497,6 +1590,30 @@ float SkiaRenderer::textStartX(const Node& node, std::string_view value) {
         x = content.right() - width;
     }
     return std::max(content.left(), x);
+}
+
+size_t SkiaRenderer::textIndexAtPoint(const Node& node, const std::string& value, float x, float y) {
+    if (value.empty()) {
+        return 0;
+    }
+
+    const std::vector<TextLine>& lines = textLines(node, value);
+    if (lines.empty()) {
+        return 0;
+    }
+
+    const SkRect content = contentRectForText(node);
+    const float lineHeight = lineHeightForNode(node);
+    const float relativeY = std::max(0.0f, y - content.top());
+    const size_t lineIndex = std::min(lines.size() - 1,
+                                      static_cast<size_t>(relativeY / std::max(1.0f, lineHeight)));
+    const TextLine line = lines[lineIndex];
+    const std::string_view lineText(value.data() + line.start, line.end - line.start);
+    const float lineX = textStartX(node, lineText);
+    return line.start + textIndexAtOffset(lineText,
+                                          node.style.fontSize,
+                                          node.style.fontBold,
+                                          x - lineX);
 }
 
 size_t SkiaRenderer::textIndexAtOffset(std::string_view value, float size, bool bold, float offset) {

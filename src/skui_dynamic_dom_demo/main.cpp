@@ -31,6 +31,8 @@ struct DemoState {
     bool noticeVisible = true;
     bool messageDisplayHidden = false;
     bool messageVisibilityHidden = false;
+    bool motionEnabled = false;
+    bool fadeDimmed = false;
     int nextMessageId = 9;
     std::vector<int> messageIds = {1, 2, 3, 4, 5, 6, 7, 8};
 };
@@ -149,8 +151,8 @@ bool hasMessage(const DemoState& state, int id) {
 std::string messageElementHtml(int id) {
     std::ostringstream html;
     html << "<div id=\"message-" << id << "\" class=\"message\">";
-    html << "<div class=\"message-name\">Message " << id << "</div>";
-    html << "<div class=\"message-text\">Added at runtime with appendHtmlById.</div>";
+    html << "<selectable class=\"message-name\">Message " << id << "</selectable>";
+    html << "<selectable class=\"message-text\">Added at runtime with appendHtmlById.</selectable>";
     html << "</div>";
     return html.str();
 }
@@ -158,8 +160,8 @@ std::string messageElementHtml(int id) {
 std::string replacementHtml(int id) {
     std::ostringstream html;
     html << "<div id=\"message-" << id << "\" class=\"message message-replaced\">";
-    html << "<div class=\"message-name\">Message " << id << " replaced</div>";
-    html << "<div class=\"message-text\">This node was recreated with replaceHtmlById.</div>";
+    html << "<selectable class=\"message-name\">Message " << id << " replaced</selectable>";
+    html << "<selectable class=\"message-text\">This node was recreated with replaceHtmlById.</selectable>";
     html << "</div>";
     return html.str();
 }
@@ -170,7 +172,27 @@ void refreshDemoStatus(skui::Runtime& runtime, const DemoState& state) {
     status += state.messageDisplayHidden ? " none" : " flex";
     status += ". Message 3 visibility:";
     status += state.messageVisibilityHidden ? " hidden." : " visible.";
+    status += state.motionEnabled ? " Motion on," : " Motion off,";
+    status += state.fadeDimmed ? " fade dimmed." : " fade visible.";
     runtime.setTextById("demo-status", status);
+}
+
+void updateMultilineSample(skui::Runtime& runtime) {
+    runtime.setValueById("multiline-sample",
+                         "First selectable line\n"
+                         "Second line stays in the same node\n"
+                         "Third line should copy with line breaks");
+}
+
+void updateMotionCard(skui::Runtime& runtime, const DemoState& state) {
+    std::string style = "transition: transform 600ms ease, opacity 600ms ease;";
+    if (state.motionEnabled) {
+        style += "transform: translateX(48px) rotate(8deg) scale(1.08);";
+    } else {
+        style += "transform: none;";
+    }
+    style += state.fadeDimmed ? "opacity:0.25;" : "opacity:1;";
+    runtime.setStyleById("motion-card", style);
 }
 
 void addMessage(skui::Runtime& runtime, DemoState& state) {
@@ -225,6 +247,18 @@ void toggleVisibilityHidden(skui::Runtime& runtime, DemoState& state) {
     refreshDemoStatus(runtime, state);
 }
 
+void toggleMotion(skui::Runtime& runtime, DemoState& state) {
+    state.motionEnabled = !state.motionEnabled;
+    updateMotionCard(runtime, state);
+    refreshDemoStatus(runtime, state);
+}
+
+void toggleFade(skui::Runtime& runtime, DemoState& state) {
+    state.fadeDimmed = !state.fadeDimmed;
+    updateMotionCard(runtime, state);
+    refreshDemoStatus(runtime, state);
+}
+
 void installInteractions(skui::Runtime& runtime, DemoState& state) {
     runtime.setElementEventCallback([&runtime, &state](const skui::ElementEvent& event) {
         if (event.type != skui::ElementEventType::Click || event.action.empty()) {
@@ -243,6 +277,10 @@ void installInteractions(skui::Runtime& runtime, DemoState& state) {
             replaceFirstMessage(runtime, state);
         } else if (event.action == "remove-message") {
             removeLatestMessage(runtime, state);
+        } else if (event.action == "toggle-motion") {
+            toggleMotion(runtime, state);
+        } else if (event.action == "toggle-fade") {
+            toggleFade(runtime, state);
         }
     });
 }
@@ -269,12 +307,15 @@ int exportDocument(const wchar_t* outputPath, int width, int height, float dpiSc
             std::cerr << "load html failed: " << runtime.lastError() << "\n";
             result = 2;
         } else {
+            updateMultilineSample(runtime);
             runtime.resize(width, height, dpiScale);
             addMessage(runtime, state);
             toggleNotice(runtime, state);
             toggleDisplayHidden(runtime, state);
             toggleVisibilityHidden(runtime, state);
             replaceFirstMessage(runtime, state);
+            toggleMotion(runtime, state);
+            toggleFade(runtime, state);
 
             std::vector<uint32_t> pixels(static_cast<size_t>(width) * static_cast<size_t>(height),
                                          kClearColor);
@@ -321,11 +362,16 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCmd) {
     options.logicalWidth = 1180;
     options.logicalHeight = 720;
     options.clearColor = colorRefFromSkColor(kClearColor);
-    options.documentPath = defaultDocumentPath();
     options.runtime.assetRoot = "assets/skui_dynamic_dom_demo";
     options.runtime.clearColor = kClearColor;
     options.onRuntimeReady = [&state](skui::Runtime& runtime) {
         installInteractions(runtime, state);
+        if (!runtime.loadDocument(defaultDocumentPath())) {
+            std::cerr << "load html failed: " << runtime.lastError() << "\n";
+            return;
+        }
+        updateMultilineSample(runtime);
+        refreshDemoStatus(runtime, state);
     };
 
     skui::win32::Dx12WindowApp app(std::move(options));

@@ -94,6 +94,20 @@ enum class LengthUnit {
     Auto
 };
 
+enum class TransitionProperty {
+    All,
+    Opacity,
+    Transform
+};
+
+enum class Easing {
+    Linear,
+    Ease,
+    EaseIn,
+    EaseOut,
+    EaseInOut
+};
+
 struct Length {
     float value = 0.0f;
     LengthUnit unit = LengthUnit::Px;
@@ -124,6 +138,29 @@ struct CornerRadii {
                bottomRight > 0.0f ||
                bottomLeft > 0.0f;
     }
+};
+
+struct Transform {
+    float translateX = 0.0f;
+    float translateY = 0.0f;
+    float scaleX = 1.0f;
+    float scaleY = 1.0f;
+    float rotateDeg = 0.0f;
+
+    [[nodiscard]] bool isIdentity() const {
+        return translateX == 0.0f &&
+               translateY == 0.0f &&
+               scaleX == 1.0f &&
+               scaleY == 1.0f &&
+               rotateDeg == 0.0f;
+    }
+};
+
+struct TransitionDefinition {
+    TransitionProperty property = TransitionProperty::All;
+    float durationSeconds = 0.0f;
+    float delaySeconds = 0.0f;
+    Easing easing = Easing::Ease;
 };
 
 struct Style {
@@ -168,6 +205,9 @@ struct Style {
         bool fontSize = false;
         bool fontBold = false;
         bool backgroundGradient = false;
+        bool opacity = false;
+        bool transform = false;
+        bool transition = false;
         bool overflowX = false;
         bool overflowY = false;
         bool scrollbarGutter = false;
@@ -204,6 +244,9 @@ struct Style {
     float fontSize = 16.0f;
     bool fontBold = false;
     Gradient backgroundGradient;
+    float opacity = 1.0f;
+    Transform transform;
+    std::vector<TransitionDefinition> transitions;
     Overflow overflowX = Overflow::Visible;
     Overflow overflowY = Overflow::Visible;
     bool scrollbarGutterStable = false;
@@ -238,6 +281,9 @@ struct Node {
     std::unordered_map<std::string, std::string> attributes;
     Style style;
     Style inlineStyle;
+    Style animatedStyle;
+    Style::Flags animatedStyleFlags;
+    bool hasAnimatedStyle = false;
     Rect layout;
     float scrollX = 0.0f;
     float scrollY = 0.0f;
@@ -344,6 +390,7 @@ public:
     void clearNodeCaches();
     void shutdownCaches();
     size_t textIndexAtOffset(std::string_view value, float size, bool bold, float offset);
+    size_t textIndexAtPoint(const Node& node, const std::string& value, float x, float y);
     float textStartX(const Node& node, std::string_view value);
     [[nodiscard]] bool consumeImageDirty();
 
@@ -503,5 +550,6 @@ std::filesystem::path pathFromUtf8(std::string_view text);
 std::string pathToUtf8(const std::filesystem::path& path);
 void parseInlineStyle(std::string_view declarations, Style& style);
 void recomputeStyles(Document& document, const RuntimeOptions& options, float viewportWidth = 0.0f, float viewportHeight = 0.0f);
+void applyAnimatedStyles(Node& node);
 
 }  // namespace skui

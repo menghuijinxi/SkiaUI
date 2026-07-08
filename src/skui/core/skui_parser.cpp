@@ -61,6 +61,26 @@ std::optional<float> parseNumberOrPx(std::string_view raw) {
     return value;
 }
 
+std::optional<float> parseSeconds(std::string_view raw) {
+    std::string value = lower(trim(raw));
+    float multiplier = 1.0f;
+    if (value.ends_with("ms")) {
+        value.resize(value.size() - 2);
+        multiplier = 0.001f;
+    } else if (value.ends_with("s")) {
+        value.resize(value.size() - 1);
+    }
+
+    float seconds = 0.0f;
+    const char* begin = value.data();
+    const char* end = value.data() + value.size();
+    const auto result = std::from_chars(begin, end, seconds);
+    if (result.ec != std::errc{} || result.ptr != end) {
+        return std::nullopt;
+    }
+    return std::max(0.0f, seconds * multiplier);
+}
+
 std::optional<Length> parseLength(std::string_view raw) {
     std::string value = lower(trim(raw));
     if (value == "auto") {
@@ -83,6 +103,31 @@ std::optional<Length> parseLength(std::string_view raw) {
         return std::nullopt;
     }
     return Length{number, unit};
+}
+
+std::vector<std::string> splitCommaList(std::string_view raw) {
+    std::vector<std::string> items;
+    size_t start = 0;
+    int depth = 0;
+    for (size_t i = 0; i < raw.size(); ++i) {
+        const char ch = raw[i];
+        if (ch == '(') {
+            ++depth;
+        } else if (ch == ')' && depth > 0) {
+            --depth;
+        } else if (ch == ',' && depth == 0) {
+            items.push_back(trim(raw.substr(start, i - start)));
+            start = i + 1;
+        }
+    }
+    items.push_back(trim(raw.substr(start)));
+    items.erase(std::remove_if(items.begin(),
+                               items.end(),
+                               [](const std::string& item) {
+                                   return item.empty();
+                               }),
+                items.end());
+    return items;
 }
 
 std::string attr(lxb_dom_element_t* element, const char* name) {
@@ -342,6 +387,227 @@ void applyBorderShorthand(Style& style, std::string_view rawValue) {
     }
 }
 
+std::optional<Easing> parseEasing(std::string_view raw) {
+    const std::string value = lower(trim(raw));
+    if (value == "linear") {
+        return Easing::Linear;
+    }
+    if (value == "ease-in") {
+        return Easing::EaseIn;
+    }
+    if (value == "ease-out") {
+        return Easing::EaseOut;
+    }
+    if (value == "ease-in-out") {
+        return Easing::EaseInOut;
+    }
+    if (value == "ease") {
+        return Easing::Ease;
+    }
+    return std::nullopt;
+}
+
+std::optional<TransitionProperty> parseTransitionProperty(std::string_view raw) {
+    const std::string value = lower(trim(raw));
+    if (value == "all") {
+        return TransitionProperty::All;
+    }
+    if (value == "opacity") {
+        return TransitionProperty::Opacity;
+    }
+    if (value == "transform") {
+        return TransitionProperty::Transform;
+    }
+    return std::nullopt;
+}
+
+void parseTransition(std::string_view raw, Style& style) {
+    const std::string value = lower(trim(raw));
+    style.transitions.clear();
+    style.flags.transition = true;
+    if (value.empty() || value == "none") {
+        return;
+    }
+
+    for (const std::string& item : splitCommaList(raw)) {
+        TransitionDefinition transition;
+        bool hasDuration = false;
+        bool valid = true;
+        for (const std::string& token : splitWhitespace(item)) {
+            if (std::optional<TransitionProperty> property = parseTransitionProperty(token)) {
+                transition.property = *property;
+                continue;
+            }
+            if (std::optional<Easing> easing = parseEasing(token)) {
+                transition.easing = *easing;
+                continue;
+            }
+            if (std::optional<float> seconds = parseSeconds(token)) {
+                if (!hasDuration) {
+                    transition.durationSeconds = *seconds;
+                    hasDuration = true;
+                } else {
+                    transition.delaySeconds = *seconds;
+                }
+                continue;
+            }
+            valid = false;
+        }
+        if (valid && hasDuration && transition.durationSeconds > 0.0f) {
+            style.transitions.push_back(transition);
+        }
+    }
+}
+
+std::vector<std::string> parseFunctionArguments(std::string_view raw) {
+    std::string value(raw);
+    std::replace(value.begin(), value.end(), ',', ' ');
+    return splitWhitespace(value);
+}
+
+bool parseTransformFunction(std::string_view name, std::string_view rawArguments, Transform& transform) {
+    std::vector<std::string> args = parseFunctionArguments(rawArguments);
+    const std::string function = lower(trim(name));
+    if (function == "translate" || function == "translate3d") {
+        if (args.empty()) {
+            return false;
+        }
+        std::optional<float> x = parseNumberOrPx(args[0]);
+        std::optional<float> y = args.size() > 1 ? parseNumberOrPx(args[1])
+                                                  : std::optional<float>{0.0f};
+        if (!x || !y) {
+            return false;
+        }
+        transform.translateX += *x;
+        transform.translateY += *y;
+        return true;
+    }
+    if (function == "translatex") {
+        if (args.size() != 1) {
+            return false;
+        }
+        std::optional<float> x = parseNumberOrPx(args[0]);
+        if (!x) {
+            return false;
+        }
+        transform.translateX += *x;
+        return true;
+    }
+    if (function == "translatey") {
+        if (args.size() != 1) {
+            return false;
+        }
+        std::optional<float> y = parseNumberOrPx(args[0]);
+        if (!y) {
+            return false;
+        }
+        transform.translateY += *y;
+        return true;
+    }
+    if (function == "scale" || function == "scale3d") {
+        if (args.empty()) {
+            return false;
+        }
+        std::optional<float> x = parseNumberOrPx(args[0]);
+        std::optional<float> y = args.size() > 1 ? parseNumberOrPx(args[1]) : x;
+        if (!x || !y) {
+            return false;
+        }
+        transform.scaleX *= *x;
+        transform.scaleY *= *y;
+        return true;
+    }
+    if (function == "scalex") {
+        if (args.size() != 1) {
+            return false;
+        }
+        std::optional<float> x = parseNumberOrPx(args[0]);
+        if (!x) {
+            return false;
+        }
+        transform.scaleX *= *x;
+        return true;
+    }
+    if (function == "scaley") {
+        if (args.size() != 1) {
+            return false;
+        }
+        std::optional<float> y = parseNumberOrPx(args[0]);
+        if (!y) {
+            return false;
+        }
+        transform.scaleY *= *y;
+        return true;
+    }
+    if (function == "rotate" || function == "rotatez") {
+        if (args.size() != 1) {
+            return false;
+        }
+        std::string angle = lower(trim(args[0]));
+        if (angle.ends_with("deg")) {
+            angle.resize(angle.size() - 3);
+        }
+        std::optional<float> deg = parseNumberOrPx(angle);
+        if (!deg) {
+            return false;
+        }
+        transform.rotateDeg += *deg;
+        return true;
+    }
+    return false;
+}
+
+std::optional<Transform> parseTransform(std::string_view raw) {
+    std::string value = lower(trim(raw));
+    if (value.empty()) {
+        return std::nullopt;
+    }
+    if (value == "none") {
+        return Transform{};
+    }
+
+    Transform transform;
+    size_t pos = 0;
+    while (pos < raw.size()) {
+        while (pos < raw.size() && std::isspace(static_cast<unsigned char>(raw[pos]))) {
+            ++pos;
+        }
+        if (pos >= raw.size()) {
+            break;
+        }
+        const size_t nameStart = pos;
+        while (pos < raw.size() && raw[pos] != '(') {
+            ++pos;
+        }
+        if (pos >= raw.size()) {
+            return std::nullopt;
+        }
+        const std::string_view name = raw.substr(nameStart, pos - nameStart);
+        ++pos;
+        const size_t argStart = pos;
+        int depth = 1;
+        while (pos < raw.size() && depth > 0) {
+            if (raw[pos] == '(') {
+                ++depth;
+            } else if (raw[pos] == ')') {
+                --depth;
+                if (depth == 0) {
+                    break;
+                }
+            }
+            ++pos;
+        }
+        if (pos >= raw.size() || depth != 0) {
+            return std::nullopt;
+        }
+        if (!parseTransformFunction(name, raw.substr(argStart, pos - argStart), transform)) {
+            return std::nullopt;
+        }
+        ++pos;
+    }
+    return transform;
+}
+
 void mergeStyle(Style& target, const Style& source) {
     const Style::Flags& f = source.flags;
     if (f.display) {
@@ -503,6 +769,18 @@ void mergeStyle(Style& target, const Style& source) {
     if (f.backgroundGradient) {
         target.backgroundGradient = source.backgroundGradient;
         target.flags.backgroundGradient = true;
+    }
+    if (f.opacity) {
+        target.opacity = source.opacity;
+        target.flags.opacity = true;
+    }
+    if (f.transform) {
+        target.transform = source.transform;
+        target.flags.transform = true;
+    }
+    if (f.transition) {
+        target.transitions = source.transitions;
+        target.flags.transition = true;
     }
     if (f.overflowX) {
         target.overflowX = source.overflowX;
@@ -710,6 +988,24 @@ void applyInlineStyles(Node& node) {
     mergeStyle(node.style, node.inlineStyle);
     for (auto& child : node.children) {
         applyInlineStyles(*child);
+    }
+}
+
+void applyAnimatedStylesToSelf(Node& node) {
+    if (!node.hasAnimatedStyle) {
+        return;
+    }
+    Style animated;
+    animated.flags = node.animatedStyleFlags;
+    animated.opacity = node.animatedStyle.opacity;
+    animated.transform = node.animatedStyle.transform;
+    mergeStyle(node.style, animated);
+}
+
+void applyAnimatedStylesRecursive(Node& node) {
+    applyAnimatedStylesToSelf(node);
+    for (auto& child : node.children) {
+        applyAnimatedStylesRecursive(*child);
     }
 }
 
@@ -1064,6 +1360,18 @@ void applyDeclaration(Style& style, std::string_view rawName, std::string_view r
     } else if (name == "font-weight") {
         style.fontBold = lower(value) == "bold" || value == "600" || value == "700";
         style.flags.fontBold = true;
+    } else if (name == "opacity") {
+        if (std::optional<float> opacity = parseNumberOrPx(value)) {
+            style.opacity = clampf(*opacity, 0.0f, 1.0f);
+            style.flags.opacity = true;
+        }
+    } else if (name == "transform") {
+        if (std::optional<Transform> transform = parseTransform(value)) {
+            style.transform = *transform;
+            style.flags.transform = true;
+        }
+    } else if (name == "transition") {
+        parseTransition(value, style);
     } else if (name == "overflow") {
         if (std::optional<Overflow> overflow = parseOverflow(value)) {
             style.overflowX = *overflow;
@@ -1598,6 +1906,10 @@ void recomputeStyles(Document& document, const RuntimeOptions& options, float vi
     applyInheritedStyle(*document.root, options);
     applyInlineStyles(*document.root);
     applyInheritedStyle(*document.root, options);
+}
+
+void applyAnimatedStyles(Node& node) {
+    applyAnimatedStylesRecursive(node);
 }
 
 }  // namespace skui

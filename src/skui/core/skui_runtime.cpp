@@ -9,9 +9,11 @@
 
 #include <algorithm>
 #include <charconv>
+#include <chrono>
 #include <cctype>
 #include <cmath>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -886,6 +888,217 @@ std::string singleLineText(std::string text) {
     return text;
 }
 
+bool nearlyEqual(float lhs, float rhs) {
+    return std::abs(lhs - rhs) <= 0.001f;
+}
+
+bool sameTransform(const Transform& lhs, const Transform& rhs) {
+    return nearlyEqual(lhs.translateX, rhs.translateX) &&
+           nearlyEqual(lhs.translateY, rhs.translateY) &&
+           nearlyEqual(lhs.scaleX, rhs.scaleX) &&
+           nearlyEqual(lhs.scaleY, rhs.scaleY) &&
+           nearlyEqual(lhs.rotateDeg, rhs.rotateDeg);
+}
+
+float mix(float from, float to, float t) {
+    return from + (to - from) * t;
+}
+
+Transform mixTransform(const Transform& from, const Transform& to, float t) {
+    return {
+        mix(from.translateX, to.translateX, t),
+        mix(from.translateY, to.translateY, t),
+        mix(from.scaleX, to.scaleX, t),
+        mix(from.scaleY, to.scaleY, t),
+        mix(from.rotateDeg, to.rotateDeg, t),
+    };
+}
+
+float easingValue(Easing easing, float t) {
+    t = clampf(t, 0.0f, 1.0f);
+    switch (easing) {
+    case Easing::Linear:
+        return t;
+    case Easing::EaseIn:
+        return t * t;
+    case Easing::EaseOut:
+        return 1.0f - (1.0f - t) * (1.0f - t);
+    case Easing::EaseInOut:
+        return t < 0.5f ? 2.0f * t * t : 1.0f - std::pow(-2.0f * t + 2.0f, 2.0f) * 0.5f;
+    case Easing::Ease:
+    default:
+        return t < 0.5f ? 4.0f * t * t * t : 1.0f - std::pow(-2.0f * t + 2.0f, 3.0f) * 0.5f;
+    }
+}
+
+bool transitionMatches(const TransitionDefinition& transition, TransitionProperty property) {
+    return transition.property == TransitionProperty::All || transition.property == property;
+}
+
+std::optional<TransitionDefinition> transitionFor(const Style& style, TransitionProperty property) {
+    for (const TransitionDefinition& transition : style.transitions) {
+        if (transitionMatches(transition, property)) {
+            return transition;
+        }
+    }
+    return std::nullopt;
+}
+
+using AnimationClock = std::chrono::steady_clock;
+
+struct ActiveAnimation {
+    Node* node = nullptr;
+    TransitionProperty property = TransitionProperty::Opacity;
+    float fromOpacity = 1.0f;
+    float toOpacity = 1.0f;
+    Transform fromTransform;
+    Transform toTransform;
+    AnimationClock::time_point start;
+    float durationSeconds = 0.0f;
+    float delaySeconds = 0.0f;
+    Easing easing = Easing::Ease;
+};
+
+struct StyleSnapshot {
+    Node* node = nullptr;
+    float renderedOpacity = 1.0f;
+    float targetOpacity = 1.0f;
+    Transform renderedTransform;
+    Transform targetTransform;
+};
+
+float elapsedSeconds(AnimationClock::time_point from, AnimationClock::time_point to) {
+    return std::chrono::duration<float>(to - from).count();
+}
+
+void clearAnimatedStyle(Node& node) {
+    node.animatedStyle = {};
+    node.animatedStyleFlags = {};
+    node.hasAnimatedStyle = false;
+}
+
+void clearAnimatedStyleTree(Node& node) {
+    clearAnimatedStyle(node);
+    for (auto& child : node.children) {
+        clearAnimatedStyleTree(*child);
+    }
+}
+
+Style renderedStyle(const Node& node) {
+    Style style = node.style;
+    if (node.hasAnimatedStyle) {
+        if (node.animatedStyleFlags.opacity) {
+            style.opacity = node.animatedStyle.opacity;
+            style.flags.opacity = true;
+        }
+        if (node.animatedStyleFlags.transform) {
+            style.transform = node.animatedStyle.transform;
+            style.flags.transform = true;
+        }
+    }
+    return style;
+}
+
+const ActiveAnimation* activeAnimationFor(const std::vector<ActiveAnimation>& animations,
+                                          const Node* node,
+                                          TransitionProperty property) {
+    const auto it = std::find_if(animations.begin(),
+                                 animations.end(),
+                                 [node, property](const ActiveAnimation& animation) {
+                                     return animation.node == node && animation.property == property;
+                                 });
+    return it == animations.end() ? nullptr : &*it;
+}
+
+void collectStyleSnapshots(const Node& node,
+                           const std::vector<ActiveAnimation>& animations,
+                           std::vector<StyleSnapshot>& snapshots) {
+    const Style currentStyle = renderedStyle(node);
+    StyleSnapshot snapshot;
+    snapshot.node = const_cast<Node*>(&node);
+    snapshot.renderedOpacity = currentStyle.opacity;
+    snapshot.renderedTransform = currentStyle.transform;
+
+    if (const ActiveAnimation* animation =
+            activeAnimationFor(animations, &node, TransitionProperty::Opacity)) {
+        snapshot.targetOpacity = animation->toOpacity;
+    } else {
+        snapshot.targetOpacity = currentStyle.opacity;
+    }
+    if (const ActiveAnimation* animation =
+            activeAnimationFor(animations, &node, TransitionProperty::Transform)) {
+        snapshot.targetTransform = animation->toTransform;
+    } else {
+        snapshot.targetTransform = currentStyle.transform;
+    }
+
+    snapshots.push_back(snapshot);
+    for (const auto& child : node.children) {
+        collectStyleSnapshots(*child, animations, snapshots);
+    }
+}
+
+const StyleSnapshot* findStyleSnapshot(const std::vector<StyleSnapshot>& snapshots, const Node* node) {
+    const auto it = std::find_if(snapshots.begin(),
+                                 snapshots.end(),
+                                 [node](const StyleSnapshot& snapshot) {
+                                     return snapshot.node == node;
+                                 });
+    return it == snapshots.end() ? nullptr : &*it;
+}
+
+void writeAnimatedOpacity(Node& node, float opacity) {
+    node.animatedStyle.opacity = clampf(opacity, 0.0f, 1.0f);
+    node.animatedStyleFlags.opacity = true;
+    node.hasAnimatedStyle = true;
+}
+
+void writeAnimatedTransform(Node& node, const Transform& transform) {
+    node.animatedStyle.transform = transform;
+    node.animatedStyleFlags.transform = true;
+    node.hasAnimatedStyle = true;
+}
+
+void removeAnimationFor(std::vector<ActiveAnimation>& animations, const Node* node, TransitionProperty property) {
+    animations.erase(std::remove_if(animations.begin(),
+                                    animations.end(),
+                                    [node, property](const ActiveAnimation& animation) {
+                                        return animation.node == node && animation.property == property;
+                                    }),
+                     animations.end());
+}
+
+void clearAnimationsForNode(std::vector<ActiveAnimation>& animations, Node* node) {
+    if (!node) {
+        return;
+    }
+    animations.erase(std::remove_if(animations.begin(),
+                                    animations.end(),
+                                    [node](const ActiveAnimation& animation) {
+                                        for (Node* current = animation.node; current; current = current->parent) {
+                                            if (current == node) {
+                                                return true;
+                                            }
+                                        }
+                                        return false;
+                                    }),
+                     animations.end());
+}
+
+void clearAnimationsForMissingNodes(std::vector<ActiveAnimation>& animations, const Document& document) {
+    if (!document.root) {
+        animations.clear();
+        return;
+    }
+
+    animations.erase(std::remove_if(animations.begin(),
+                                    animations.end(),
+                                    [&document](const ActiveAnimation& animation) {
+                                        return !animation.node || !containsNode(*document.root, animation.node);
+                                    }),
+                     animations.end());
+}
+
 std::string multilineText(std::string text) {
     std::string out;
     out.reserve(text.size());
@@ -1031,15 +1244,151 @@ public:
         const bool traceEnabled = perf::Trace::enabled();
         const auto traceStart = traceEnabled ? perf::Trace::now() : perf::Trace::Clock::time_point{};
         const auto styleStart = traceEnabled ? perf::Trace::now() : perf::Trace::Clock::time_point{};
+        std::vector<StyleSnapshot> snapshots;
+        if (document.root) {
+            collectStyleSnapshots(*document.root, activeAnimations, snapshots);
+            clearAnimatedStyleTree(*document.root);
+        }
         recomputeStyles(document, options, viewportWidth, viewportHeight);
+        startTransitions(snapshots);
         if (traceEnabled) {
             perf::Trace::write("skui", "style_recompute", width, height, perf::Trace::elapsedMs(styleStart));
         }
         const auto layoutStart = traceEnabled ? perf::Trace::now() : perf::Trace::Clock::time_point{};
         layoutEngine.layout(document, viewportWidth, viewportHeight);
+        if (document.root) {
+            applyAnimatedStyles(*document.root);
+        }
+        requestAnimationFrame();
         if (traceEnabled) {
             perf::Trace::write("skui", "layout", width, height, perf::Trace::elapsedMs(layoutStart));
             perf::Trace::write("skui", "recompute_layout_total", width, height, perf::Trace::elapsedMs(traceStart));
+        }
+    }
+
+    void startTransitions(const std::vector<StyleSnapshot>& snapshots) {
+        if (!document.root) {
+            activeAnimations.clear();
+            return;
+        }
+        clearAnimationsForMissingNodes(activeAnimations, document);
+        startTransitionsRecursive(*document.root, snapshots);
+    }
+
+    void startTransitionsRecursive(Node& node, const std::vector<StyleSnapshot>& snapshots) {
+        const StyleSnapshot* snapshot = findStyleSnapshot(snapshots, &node);
+        if (snapshot) {
+            startOpacityTransition(node, *snapshot);
+            startTransformTransition(node, *snapshot);
+        }
+        for (auto& child : node.children) {
+            startTransitionsRecursive(*child, snapshots);
+        }
+    }
+
+    void startOpacityTransition(Node& node, const StyleSnapshot& snapshot) {
+        const float nextOpacity = node.style.opacity;
+        if (nearlyEqual(snapshot.targetOpacity, nextOpacity)) {
+            return;
+        }
+
+        removeAnimationFor(activeAnimations, &node, TransitionProperty::Opacity);
+        std::optional<TransitionDefinition> transition =
+            transitionFor(node.style, TransitionProperty::Opacity);
+        if (!transition) {
+            return;
+        }
+
+        ActiveAnimation animation;
+        animation.node = &node;
+        animation.property = TransitionProperty::Opacity;
+        animation.fromOpacity = snapshot.renderedOpacity;
+        animation.toOpacity = nextOpacity;
+        animation.start = AnimationClock::now();
+        animation.durationSeconds = transition->durationSeconds;
+        animation.delaySeconds = transition->delaySeconds;
+        animation.easing = transition->easing;
+        activeAnimations.push_back(animation);
+        writeAnimatedOpacity(node, animation.fromOpacity);
+    }
+
+    void startTransformTransition(Node& node, const StyleSnapshot& snapshot) {
+        const Transform nextTransform = node.style.transform;
+        if (sameTransform(snapshot.targetTransform, nextTransform)) {
+            return;
+        }
+
+        removeAnimationFor(activeAnimations, &node, TransitionProperty::Transform);
+        std::optional<TransitionDefinition> transition =
+            transitionFor(node.style, TransitionProperty::Transform);
+        if (!transition) {
+            return;
+        }
+
+        ActiveAnimation animation;
+        animation.node = &node;
+        animation.property = TransitionProperty::Transform;
+        animation.fromTransform = snapshot.renderedTransform;
+        animation.toTransform = nextTransform;
+        animation.start = AnimationClock::now();
+        animation.durationSeconds = transition->durationSeconds;
+        animation.delaySeconds = transition->delaySeconds;
+        animation.easing = transition->easing;
+        activeAnimations.push_back(animation);
+        writeAnimatedTransform(node, animation.fromTransform);
+    }
+
+    bool advanceAnimations() {
+        if (activeAnimations.empty() || !document.root) {
+            return false;
+        }
+
+        const float viewportWidth = logicalWidth();
+        const float viewportHeight = logicalHeight();
+        recomputeStyles(document, options, viewportWidth, viewportHeight);
+        clearAnimatedStyleTree(*document.root);
+        clearAnimationsForMissingNodes(activeAnimations, document);
+
+        bool changed = false;
+        const auto now = AnimationClock::now();
+        for (ActiveAnimation& animation : activeAnimations) {
+            const float elapsed = elapsedSeconds(animation.start, now) - animation.delaySeconds;
+            const float progress = animation.durationSeconds <= 0.0f
+                                       ? 1.0f
+                                       : clampf(elapsed / animation.durationSeconds, 0.0f, 1.0f);
+            const float eased = easingValue(animation.easing, progress);
+            if (animation.property == TransitionProperty::Opacity) {
+                writeAnimatedOpacity(*animation.node,
+                                     mix(animation.fromOpacity, animation.toOpacity, eased));
+            } else if (animation.property == TransitionProperty::Transform) {
+                writeAnimatedTransform(*animation.node,
+                                       mixTransform(animation.fromTransform,
+                                                    animation.toTransform,
+                                                    eased));
+            }
+            changed = true;
+        }
+
+        activeAnimations.erase(std::remove_if(activeAnimations.begin(),
+                                              activeAnimations.end(),
+                                              [now](const ActiveAnimation& animation) {
+                                                  return elapsedSeconds(animation.start, now) >=
+                                                         animation.delaySeconds + animation.durationSeconds;
+                                              }),
+                               activeAnimations.end());
+        if (document.root) {
+            applyAnimatedStyles(*document.root);
+        }
+        if (!activeAnimations.empty()) {
+            requestAnimationFrame();
+        }
+        dirty = changed || dirty;
+        return changed;
+    }
+
+    void requestAnimationFrame() const {
+        if (!activeAnimations.empty() && options.requestRedraw) {
+            options.requestRedraw();
         }
     }
 
@@ -1105,10 +1454,11 @@ public:
         return renderer.textIndexAtOffset(input.value, input.style.fontSize, input.style.fontBold, x - textStart);
     }
 
-    size_t selectableIndexAtX(const Node& node, float x) {
+    size_t selectableIndexAtPoint(const Node& node, float x, float y) {
         const std::string& value = selectableTextValue(node);
-        const float textStart = renderer.textStartX(node, value) - node.layout.x + visualX(node);
-        return renderer.textIndexAtOffset(value, node.style.fontSize, node.style.fontBold, x - textStart);
+        const float layoutX = x - visualX(node) + node.layout.x;
+        const float layoutY = y - visualY(node) + node.layout.y;
+        return renderer.textIndexAtPoint(node, value, layoutX, layoutY);
     }
 
     size_t editableIndexAtPoint(const Node& input, float x, float y) {
@@ -1171,6 +1521,7 @@ public:
     }
 
     void clearReferencesTo(const Node& subtree) {
+        clearAnimationsForNode(activeAnimations, const_cast<Node*>(&subtree));
         if (containsNode(subtree, focusedNode)) {
             setFocusedNode(nullptr);
         }
@@ -1244,6 +1595,7 @@ public:
     float scrollbarDragOffset = 0.0f;
     Cursor currentCursor = Cursor::Default;
     std::unordered_map<const Node*, EditableLineCacheEntry> editableLineCache;
+    std::vector<ActiveAnimation> activeAnimations;
     std::string lastError;
 };
 
@@ -1265,6 +1617,7 @@ bool Runtime::loadDocument(const std::string& path) {
     impl_->document = std::move(next);
     impl_->renderer.clearCaches();
     impl_->editableLineCache.clear();
+    impl_->activeAnimations.clear();
     if (impl_->document.root) {
         rebindParents(*impl_->document.root, nullptr);
     }
@@ -1297,6 +1650,7 @@ bool Runtime::loadDocumentFromString(std::string_view html, std::string_view bas
     impl_->document = std::move(next);
     impl_->renderer.clearCaches();
     impl_->editableLineCache.clear();
+    impl_->activeAnimations.clear();
     if (impl_->document.root) {
         rebindParents(*impl_->document.root, nullptr);
     }
@@ -1396,7 +1750,7 @@ bool Runtime::handleEvent(const Event& event) {
                                              index) || stateChanged;
             consumed = true;
         } else if (impl_->selectingText && impl_->mousePressed) {
-            const size_t index = impl_->selectableIndexAtX(*impl_->selectingText, x);
+            const size_t index = impl_->selectableIndexAtPoint(*impl_->selectingText, x, y);
             stateChanged = setSelectableSelection(*impl_->selectingText,
                                                   impl_->selectingText->selectionAnchor,
                                                   index) || stateChanged;
@@ -1471,8 +1825,8 @@ bool Runtime::handleEvent(const Event& event) {
             }
             const size_t selectionAnchor = (event.shiftKey && hasSelectableSelection(*selectable))
                 ? selectable->selectionAnchor
-                : impl_->selectableIndexAtX(*selectable, x);
-            const size_t index = impl_->selectableIndexAtX(*selectable, x);
+                : impl_->selectableIndexAtPoint(*selectable, x, y);
+            const size_t index = impl_->selectableIndexAtPoint(*selectable, x, y);
             if (event.shiftKey) {
                 setSelectableSelection(*selectable, selectionAnchor, index);
             } else {
@@ -1526,7 +1880,7 @@ bool Runtime::handleEvent(const Event& event) {
                 stateChanged = clearSelectableSelection(*impl_->selectedText) || stateChanged;
                 layoutNeeded = true;
             }
-            const size_t index = impl_->selectableIndexAtX(*selectable, x);
+            const size_t index = impl_->selectableIndexAtPoint(*selectable, x, y);
             selectSelectableWordAt(*selectable, index);
             impl_->selectingInput = nullptr;
             impl_->selectingText = nullptr;
@@ -1559,7 +1913,7 @@ bool Runtime::handleEvent(const Event& event) {
             impl_->selectingInput = nullptr;
         }
         if (impl_->selectingText) {
-            const size_t index = impl_->selectableIndexAtX(*impl_->selectingText, x);
+            const size_t index = impl_->selectableIndexAtPoint(*impl_->selectingText, x, y);
             stateChanged = setSelectableSelection(*impl_->selectingText,
                                                   impl_->selectingText->selectionAnchor,
                                                   index) || stateChanged;
@@ -1814,6 +2168,7 @@ void Runtime::render(SkCanvas& canvas) {
         return;
     }
 
+    impl_->advanceAnimations();
     impl_->renderer.draw(impl_->document, canvas, impl_->width, impl_->height, impl_->effectiveScale());
     impl_->dirty = false;
     perf::Trace::write("skui", "runtime_render", impl_->width, impl_->height, perf::Trace::elapsedMs(traceStart));
@@ -1904,8 +2259,24 @@ bool Runtime::setValueById(std::string_view id, std::string_view value) {
         return false;
     }
     Node* node = findById(*impl_->document.root, id);
-    if (!isEditableNode(node)) {
+    if (!isEditableNode(node) && !isSelectableTextNode(node)) {
         return false;
+    }
+
+    if (isSelectableTextNode(node) && !isEditableNode(node)) {
+        std::string nextValue(value);
+        if (node->value == nextValue) {
+            return true;
+        }
+
+        node->value = std::move(nextValue);
+        markTextChanged(*node);
+        node->cursorIndex = std::min(node->cursorIndex, node->value.size());
+        node->selectionAnchor = std::min(node->selectionAnchor, node->value.size());
+        node->selectionStart = std::min(node->selectionStart, node->value.size());
+        node->selectionEnd = std::min(node->selectionEnd, node->value.size());
+        impl_->requestLayout();
+        return true;
     }
 
     std::string normalizedValue = editableText(*node, std::string(value));

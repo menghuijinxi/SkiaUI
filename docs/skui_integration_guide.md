@@ -18,7 +18,7 @@ Demo target：
 
 - `SkiaUiDesk`：SkUI 自制 CSS + DOM 功能 demo。
 - `SkiaRelayDeskDemo`：RelayDesk 界面 demo。
-- `SkiaDynamicDomDemo`：动态 DOM 增删、替换、显示/隐藏和滚动布局 demo。
+- `SkiaDynamicDomDemo`：动态 DOM 增删、替换、显示/隐藏、滚动布局和轻量 CSS transition demo。
 - `SkuiInteractionTests`：运行时行为回归测试。
 
 ## 依赖
@@ -373,6 +373,8 @@ ui.setElementEventCallback([&ui](const skui::ElementEvent& event) {
 ```
 
 注意：不要依赖完整 JavaScript 或浏览器 DOM API。SkUI 的动态能力来自 C++ 回调和运行时更新接口。简单状态更新优先使用 `applyUpdates` 批量同步样式、文本和属性；需要运行时增删 UI 节点时，使用 `appendHtmlById`、`prependHtmlById`、`replaceHtmlById`、`removeElementById`。隐藏节点有两种语义：`setVisibleById(id, false)` 使用 `display:none`，隐藏后不占布局；`setStyleById(id, "visibility:hidden;")` 隐藏绘制和命中但保留布局占位。
+
+聊天记录、日志查看器这类只读文本建议使用 `selectable`。单个 `selectable` 节点内支持显式换行、多行拖选、分行高亮和 `Ctrl+C`；如果运行时写入带 `\n` 的文本，应使用 `setValueById` 保留换行。当前选择范围不会跨多个 DOM 节点，跨消息连续框选需要业务层合并为同一个 `selectable` 或后续扩展跨节点选择模型。
 
 ### 下拉框
 

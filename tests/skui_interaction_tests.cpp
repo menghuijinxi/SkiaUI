@@ -100,6 +100,13 @@ bool isMostlyBlue(uint32_t color) {
     return blue > 180u && red < 80u && green < 80u;
 }
 
+bool isDimBlue(uint32_t color) {
+    const unsigned red = (color >> 16u) & 0xFFu;
+    const unsigned green = (color >> 8u) & 0xFFu;
+    const unsigned blue = color & 0xFFu;
+    return blue >= 35u && blue <= 90u && red < 30u && green < 50u;
+}
+
 bool renderPixel(skui::Runtime& runtime, int x, int y, uint32_t& out) {
     std::vector<uint32_t> pixels;
     pixels.assign(static_cast<size_t>(kWidth) * kHeight, 0);
@@ -931,6 +938,120 @@ int main() {
     sendKey(selectableRuntime, 'C', false, true);
     ok = expect(selectableClipboard == "新", "selectable hit testing should account for text padding") && ok;
 
+    constexpr std::string_view dynamicSelectableHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      position: relative;
+      width: 140px;
+      height: 90px;
+      background-color: #000000;
+    }
+    .host {
+      position: absolute;
+      left: 10px;
+      top: 10px;
+      width: 120px;
+      height: 70px;
+    }
+    .dynamic-selectable {
+      position: absolute;
+      left: 0px;
+      top: 0px;
+      width: 120px;
+      height: 24px;
+      color: #ffffff;
+      font-size: 16px;
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <div id="dynamic-host" class="host"></div>
+  </div>
+</body>
+</html>
+)html";
+
+    selectableClipboard.clear();
+    skui::Runtime dynamicSelectableRuntime(selectableOptions);
+    dynamicSelectableRuntime.resize(kWidth, kHeight, 1.0f);
+    if (!dynamicSelectableRuntime.loadDocumentFromString(dynamicSelectableHtml, "")) {
+        std::cerr << "dynamic selectable load failed: "
+                  << dynamicSelectableRuntime.lastError() << "\n";
+        return 1;
+    }
+    ok = expect(dynamicSelectableRuntime.appendHtmlById(
+                    "dynamic-host",
+                    "<selectable id=\"dynamic-copy\" class=\"dynamic-selectable\">append ok</selectable>"),
+                "dynamic DOM should append selectable text") && ok;
+    sendMouse(dynamicSelectableRuntime, skui::EventType::MouseDown, 10.0f, 20.0f);
+    sendMouse(dynamicSelectableRuntime, skui::EventType::MouseMove, 130.0f, 20.0f);
+    sendMouse(dynamicSelectableRuntime, skui::EventType::MouseUp, 130.0f, 20.0f);
+    sendKey(dynamicSelectableRuntime, 'C', false, true);
+    ok = expect(selectableClipboard == "append ok",
+                "appended selectable text should support drag selection and Ctrl+C") && ok;
+    selectableClipboard.clear();
+    ok = expect(dynamicSelectableRuntime.replaceHtmlById(
+                    "dynamic-copy",
+                    "<selectable id=\"dynamic-copy\" class=\"dynamic-selectable\">replace ok</selectable>"),
+                "dynamic DOM should replace selectable text") && ok;
+    sendMouse(dynamicSelectableRuntime, skui::EventType::MouseDown, 10.0f, 20.0f);
+    sendMouse(dynamicSelectableRuntime, skui::EventType::MouseMove, 130.0f, 20.0f);
+    sendMouse(dynamicSelectableRuntime, skui::EventType::MouseUp, 130.0f, 20.0f);
+    sendKey(dynamicSelectableRuntime, 'C', false, true);
+    ok = expect(selectableClipboard == "replace ok",
+                "replaced selectable text should support drag selection and Ctrl+C") && ok;
+
+    constexpr std::string_view multilineSelectableHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      position: relative;
+      width: 140px;
+      height: 90px;
+      background-color: #000000;
+    }
+    selectable {
+      position: absolute;
+      left: 10px;
+      top: 10px;
+      width: 120px;
+      height: 70px;
+      color: #ffffff;
+      font-size: 16px;
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <selectable id="multi-copy"></selectable>
+  </div>
+</body>
+</html>
+)html";
+
+    selectableClipboard.clear();
+    skui::Runtime multilineSelectableRuntime(selectableOptions);
+    multilineSelectableRuntime.resize(kWidth, kHeight, 1.0f);
+    if (!multilineSelectableRuntime.loadDocumentFromString(multilineSelectableHtml, "")) {
+        std::cerr << "multiline selectable load failed: "
+                  << multilineSelectableRuntime.lastError() << "\n";
+        return 1;
+    }
+    ok = expect(multilineSelectableRuntime.setValueById("multi-copy", "alpha\nbeta\ngamma"),
+                "setValueById should update selectable multiline text") && ok;
+    sendMouse(multilineSelectableRuntime, skui::EventType::MouseDown, 10.0f, 20.0f);
+    sendMouse(multilineSelectableRuntime, skui::EventType::MouseMove, 130.0f, 58.0f);
+    sendMouse(multilineSelectableRuntime, skui::EventType::MouseUp, 130.0f, 58.0f);
+    sendKey(multilineSelectableRuntime, 'C', false, true);
+    ok = expect(selectableClipboard == "alpha\nbeta\ngamma",
+                "selectable should support drag selection across explicit text lines") && ok;
+
     constexpr std::string_view progressHtml = R"html(
 <!doctype html>
 <html>
@@ -1172,6 +1293,81 @@ int main() {
                 "visibility:hidden should hide descendants") && ok;
     ok = expect(preservedLayoutPixel == solidColor(0x77, 0x88, 0x99),
                 "visibility:hidden should preserve layout space") && ok;
+
+    constexpr std::string_view transitionHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      position: relative;
+      width: 140px;
+      height: 90px;
+      background-color: #000000;
+    }
+    .card {
+      position: absolute;
+      left: 10px;
+      top: 10px;
+      width: 20px;
+      height: 20px;
+      background-color: #0044ff;
+      transition: transform 80ms linear, opacity 80ms linear;
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <div id="card" class="card"></div>
+  </div>
+</body>
+</html>
+)html";
+
+    std::atomic_int animationRedraws{0};
+    skui::RuntimeOptions transitionOptions = options;
+    transitionOptions.requestRedraw = [&] {
+        animationRedraws.fetch_add(1);
+    };
+    skui::Runtime transitionRuntime(transitionOptions);
+    transitionRuntime.resize(kWidth, kHeight, 1.0f);
+    if (!transitionRuntime.loadDocumentFromString(transitionHtml, "")) {
+        std::cerr << "transition load failed: " << transitionRuntime.lastError() << "\n";
+        return 1;
+    }
+
+    uint32_t originPixel = 0;
+    uint32_t translatedPixel = 0;
+    ok = renderPixel(transitionRuntime, 15, 15, originPixel) && ok;
+    ok = renderPixel(transitionRuntime, 55, 15, translatedPixel) && ok;
+    ok = expect(isMostlyBlue(originPixel), "transition test card should initially render at origin") && ok;
+    ok = expect(translatedPixel == solidColor(0x00, 0x00, 0x00),
+                "transition test translated slot should initially be empty") && ok;
+    ok = expect(transitionRuntime.setStyleById("card", "transform: translateX(40px);"),
+                "transform transition style update should apply") && ok;
+    ok = expect(animationRedraws.load() > 0,
+                "transition should request redraw frames after style update") && ok;
+    std::this_thread::sleep_for(std::chrono::milliseconds(120));
+    ok = renderPixel(transitionRuntime, 15, 15, originPixel) && ok;
+    ok = renderPixel(transitionRuntime, 55, 15, translatedPixel) && ok;
+    ok = expect(originPixel == solidColor(0x00, 0x00, 0x00),
+                "transform transition should move the card away from origin") && ok;
+    ok = expect(isMostlyBlue(translatedPixel),
+                "transform transition should render at translated position") && ok;
+    ok = expect(transitionRuntime.setStyleById("card",
+                                               "transform: translateX(40px); opacity:0.2;"),
+                "opacity transition style update should apply") && ok;
+    std::this_thread::sleep_for(std::chrono::milliseconds(120));
+    ok = renderPixel(transitionRuntime, 55, 15, translatedPixel) && ok;
+    ok = expect(isDimBlue(translatedPixel),
+                "opacity transition should blend the card toward transparency") && ok;
+    ok = expect(transitionRuntime.setStyleById("card",
+                                               "transform: translateX(40px); opacity:1;"),
+                "opacity transition should support fading back in") && ok;
+    std::this_thread::sleep_for(std::chrono::milliseconds(120));
+    ok = renderPixel(transitionRuntime, 55, 15, translatedPixel) && ok;
+    ok = expect(isMostlyBlue(translatedPixel),
+                "opacity transition should restore the fully visible card") && ok;
 
     const std::filesystem::path imageFixtureDir = std::filesystem::temp_directory_path() / "skui-image-test";
     std::error_code ec;
@@ -2328,6 +2524,16 @@ int main() {
     sendKey(textareaRuntime, 'A', false, true);
     sendKey(textareaRuntime, 'C', false, true);
     ok = expect(textareaClipboard == "one\ntwo", "Ctrl+C should copy multiline textarea selection") && ok;
+    uint32_t textareaSelectionTop = 0;
+    uint32_t textareaSelectionBoundary = 0;
+    uint32_t textareaSelectionBottom = 0;
+    ok = renderPixel(textareaRuntime, 20, 15, textareaSelectionTop) && ok;
+    ok = renderPixel(textareaRuntime, 20, 29, textareaSelectionBoundary) && ok;
+    ok = renderPixel(textareaRuntime, 20, 30, textareaSelectionBottom) && ok;
+    ok = expect(textareaSelectionTop == textareaSelectionBoundary &&
+                    textareaSelectionBoundary == textareaSelectionBottom,
+                "textarea multiline selection should not draw darker seams between selected lines") &&
+         ok;
     textareaClipboard = "red\r\nblue";
     sendKey(textareaRuntime, 'V', false, true);
     ok = expect(textareaValue == "red\nblue", "Ctrl+V should normalize CRLF text for textarea") && ok;
