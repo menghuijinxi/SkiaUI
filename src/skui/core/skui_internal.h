@@ -380,6 +380,7 @@ private:
     struct BitmapImageEntry {
         ImageState state = ImageState::Loading;
         std::shared_ptr<std::vector<unsigned char>> pixels;
+        sk_sp<SkImage> image;
         size_t rowBytes = 0;
         size_t byteSize = 0;
         uint64_t lastUsedFrame = 0;
@@ -390,20 +391,22 @@ private:
     struct BitmapImageState {
         std::unordered_map<std::string, BitmapImageEntry> cache;
         std::deque<std::string> queue;
-        std::thread worker;
+        std::vector<std::thread> workers;
         std::mutex mutex;
         std::condition_variable cv;
         size_t cacheBytes = 0;
         size_t budgetBytes = 0;
+        size_t workerCount = 1;
         uint64_t frame = 0;
         bool dirty = false;
-        bool workerStarted = false;
+        bool workersStarted = false;
         bool stop = false;
     };
 
     std::string assetRoot_;
     SkColor clearColor_ = SkColorSetRGB(7, 12, 18);
     size_t bitmapCacheBudgetBytes_ = 0;
+    size_t bitmapLoadWorkerCount_ = 1;
     RequestRedrawCallback requestRedraw_;
     sk_sp<SkFontMgr> fontMgr_;
     sk_sp<SkTypeface> regular_;
@@ -445,8 +448,9 @@ private:
     void beginBitmapFrame();
     void endBitmapFrame();
     BitmapImageEntry bitmapImageEntry(const std::string& path);
+    sk_sp<SkImage> bitmapImageForEntry(const std::string& path, const BitmapImageEntry& entry);
     void enqueueBitmapLoad(const std::shared_ptr<BitmapImageState>& state, const std::string& path) const;
-    void ensureBitmapWorker(const std::shared_ptr<BitmapImageState>& state) const;
+    void ensureBitmapWorkers(const std::shared_ptr<BitmapImageState>& state) const;
     void stopBitmapLoads(const std::shared_ptr<BitmapImageState>& state);
     static void pruneBitmapCacheLocked(BitmapImageState& state);
     static void bitmapWorkerLoop(std::shared_ptr<BitmapImageState> state, RequestRedrawCallback requestRedraw);

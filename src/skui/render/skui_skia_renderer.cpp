@@ -30,6 +30,7 @@
 #include <limits>
 #include <optional>
 #include <sstream>
+#include <thread>
 
 namespace skui {
 namespace {
@@ -299,12 +300,25 @@ bool imageBufferLayout(int width, int height, size_t& rowBytes, size_t& byteSize
     return byteSize <= static_cast<size_t>(std::numeric_limits<uint32_t>::max());
 }
 
+size_t normalizeBitmapWorkerCount(size_t requested) {
+    constexpr size_t kMaxBitmapWorkers = 4;
+    if (requested == 0) {
+        requested = 1;
+    }
+    const unsigned hardwareCount = std::thread::hardware_concurrency();
+    const size_t hardwareLimit = hardwareCount == 0
+                                     ? kMaxBitmapWorkers
+                                     : std::max<size_t>(1, std::min<size_t>(kMaxBitmapWorkers, hardwareCount));
+    return std::max<size_t>(1, std::min(requested, hardwareLimit));
+}
+
 }  // namespace
 
 SkiaRenderer::SkiaRenderer(RuntimeOptions options)
     : assetRoot_(std::move(options.assetRoot)),
       clearColor_(options.clearColor),
       bitmapCacheBudgetBytes_(options.bitmapCacheBudgetBytes),
+      bitmapLoadWorkerCount_(normalizeBitmapWorkerCount(options.bitmapLoadWorkerCount)),
       requestRedraw_(std::move(options.requestRedraw)) {
     fontMgr_ = SkFontMgr_New_DirectWrite();
     if (!fontMgr_) {
@@ -754,12 +768,7 @@ void SkiaRenderer::drawImage(SkCanvas& canvas, const Document& document, const N
             return;
         }
         BitmapImageEntry entry = bitmapImageEntry(path);
-        if (entry.state != ImageState::Ready || !entry.pixels || entry.pixels->empty()) {
-            return;
-        }
-        const SkImageInfo info = SkImageInfo::Make(entry.width, entry.height, kBGRA_8888_SkColorType, kPremul_SkAlphaType);
-        SkPixmap pixmap(info, entry.pixels->data(), entry.rowBytes);
-        sk_sp<SkImage> image = SkImages::RasterFromPixmapCopy(pixmap);
+        sk_sp<SkImage> image = bitmapImageForEntry(path, entry);
         if (!image) {
             return;
         }
@@ -790,6 +799,37 @@ void SkiaRenderer::drawImage(SkCanvas& canvas, const Document& document, const N
     drawSvgMarkup(canvas, *svg, node.layout, node.style.color);
 }
 
+sk_sp<SkImage> SkiaRenderer::bitmapImageForEntry(const std::string& path, const BitmapImageEntry& entry) {
+    if (entry.state != ImageState::Ready) {
+        return nullptr;
+    }
+    if (entry.image) {
+        return entry.image;
+    }
+    if (!entry.pixels || entry.pixels->empty()) {
+        return nullptr;
+    }
+
+    const SkImageInfo info =
+        SkImageInfo::Make(entry.width, entry.height, kBGRA_8888_SkColorType, kPremul_SkAlphaType);
+    SkPixmap pixmap(info, entry.pixels->data(), entry.rowBytes);
+    sk_sp<SkImage> image = SkImages::RasterFromPixmapCopy(pixmap);
+    if (!image || !bitmapState_) {
+        return image;
+    }
+
+    std::lock_guard lock(bitmapState_->mutex);
+    auto it = bitmapState_->cache.find(path);
+    if (it != bitmapState_->cache.end() &&
+        it->second.state == ImageState::Ready &&
+        !it->second.image &&
+        it->second.pixels == entry.pixels) {
+        it->second.image = image;
+        it->second.pixels.reset();
+    }
+    return image;
+}
+
 void SkiaRenderer::beginBitmapFrame() {
     std::shared_ptr<BitmapImageState> state = bitmapState_;
     if (!state) {
@@ -812,6 +852,7 @@ SkiaRenderer::BitmapImageEntry SkiaRenderer::bitmapImageEntry(const std::string&
     if (!bitmapState_) {
         bitmapState_ = std::make_shared<BitmapImageState>();
         bitmapState_->budgetBytes = bitmapCacheBudgetBytes_;
+        bitmapState_->workerCount = bitmapLoadWorkerCount_;
     }
     std::shared_ptr<BitmapImageState> state = bitmapState_;
     {
@@ -837,20 +878,23 @@ void SkiaRenderer::enqueueBitmapLoad(const std::shared_ptr<BitmapImageState>& st
         std::lock_guard lock(state->mutex);
         state->queue.push_back(path);
     }
-    ensureBitmapWorker(state);
+    ensureBitmapWorkers(state);
     state->cv.notify_one();
 }
 
-void SkiaRenderer::ensureBitmapWorker(const std::shared_ptr<BitmapImageState>& state) const {
+void SkiaRenderer::ensureBitmapWorkers(const std::shared_ptr<BitmapImageState>& state) const {
     if (!state) {
         return;
     }
     std::lock_guard lock(state->mutex);
-    if (state->workerStarted) {
+    if (state->workersStarted) {
         return;
     }
-    state->workerStarted = true;
-    state->worker = std::thread(bitmapWorkerLoop, state, requestRedraw_);
+    state->workersStarted = true;
+    state->workers.reserve(state->workerCount);
+    for (size_t i = 0; i < state->workerCount; ++i) {
+        state->workers.emplace_back(bitmapWorkerLoop, state, requestRedraw_);
+    }
 }
 
 void SkiaRenderer::stopBitmapLoads(const std::shared_ptr<BitmapImageState>& state) {
@@ -866,9 +910,12 @@ void SkiaRenderer::stopBitmapLoads(const std::shared_ptr<BitmapImageState>& stat
         state->stop = true;
     }
     state->cv.notify_all();
-    if (state->worker.joinable()) {
-        state->worker.join();
+    for (std::thread& worker : state->workers) {
+        if (worker.joinable()) {
+            worker.join();
+        }
     }
+    state->workers.clear();
 }
 
 void SkiaRenderer::pruneBitmapCacheLocked(BitmapImageState& state) {

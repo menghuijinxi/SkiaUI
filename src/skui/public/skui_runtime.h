@@ -112,6 +112,7 @@ struct RuntimeOptions {
     float scale = 1.0f;
     SkColor clearColor = SkColorSetRGB(7, 12, 18);
     size_t bitmapCacheBudgetBytes = 192u * 1024u * 1024u;
+    size_t bitmapLoadWorkerCount = 4;
     Theme theme = Theme::dark();
     ElementEventCallback onElementEvent;
     ClipboardReadCallback readClipboardText;

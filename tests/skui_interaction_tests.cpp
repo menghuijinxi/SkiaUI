@@ -1102,6 +1102,90 @@ int main() {
     }
 
     {
+        constexpr int imageCount = 12;
+        constexpr int imageSize = 10;
+        constexpr int imageGap = 2;
+        std::string imageGridHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      position: relative;
+      width: 140px;
+      height: 90px;
+      background-color: #000000;
+    }
+    .photo {
+      position: absolute;
+      width: 10px;
+      height: 10px;
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+)html";
+
+        for (int i = 0; i < imageCount; ++i) {
+            const std::string fileName = "parallel-" + std::to_string(i) + ".png";
+            ok = expect(writeRedPngFixture(imageFixtureDir / fileName),
+                        "parallel bitmap fixture should be written") && ok;
+            imageGridHtml += "<img class=\"photo\" src=\"";
+            imageGridHtml += fileName;
+            imageGridHtml += "\" style=\"left: ";
+            imageGridHtml += std::to_string(i * (imageSize + imageGap));
+            imageGridHtml += "px; top: 0px;\">\n";
+        }
+        imageGridHtml += R"html(
+  </div>
+</body>
+</html>
+)html";
+
+        std::atomic_int parallelImageRedraws{0};
+        skui::RuntimeOptions parallelImageOptions = options;
+        parallelImageOptions.bitmapLoadWorkerCount = 4;
+        parallelImageOptions.requestRedraw = [&] {
+            parallelImageRedraws.fetch_add(1);
+        };
+        skui::Runtime parallelImageRuntime(parallelImageOptions);
+        parallelImageRuntime.resize(kWidth, kHeight, 1.0f);
+        if (!parallelImageRuntime.loadDocumentFromString(imageGridHtml, imageFixtureDir.string())) {
+            std::cerr << "parallel image load failed: "
+                      << parallelImageRuntime.lastError() << "\n";
+            return 1;
+        }
+
+        std::vector<uint32_t> parallelPixels;
+        ok = renderPixels(parallelImageRuntime, parallelPixels) && ok;
+        for (int i = 0; i < imageCount; ++i) {
+            const int x = i * (imageSize + imageGap) + imageSize / 2;
+            ok = expect(pixelAt(parallelPixels, x, imageSize / 2) ==
+                            solidColor(0x00, 0x00, 0x00),
+                        "parallel bitmap load should not block the first render") && ok;
+        }
+
+        bool allImagesReady = false;
+        for (int retry = 0; retry < 100 && !allImagesReady; ++retry) {
+            waitForDirty(parallelImageRuntime);
+            ok = renderPixels(parallelImageRuntime, parallelPixels) && ok;
+            allImagesReady = true;
+            for (int i = 0; i < imageCount; ++i) {
+                const int x = i * (imageSize + imageGap) + imageSize / 2;
+                if (!isMostlyRed(pixelAt(parallelPixels, x, imageSize / 2))) {
+                    allImagesReady = false;
+                    break;
+                }
+            }
+        }
+        ok = expect(parallelImageRedraws.load() >= imageCount,
+                    "parallel bitmap image loads should request redraws") && ok;
+        ok = expect(allImagesReady,
+                    "parallel bitmap images should all render after async loading") && ok;
+    }
+
+    {
         const std::filesystem::path unicodeImageDir = imageFixtureDir / std::filesystem::path(L"中文目录");
         std::filesystem::create_directories(unicodeImageDir, ec);
         const std::filesystem::path unicodeImagePath = unicodeImageDir / std::filesystem::path(L"红色图片.png");
