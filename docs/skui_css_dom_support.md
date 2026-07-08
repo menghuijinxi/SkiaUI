@@ -96,6 +96,7 @@
 | 属性 | 值 |
 | --- | --- |
 | `display` | `flex`、`none` |
+| `visibility` | `visible`、`hidden` |
 | `position` | `relative`、`absolute` |
 | `left` / `top` / `right` / `bottom` | `px`、`%`、`auto` |
 | `width` / `height` | `px`、`%`、`auto` |
@@ -110,6 +111,11 @@
 | `justify-content` | `flex-start`、`center`、`flex-end`、`space-between` |
 
 布局由 Yoga 计算。当前没有实现 `gap`、`row-gap`、`column-gap`，需要用 margin 表达间距。
+
+显隐语义：
+
+- `display:none` 会让节点退出布局和绘制，也不会参与命中测试；后续兄弟节点会重新排布。
+- `visibility:hidden` 会保留节点布局占位，但节点及其子树不会绘制，也不会参与命中测试。
 
 ### 绘制
 
@@ -243,9 +249,14 @@
 - `setAttributesById`
 - `applyUpdates`
 - `removeAttributeById`
+- `appendHtmlById`
+- `prependHtmlById`
+- `replaceHtmlById`
+- `removeElementById`
+- `setVisibleById`
 - `hasClassById`
 
-大量列表、表格、聊天记录建议使用批量接口 `applyUpdates`，减少重复样式计算和布局。
+大量列表、表格、聊天记录建议使用批量接口 `applyUpdates`，减少重复样式计算和布局。需要动态增删节点时，可以使用 `appendHtmlById`、`prependHtmlById`、`replaceHtmlById` 和 `removeElementById` 维护指定容器下的子树。动态片段会按当前运行时样式规则重新计算样式和布局。
 
 运行时更新规则：
 
@@ -254,6 +265,15 @@
 - `setAttributeById`、`setAttributesById`、`removeAttributeById` 会同步已知属性到内部状态，包括 `id`、`class`、`style`、`value`、`max`、`placeholder`、`src`、`data-action`、`data-virtual-width`、`data-virtual-height`。
 - `class` 属性更新后会重新参与选择器匹配；`style` 属性更新后会重新解析内联样式。
 - `applyUpdates` 会按样式、文本、属性的顺序批量应用，并只请求一次重新布局。
+- `appendHtmlById` / `prependHtmlById` 会把 HTML 片段插入到目标父节点子列表尾部或头部。
+- `replaceHtmlById` 会用 HTML 片段替换目标节点；片段为空或包含多个根元素时会返回失败。
+- `removeElementById` 会删除目标节点及其子树；根节点不能删除。
+- `setVisibleById` 是 `display:none` / `display:flex` 的便捷接口，用于隐藏后不占布局的场景；需要隐藏但保留布局占位时应使用 `setStyleById(id, "visibility:hidden;")` 或 class 切换。
+
+动态 DOM 示例：
+
+- `SkiaDynamicDomDemo` 演示运行时追加、替换、删除消息节点，以及 `display:none` 和 `visibility:hidden` 两种隐藏方式。
+- 示例页面使用滚动容器验证动态增删节点后滚动条、裁剪和自动布局仍能更新。
 
 ## 通用 C++ 辅助能力
 
@@ -272,7 +292,7 @@
 
 - 没有 JavaScript。
 - 没有完整浏览器表单控件。
-- 没有完整 CSS 标准、外部 stylesheet、动画。
+- 没有完整 CSS 标准、外部 stylesheet、动画或 transition；当前简单动效仍需要业务层通过运行时接口逐帧更新样式。
 - `img` 只支持本地资源路径；位图支持 PNG、JPEG、WebP 和 BMP，暂不支持网络 URL、`srcset`、懒加载策略和浏览器图片事件。
 - 文本排版是单行或简单多行编辑框，不是富文本排版引擎。
 - 中文双击选词目前按单个非 ASCII 字符处理，不做自然语言分词。

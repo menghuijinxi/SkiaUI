@@ -310,7 +310,7 @@ ui.registerControl("color-picker", std::make_unique<ColorPickerFactory>());
 - 运行时增删 `<style>` 或外部 stylesheet 规则。
 - 兄弟选择器：`+`、`~`。
 - `:not()`、`:has()`、`:is()` 等更复杂伪类。
-- `transition` / `animation`。
+- `transition` / `animation`。当前可以先参考 RmlUi、浏览器引擎的分层思路，但不应直接移植完整浏览器动画系统；适合后续在 Runtime 内做一个只覆盖 `opacity`、`transform` 和简单 easing 的轻量动画子集。
 - 样式变化的精细 dirty 标记，区分只重绘、需要 layout、需要重新测量文本。
 
 ## Lexbor 说明
