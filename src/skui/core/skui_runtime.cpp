@@ -28,7 +28,10 @@ void rebindParents(Node& node, Node* parent) {
 }
 
 bool isRenderableNode(const Node& node) {
-    return node.style.display != Display::None && node.layout.w > 0.0f && node.layout.h > 0.0f;
+    return node.style.display != Display::None &&
+           node.style.visibility != Visibility::Hidden &&
+           node.layout.w > 0.0f &&
+           node.layout.h > 0.0f;
 }
 
 Node* hitTest(Node& node, float x, float y) {
@@ -108,6 +111,30 @@ const Node* findById(const Node& node, std::string_view id) {
         }
     }
     return nullptr;
+}
+
+bool containsNode(const Node& root, const Node* node) {
+    if (!node) {
+        return false;
+    }
+    if (&root == node) {
+        return true;
+    }
+    for (const auto& child : root.children) {
+        if (containsNode(*child, node)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::optional<size_t> childIndex(Node& parent, const Node& child) {
+    for (size_t i = 0; i < parent.children.size(); ++i) {
+        if (parent.children[i].get() == &child) {
+            return i;
+        }
+    }
+    return std::nullopt;
 }
 
 bool updateStateTree(Node& node, const std::vector<Node*>& hovered, const std::vector<Node*>& active) {
@@ -882,6 +909,42 @@ std::string editableText(Node& node, std::string text) {
     return isTextareaNode(&node) ? multilineText(std::move(text)) : singleLineText(std::move(text));
 }
 
+bool isDisplayDeclaration(std::string_view declaration) {
+    const size_t colon = declaration.find(':');
+    if (colon == std::string_view::npos) {
+        return false;
+    }
+    return lowerAscii(trim(declaration.substr(0, colon))) == "display";
+}
+
+std::string styleWithDisplay(std::string_view declarations, bool visible) {
+    std::string updated;
+    size_t start = 0;
+    while (start < declarations.size()) {
+        const size_t end = declarations.find(';', start);
+        const std::string_view declaration =
+            end == std::string_view::npos
+                ? declarations.substr(start)
+                : declarations.substr(start, end - start);
+        const std::string trimmed = trim(declaration);
+        if (!trimmed.empty() && !isDisplayDeclaration(trimmed)) {
+            if (!updated.empty() && updated.back() != ';') {
+                updated += "; ";
+            }
+            updated += trimmed;
+        }
+        if (end == std::string_view::npos) {
+            break;
+        }
+        start = end + 1;
+    }
+    if (!updated.empty() && updated.back() != ';') {
+        updated += "; ";
+    }
+    updated += visible ? "display: flex" : "display: none";
+    return updated;
+}
+
 void syncNodeAttribute(Node& node, const std::string& name) {
     auto it = node.attributes.find(name);
     const bool hasValue = it != node.attributes.end();
@@ -1079,6 +1142,81 @@ public:
         entry.size = input.value.size();
         buildEditableLines(input.value, entry.lines);
         return entry.lines;
+    }
+
+    bool loadFragment(std::string_view html,
+                      std::vector<std::unique_ptr<Node>>& nodes,
+                      std::vector<StyleRule>& rules) {
+        std::string error;
+        if (!parser.loadFragment(html, document.basePath, nodes, rules, error)) {
+            lastError = std::move(error);
+            return false;
+        }
+        if (nodes.empty() && rules.empty()) {
+            lastError = "HTML fragment did not contain elements";
+            return false;
+        }
+        return true;
+    }
+
+    void appendStyleRules(std::vector<StyleRule> rules) {
+        unsigned nextOrder = 0;
+        for (const StyleRule& rule : document.rules) {
+            nextOrder = std::max(nextOrder, rule.order + 1);
+        }
+        for (StyleRule& rule : rules) {
+            rule.order += nextOrder;
+            document.rules.push_back(std::move(rule));
+        }
+    }
+
+    void clearReferencesTo(const Node& subtree) {
+        if (containsNode(subtree, focusedNode)) {
+            setFocusedNode(nullptr);
+        }
+        if (containsNode(subtree, hoveredLeaf)) {
+            hoveredLeaf = nullptr;
+            currentCursor = Cursor::Default;
+        }
+        if (containsNode(subtree, pressedLeaf)) {
+            pressedLeaf = nullptr;
+            mousePressed = false;
+            pressedButton = MouseButton::None;
+        }
+        if (containsNode(subtree, selectingInput)) {
+            selectingInput = nullptr;
+        }
+        if (containsNode(subtree, selectingText)) {
+            selectingText = nullptr;
+        }
+        if (containsNode(subtree, selectedText)) {
+            selectedText = nullptr;
+        }
+        if (containsNode(subtree, scrollingNode)) {
+            scrollingNode = nullptr;
+            scrollingAxis = ScrollbarAxis::None;
+            scrollbarDragOffset = 0.0f;
+        }
+        for (auto it = editableLineCache.begin(); it != editableLineCache.end();) {
+            if (containsNode(subtree, it->first)) {
+                it = editableLineCache.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+
+    void finishDocumentMutation() {
+        renderer.clearNodeCaches();
+        editableLineCache.clear();
+        if (document.root) {
+            std::vector<Node*> hovered;
+            std::vector<Node*> active;
+            collectChain(hoveredLeaf, hovered);
+            collectChain(pressedLeaf, active);
+            updateStateTree(*document.root, hovered, active);
+        }
+        requestLayout();
     }
 
     RuntimeOptions options;
@@ -1892,6 +2030,126 @@ bool Runtime::removeAttributeById(std::string_view id, std::string_view name) {
     }
     syncNodeAttribute(*node, normalizedName);
     impl_->requestLayout();
+    return true;
+}
+
+bool Runtime::appendHtmlById(std::string_view parentId, std::string_view html) {
+    if (!impl_->hasDocument || !impl_->document.root || parentId.empty() || html.empty()) {
+        return false;
+    }
+    Node* parent = findById(*impl_->document.root, parentId);
+    if (!parent) {
+        return false;
+    }
+
+    std::vector<std::unique_ptr<Node>> nodes;
+    std::vector<StyleRule> rules;
+    if (!impl_->loadFragment(html, nodes, rules)) {
+        return false;
+    }
+    for (auto& node : nodes) {
+        rebindParents(*node, parent);
+        parent->children.push_back(std::move(node));
+    }
+    impl_->appendStyleRules(std::move(rules));
+    impl_->lastError.clear();
+    impl_->finishDocumentMutation();
+    return true;
+}
+
+bool Runtime::prependHtmlById(std::string_view parentId, std::string_view html) {
+    if (!impl_->hasDocument || !impl_->document.root || parentId.empty() || html.empty()) {
+        return false;
+    }
+    Node* parent = findById(*impl_->document.root, parentId);
+    if (!parent) {
+        return false;
+    }
+
+    std::vector<std::unique_ptr<Node>> nodes;
+    std::vector<StyleRule> rules;
+    if (!impl_->loadFragment(html, nodes, rules)) {
+        return false;
+    }
+    const auto insertAt = parent->children.begin();
+    auto current = insertAt;
+    for (auto& node : nodes) {
+        rebindParents(*node, parent);
+        current = parent->children.insert(current, std::move(node));
+        ++current;
+    }
+    impl_->appendStyleRules(std::move(rules));
+    impl_->lastError.clear();
+    impl_->finishDocumentMutation();
+    return true;
+}
+
+bool Runtime::replaceHtmlById(std::string_view id, std::string_view html) {
+    if (!impl_->hasDocument || !impl_->document.root || id.empty() || html.empty()) {
+        return false;
+    }
+    Node* node = findById(*impl_->document.root, id);
+    if (!node || !node->parent) {
+        return false;
+    }
+    Node* parent = node->parent;
+    const std::optional<size_t> index = childIndex(*parent, *node);
+    if (!index) {
+        return false;
+    }
+
+    std::vector<std::unique_ptr<Node>> nodes;
+    std::vector<StyleRule> rules;
+    if (!impl_->loadFragment(html, nodes, rules)) {
+        return false;
+    }
+    impl_->clearReferencesTo(*node);
+    auto insertAt = parent->children.erase(parent->children.begin() + static_cast<ptrdiff_t>(*index));
+    for (auto& replacement : nodes) {
+        rebindParents(*replacement, parent);
+        insertAt = parent->children.insert(insertAt, std::move(replacement));
+        ++insertAt;
+    }
+    impl_->appendStyleRules(std::move(rules));
+    impl_->lastError.clear();
+    impl_->finishDocumentMutation();
+    return true;
+}
+
+bool Runtime::removeElementById(std::string_view id) {
+    if (!impl_->hasDocument || !impl_->document.root || id.empty()) {
+        return false;
+    }
+    Node* node = findById(*impl_->document.root, id);
+    if (!node || !node->parent) {
+        return false;
+    }
+    Node* parent = node->parent;
+    const std::optional<size_t> index = childIndex(*parent, *node);
+    if (!index) {
+        return false;
+    }
+
+    impl_->clearReferencesTo(*node);
+    parent->children.erase(parent->children.begin() + static_cast<ptrdiff_t>(*index));
+    impl_->lastError.clear();
+    impl_->finishDocumentMutation();
+    return true;
+}
+
+bool Runtime::setVisibleById(std::string_view id, bool visible) {
+    if (!impl_->hasDocument || !impl_->document.root || id.empty()) {
+        return false;
+    }
+    Node* node = findById(*impl_->document.root, id);
+    if (!node) {
+        return false;
+    }
+    const std::string nextStyle = styleWithDisplay(node->attributes["style"], visible);
+    node->attributes["style"] = nextStyle;
+    syncNodeAttribute(*node, "style");
+    impl_->lastError.clear();
+    impl_->finishDocumentMutation();
     return true;
 }
 

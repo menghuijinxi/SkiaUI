@@ -1,0 +1,320 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    .screen {
+      flex-grow: 1;
+      position: relative;
+      background-color: #f4f7fb;
+      color: #172033;
+      font-size: 16px;
+    }
+    .title {
+      position: absolute;
+      left: 36px;
+      top: 28px;
+      width: 420px;
+      height: 34px;
+      font-size: 24px;
+      font-weight: bold;
+    }
+    .subtitle {
+      position: absolute;
+      left: 36px;
+      top: 66px;
+      width: 920px;
+      height: 24px;
+      color: #5d6b7c;
+      font-size: 15px;
+    }
+    .toolbar {
+      position: absolute;
+      left: 36px;
+      top: 116px;
+      width: 360px;
+      height: 430px;
+      background-color: #ffffff;
+      border-color: #d4dde7;
+      border-width: 1px;
+      border-style: solid;
+      border-radius: 8px;
+    }
+    .toolbar-title {
+      position: absolute;
+      left: 22px;
+      top: 18px;
+      width: 260px;
+      height: 26px;
+      font-size: 17px;
+      font-weight: bold;
+    }
+    .button {
+      position: absolute;
+      left: 22px;
+      width: 316px;
+      height: 44px;
+      border-radius: 7px;
+      border-width: 1px;
+      border-style: solid;
+      font-size: 14px;
+      font-weight: bold;
+      align-items: center;
+      justify-content: center;
+    }
+    .button-primary {
+      background-color: #1769e0;
+      border-color: #1769e0;
+      color: #ffffff;
+    }
+    .button-secondary {
+      background-color: #eef4ff;
+      border-color: #b8cff6;
+      color: #174a8f;
+    }
+    .button-danger {
+      background-color: #fff1f1;
+      border-color: #efb6b6;
+      color: #a32929;
+    }
+    .button:hover {
+      background-color: #dceaff;
+    }
+    .button-primary:hover {
+      background-color: #0f5bc6;
+    }
+    .button-danger:hover {
+      background-color: #ffe4e4;
+    }
+    .counter {
+      position: absolute;
+      left: 22px;
+      top: 346px;
+      width: 316px;
+      height: 24px;
+      color: #657285;
+      font-size: 14px;
+    }
+    .status {
+      position: absolute;
+      left: 22px;
+      top: 374px;
+      width: 316px;
+      height: 42px;
+      color: #657285;
+      font-size: 13px;
+    }
+    .stage {
+      position: absolute;
+      left: 432px;
+      top: 116px;
+      right: 36px;
+      bottom: 36px;
+      background-color: #ffffff;
+      border-color: #d4dde7;
+      border-width: 1px;
+      border-style: solid;
+      border-radius: 8px;
+    }
+    .stage-title {
+      position: absolute;
+      left: 24px;
+      top: 20px;
+      width: 360px;
+      height: 28px;
+      font-size: 18px;
+      font-weight: bold;
+    }
+    .stage-note {
+      position: absolute;
+      left: 24px;
+      top: 54px;
+      width: 700px;
+      height: 22px;
+      color: #657285;
+      font-size: 14px;
+    }
+    .notice-card {
+      position: absolute;
+      left: 24px;
+      top: 94px;
+      right: 24px;
+      height: 82px;
+      background-color: #eaf7ee;
+      border-color: #9ccfad;
+      border-width: 1px;
+      border-style: solid;
+      border-radius: 8px;
+    }
+    .notice-title {
+      position: absolute;
+      left: 18px;
+      top: 15px;
+      width: 360px;
+      height: 24px;
+      color: #185c2c;
+      font-size: 16px;
+      font-weight: bold;
+    }
+    .notice-text {
+      position: absolute;
+      left: 18px;
+      top: 44px;
+      width: 700px;
+      height: 22px;
+      color: #367247;
+      font-size: 14px;
+    }
+    .list {
+      position: absolute;
+      left: 24px;
+      top: 204px;
+      right: 24px;
+      bottom: 24px;
+      background-color: #f8fafc;
+      border-color: #e1e7ef;
+      border-width: 1px;
+      border-style: solid;
+      border-radius: 8px;
+    }
+    .list-title {
+      position: absolute;
+      left: 18px;
+      top: 14px;
+      width: 340px;
+      height: 24px;
+      color: #263348;
+      font-size: 16px;
+      font-weight: bold;
+    }
+    .list-note {
+      position: absolute;
+      left: 18px;
+      top: 40px;
+      width: 720px;
+      height: 20px;
+      color: #657285;
+      font-size: 13px;
+    }
+    .message-viewport {
+      position: absolute;
+      left: 18px;
+      top: 72px;
+      right: 18px;
+      bottom: 18px;
+      overflow-y: auto;
+      overflow-x: hidden;
+      scrollbar-gutter: stable;
+      background-color: #f1f5f9;
+      border-color: #d7e0ea;
+      border-width: 1px;
+      border-style: solid;
+      border-radius: 7px;
+    }
+    .message-list {
+      flex-direction: column;
+      padding: 12px;
+    }
+    .message {
+      height: 58px;
+      margin-bottom: 10px;
+      flex-shrink: 0;
+      background-color: #ffffff;
+      border-color: #d7e0ea;
+      border-width: 1px;
+      border-style: solid;
+      border-radius: 7px;
+    }
+    .message-name {
+      position: absolute;
+      left: 16px;
+      top: 9px;
+      width: 260px;
+      height: 22px;
+      color: #172033;
+      font-size: 15px;
+      font-weight: bold;
+    }
+    .message-text {
+      position: absolute;
+      left: 16px;
+      top: 31px;
+      width: 620px;
+      height: 20px;
+      color: #657285;
+      font-size: 13px;
+    }
+    .message-replaced {
+      background-color: #fff8df;
+      border-color: #e9c75d;
+    }
+  </style>
+</head>
+<body>
+  <div class="screen">
+    <div class="title">Dynamic DOM Demo</div>
+    <div class="subtitle">Tests display none, visibility hidden, append, replace, delete, auto layout and scrollbars.</div>
+
+    <div class="toolbar">
+      <div class="toolbar-title">Operations</div>
+      <button class="button button-primary" style="top:58px" data-action="toggle-notice">Show / Hide Notice</button>
+      <button class="button button-secondary" style="top:108px" data-action="toggle-display">Toggle Message 2 display:none</button>
+      <button class="button button-secondary" style="top:158px" data-action="toggle-visibility">Toggle Message 3 visibility:hidden</button>
+      <button class="button button-secondary" style="top:208px" data-action="add-message">Add Message</button>
+      <button class="button button-secondary" style="top:258px" data-action="replace-message">Replace First Message</button>
+      <button class="button button-danger" style="top:308px" data-action="remove-message">Delete Latest Message</button>
+      <div id="message-count" class="counter">Messages: 8</div>
+      <div id="demo-status" class="status">Message 2 affects layout. Message 3 keeps its slot.</div>
+    </div>
+
+    <div class="stage">
+      <div class="stage-title">Live area</div>
+      <div class="stage-note">The list below uses normal column layout; scrollbar metrics update after DOM mutations.</div>
+      <div id="notice-card" class="notice-card">
+        <div class="notice-title">Visible card</div>
+        <div class="notice-text">This block uses display none, so hidden state removes it from layout and hit testing.</div>
+      </div>
+      <div class="list">
+        <div class="list-title">Messages</div>
+        <div class="list-note">Scrollbar should appear, shrink and grow as items are hidden, added or removed.</div>
+        <div id="message-viewport" class="message-viewport">
+          <div id="message-list" class="message-list">
+            <div id="message-1" class="message">
+              <div class="message-name">Message 1</div>
+              <div class="message-text">Initial DOM node from the HTML file.</div>
+            </div>
+            <div id="message-2" class="message">
+              <div class="message-name">Message 2</div>
+              <div class="message-text">display:none removes this item and collapses the layout.</div>
+            </div>
+            <div id="message-3" class="message">
+              <div class="message-name">Message 3</div>
+              <div class="message-text">visibility:hidden hides this item but preserves its layout slot.</div>
+            </div>
+            <div id="message-4" class="message">
+              <div class="message-name">Message 4</div>
+              <div class="message-text">Initial item used to keep the viewport scrollable.</div>
+            </div>
+            <div id="message-5" class="message">
+              <div class="message-name">Message 5</div>
+              <div class="message-text">Initial item used to keep the viewport scrollable.</div>
+            </div>
+            <div id="message-6" class="message">
+              <div class="message-name">Message 6</div>
+              <div class="message-text">Initial item used to keep the viewport scrollable.</div>
+            </div>
+            <div id="message-7" class="message">
+              <div class="message-name">Message 7</div>
+              <div class="message-text">Initial item used to keep the viewport scrollable.</div>
+            </div>
+            <div id="message-8" class="message">
+              <div class="message-name">Message 8</div>
+              <div class="message-text">Initial item used to keep the viewport scrollable.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

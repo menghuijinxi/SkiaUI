@@ -28,6 +28,13 @@ struct HtmlDocumentDeleter {
 
 using HtmlDocumentPtr = std::unique_ptr<lxb_html_document_t, HtmlDocumentDeleter>;
 
+void rebindParents(Node& node, Node* parent) {
+    node.parent = parent;
+    for (auto& child : node.children) {
+        rebindParents(*child, &node);
+    }
+}
+
 std::string lower(std::string value) {
     std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
         return static_cast<char>(std::tolower(ch));
@@ -340,6 +347,10 @@ void mergeStyle(Style& target, const Style& source) {
     if (f.display) {
         target.display = source.display;
         target.flags.display = true;
+    }
+    if (f.visibility) {
+        target.visibility = source.visibility;
+        target.flags.visibility = true;
     }
     if (f.position) {
         target.position = source.position;
@@ -721,6 +732,9 @@ void applyInheritedStyle(Node& node, const RuntimeOptions& options) {
         if (!node.style.flags.cursor) {
             node.style.cursor = parent.cursor;
         }
+        if (!node.style.flags.visibility) {
+            node.style.visibility = parent.visibility;
+        }
     }
 
     if (node.tag == "text" || node.tag == "span" || node.tag == "label" || node.tag == "button" ||
@@ -887,6 +901,9 @@ void applyDeclaration(Style& style, std::string_view rawName, std::string_view r
     if (name == "display") {
         style.display = lower(value) == "none" ? Display::None : Display::Flex;
         style.flags.display = true;
+    } else if (name == "visibility") {
+        style.visibility = lower(value) == "hidden" ? Visibility::Hidden : Visibility::Visible;
+        style.flags.visibility = true;
     } else if (name == "position") {
         const std::string v = lower(value);
         if (v == "absolute") {
@@ -1547,6 +1564,27 @@ bool DocumentParser::loadString(std::string_view html,
     RuntimeOptions styleOptions;
     styleOptions.theme = theme_;
     recomputeStyles(outDocument, styleOptions);
+    return true;
+}
+
+bool DocumentParser::loadFragment(std::string_view html,
+                                  std::string_view basePath,
+                                  std::vector<std::unique_ptr<Node>>& outNodes,
+                                  std::vector<StyleRule>& outRules,
+                                  std::string& error) {
+    Document fragmentDocument;
+    if (!loadString(html, basePath, fragmentDocument, error)) {
+        return false;
+    }
+    outNodes.clear();
+    outRules = std::move(fragmentDocument.rules);
+    if (!fragmentDocument.root) {
+        return true;
+    }
+    outNodes = std::move(fragmentDocument.root->children);
+    for (auto& node : outNodes) {
+        rebindParents(*node, nullptr);
+    }
     return true;
 }
 

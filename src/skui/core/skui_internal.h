@@ -53,6 +53,11 @@ enum class Display {
     None
 };
 
+enum class Visibility {
+    Visible,
+    Hidden
+};
+
 enum class Position {
     Relative,
     Absolute,
@@ -124,6 +129,7 @@ struct CornerRadii {
 struct Style {
     struct Flags {
         bool display = false;
+        bool visibility = false;
         bool position = false;
         bool flexDirection = false;
         bool flexWrap = false;
@@ -171,6 +177,7 @@ struct Style {
 
     Flags flags;
     Display display = Display::Flex;
+    Visibility visibility = Visibility::Visible;
     Position position = Position::Relative;
     YGFlexDirection flexDirection = YGFlexDirectionColumn;
     YGWrap flexWrap = YGWrapNoWrap;
@@ -309,6 +316,11 @@ public:
 
     bool loadFile(const std::string& path, Document& outDocument, std::string& error);
     bool loadString(std::string_view html, std::string_view basePath, Document& outDocument, std::string& error);
+    bool loadFragment(std::string_view html,
+                      std::string_view basePath,
+                      std::vector<std::unique_ptr<Node>>& outNodes,
+                      std::vector<StyleRule>& outRules,
+                      std::string& error);
 
 private:
     Theme theme_;
@@ -329,6 +341,7 @@ public:
     ~SkiaRenderer();
     void draw(Document& document, SkCanvas& canvas, int width, int height, float dpiScale);
     void clearCaches();
+    void clearNodeCaches();
     void shutdownCaches();
     size_t textIndexAtOffset(std::string_view value, float size, bool bold, float offset);
     float textStartX(const Node& node, std::string_view value);

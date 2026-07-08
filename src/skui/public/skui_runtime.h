@@ -166,6 +166,11 @@ public:
     bool setAttributesById(const std::vector<AttributeUpdate>& updates);
     bool applyUpdates(const RuntimeUpdates& updates);
     bool removeAttributeById(std::string_view id, std::string_view name);
+    bool appendHtmlById(std::string_view parentId, std::string_view html);
+    bool prependHtmlById(std::string_view parentId, std::string_view html);
+    bool replaceHtmlById(std::string_view id, std::string_view html);
+    bool removeElementById(std::string_view id);
+    bool setVisibleById(std::string_view id, bool visible);
     [[nodiscard]] bool hasClassById(std::string_view id, std::string_view className) const;
     void setElementEventCallback(ElementEventCallback callback);
 

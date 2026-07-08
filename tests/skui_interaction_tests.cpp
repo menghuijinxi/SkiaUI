@@ -1023,6 +1023,156 @@ int main() {
     ok = expect(squareBottomLeft == solidColor(0xAB, 0xCD, 0xEF), "border-radius shorthand should keep the bottom-left corner square") && ok;
     ok = expect(squareBottomRight == solidColor(0xAB, 0xCD, 0xEF), "border-radius shorthand should keep the bottom-right corner square") && ok;
 
+    constexpr std::string_view dynamicDomHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      position: relative;
+      width: 140px;
+      height: 90px;
+      background-color: #000000;
+    }
+    .dock {
+      position: absolute;
+      left: 0px;
+      top: 0px;
+      width: 140px;
+      height: 90px;
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <div id="messages" class="dock"></div>
+  </div>
+</body>
+</html>
+)html";
+    skui::Runtime dynamicDomRuntime(options);
+    dynamicDomRuntime.resize(kWidth, kHeight, 1.0f);
+    if (!dynamicDomRuntime.loadDocumentFromString(dynamicDomHtml, "")) {
+        std::cerr << "dynamic DOM load failed: " << dynamicDomRuntime.lastError() << "\n";
+        return 1;
+    }
+
+    uint32_t dynamicPixel = 0;
+    ok = renderPixel(dynamicDomRuntime, 10, 10, dynamicPixel) && ok;
+    ok = expect(dynamicPixel == solidColor(0x00, 0x00, 0x00),
+                "empty dynamic container should render background") && ok;
+    ok = expect(dynamicDomRuntime.appendHtmlById(
+                    "messages",
+                    R"html(<div id="first" style="position: absolute; left: 0px; top: 0px; width: 20px; height: 20px; background-color: #112233"></div>)html"),
+                "appendHtmlById should append a new element") && ok;
+    ok = renderPixel(dynamicDomRuntime, 10, 10, dynamicPixel) && ok;
+    ok = expect(dynamicPixel == solidColor(0x11, 0x22, 0x33),
+                "appended dynamic element should render") && ok;
+    ok = expect(dynamicDomRuntime.appendHtmlById(
+                    "messages",
+                    R"html(<div id="last" style="position: absolute; left: 0px; top: 0px; width: 20px; height: 20px; background-color: #445566"></div>)html"),
+                "appendHtmlById should draw appended siblings later") && ok;
+    ok = renderPixel(dynamicDomRuntime, 10, 10, dynamicPixel) && ok;
+    ok = expect(dynamicPixel == solidColor(0x44, 0x55, 0x66),
+                "appended sibling should paint above earlier sibling") && ok;
+    ok = expect(dynamicDomRuntime.prependHtmlById(
+                    "messages",
+                    R"html(<div id="prepended" style="position: absolute; left: 0px; top: 0px; width: 20px; height: 20px; background-color: #778899"></div>)html"),
+                "prependHtmlById should insert before existing children") && ok;
+    ok = renderPixel(dynamicDomRuntime, 10, 10, dynamicPixel) && ok;
+    ok = expect(dynamicPixel == solidColor(0x44, 0x55, 0x66),
+                "prepended sibling should stay behind later siblings") && ok;
+    ok = expect(dynamicDomRuntime.replaceHtmlById(
+                    "last",
+                    R"html(<div id="replacement" style="position: absolute; left: 0px; top: 0px; width: 20px; height: 20px; background-color: #AABBCC"></div>)html"),
+                "replaceHtmlById should replace an existing element") && ok;
+    ok = renderPixel(dynamicDomRuntime, 10, 10, dynamicPixel) && ok;
+    ok = expect(dynamicPixel == solidColor(0xAA, 0xBB, 0xCC),
+                "replacement dynamic element should render") && ok;
+    ok = expect(dynamicDomRuntime.setVisibleById("replacement", false),
+                "setVisibleById should hide an element") && ok;
+    ok = renderPixel(dynamicDomRuntime, 10, 10, dynamicPixel) && ok;
+    ok = expect(dynamicPixel == solidColor(0x11, 0x22, 0x33),
+                "hidden dynamic element should not render") && ok;
+    ok = expect(dynamicDomRuntime.setVisibleById("replacement", true),
+                "setVisibleById should show an element again") && ok;
+    ok = renderPixel(dynamicDomRuntime, 10, 10, dynamicPixel) && ok;
+    ok = expect(dynamicPixel == solidColor(0xAA, 0xBB, 0xCC),
+                "shown dynamic element should render again") && ok;
+    ok = expect(dynamicDomRuntime.removeElementById("replacement"),
+                "removeElementById should remove an element") && ok;
+    ok = renderPixel(dynamicDomRuntime, 10, 10, dynamicPixel) && ok;
+    ok = expect(dynamicPixel == solidColor(0x11, 0x22, 0x33),
+                "removed dynamic element should no longer render") && ok;
+
+    constexpr std::string_view visibilityHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      position: relative;
+      width: 140px;
+      height: 90px;
+      background-color: #000000;
+    }
+    .stack {
+      position: absolute;
+      left: 0px;
+      top: 0px;
+      width: 140px;
+      flex-direction: column;
+    }
+    .slot {
+      width: 40px;
+      height: 20px;
+      flex-shrink: 0;
+    }
+    .hidden-slot {
+      visibility: hidden;
+      background-color: #112233;
+    }
+    .child-fill {
+      position: absolute;
+      left: 0px;
+      top: 0px;
+      width: 40px;
+      height: 20px;
+      background-color: #445566;
+    }
+    .after-slot {
+      background-color: #778899;
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <div class="stack">
+      <div id="hidden-slot" class="slot hidden-slot">
+        <div class="child-fill"></div>
+      </div>
+      <div id="after-slot" class="slot after-slot"></div>
+    </div>
+  </div>
+</body>
+</html>
+)html";
+
+    skui::Runtime visibilityRuntime(options);
+    visibilityRuntime.resize(kWidth, kHeight, 1.0f);
+    if (!visibilityRuntime.loadDocumentFromString(visibilityHtml, "")) {
+        std::cerr << "visibility load failed: " << visibilityRuntime.lastError() << "\n";
+        return 1;
+    }
+    uint32_t hiddenSlotPixel = 0;
+    uint32_t preservedLayoutPixel = 0;
+    ok = renderPixel(visibilityRuntime, 10, 10, hiddenSlotPixel) && ok;
+    ok = renderPixel(visibilityRuntime, 10, 30, preservedLayoutPixel) && ok;
+    ok = expect(hiddenSlotPixel == solidColor(0x00, 0x00, 0x00),
+                "visibility:hidden should hide descendants") && ok;
+    ok = expect(preservedLayoutPixel == solidColor(0x77, 0x88, 0x99),
+                "visibility:hidden should preserve layout space") && ok;
+
     const std::filesystem::path imageFixtureDir = std::filesystem::temp_directory_path() / "skui-image-test";
     std::error_code ec;
     std::filesystem::create_directories(imageFixtureDir, ec);

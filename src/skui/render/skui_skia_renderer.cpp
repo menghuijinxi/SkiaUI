@@ -337,9 +337,13 @@ void SkiaRenderer::clearCaches() {
     svgFileCache_.clear();
     svgDomCache_.clear();
     textCache_.clear();
+    clearNodeCaches();
+    bitmapState_.reset();
+}
+
+void SkiaRenderer::clearNodeCaches() {
     textLineCache_.clear();
     boxCache_.clear();
-    bitmapState_.reset();
 }
 
 void SkiaRenderer::shutdownCaches() {
@@ -491,7 +495,8 @@ void SkiaRenderer::drawNode(SkCanvas& canvas, const Document& document, const No
         return;
     }
 
-    if (!rejected) {
+    const bool drawsSelf = node.style.visibility != Visibility::Hidden;
+    if (!rejected && drawsSelf) {
         auto start = traceRender_ ? perf::Trace::now() : perf::Trace::Clock::time_point{};
         drawBox(canvas, node);
         if (traceRender_) {
