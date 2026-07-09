@@ -376,6 +376,8 @@ ui.setElementEventCallback([&ui](const skui::ElementEvent& event) {
 
 聊天记录、日志查看器这类只读文本建议使用 `selectable`。单个 `selectable` 节点内支持显式换行、多行拖选、分行高亮和 `Ctrl+C`；如果运行时写入带 `\n` 的文本，应使用 `setValueById` 保留换行。当前选择范围不会跨多个 DOM 节点，跨消息连续框选需要业务层合并为同一个 `selectable` 或后续扩展跨节点选择模型。
 
+同一条消息里需要超链接时，保持一个 `selectable`，用 `data-links` 标记链接区间。`data-links` 每行格式为 `start:end:action`，偏移按 `value` 的 UTF-8 字节序计算；点击区间会发出 `Click` 事件，`event.action` 为对应动作，常见做法是用 `open-url:https://...` 这类业务前缀交给宿主打开浏览器。这样链接绘制、点击和多行框选可以共存在同一个文本节点内。
+
 ### 下拉框
 
 SkUI 目前没有浏览器原生 `select` 行为。下拉框建议用普通 DOM 节点写样式，用 `skui::DropdownState` 管理状态。

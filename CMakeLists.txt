@@ -115,6 +115,9 @@ if(SKIAUI_BUILD_TESTS)
     add_executable(SkuiInteractionTests
         tests/skui_interaction_tests.cpp
     )
+    add_executable(SkuiSelectableLinkTests
+        tests/skui_selectable_link_tests.cpp
+    )
 endif()
 
 target_include_directories(Skui PUBLIC
@@ -443,6 +446,10 @@ if(SKIAUI_BUILD_TESTS)
         Skui
         usp10
     )
+    target_link_libraries(SkuiSelectableLinkTests PRIVATE
+        Skui
+        usp10
+    )
 
     if(SKIAUI_BUILD_WIN32)
         target_link_libraries(SkuiInteractionTests PRIVATE
@@ -452,10 +459,15 @@ if(SKIAUI_BUILD_TESTS)
 
     if(MSVC)
         target_compile_options(SkuiInteractionTests PRIVATE /utf-8 /permissive- /Zc:__cplusplus)
+        target_compile_options(SkuiSelectableLinkTests PRIVATE /utf-8 /permissive- /Zc:__cplusplus)
     endif()
 
     if(BUILD_TESTING)
         add_test(NAME SkuiInteractionTests COMMAND SkuiInteractionTests)
+        add_test(NAME SkuiSelectableLinkTests COMMAND SkuiSelectableLinkTests)
+        set_tests_properties(SkuiInteractionTests SkuiSelectableLinkTests PROPERTIES
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        )
     endif()
 endif()
 

@@ -177,6 +177,47 @@ std::string attributeValue(const std::unordered_map<std::string, std::string>& a
     return it == attributes.end() ? std::string{} : it->second;
 }
 
+std::vector<Node::TextLink> parseTextLinks(std::string_view raw, size_t textSize) {
+    std::vector<Node::TextLink> links;
+    size_t start = 0;
+    while (start <= raw.size()) {
+        const size_t end = raw.find('\n', start);
+        const std::string_view row(raw.data() + start,
+                                   (end == std::string_view::npos ? raw.size() : end) - start);
+        const size_t first = row.find(':');
+        const size_t second = first == std::string_view::npos
+            ? std::string_view::npos
+            : row.find(':', first + 1);
+        if (first != std::string_view::npos && second != std::string_view::npos) {
+            size_t linkStart = 0;
+            size_t linkEnd = 0;
+            const std::string startText(row.substr(0, first));
+            const std::string endText(row.substr(first + 1, second - first - 1));
+            const auto startResult = std::from_chars(startText.data(),
+                                                     startText.data() + startText.size(),
+                                                     linkStart);
+            const auto endResult = std::from_chars(endText.data(),
+                                                   endText.data() + endText.size(),
+                                                   linkEnd);
+            if (startResult.ec == std::errc{} &&
+                endResult.ec == std::errc{} &&
+                linkStart < linkEnd &&
+                linkEnd <= textSize) {
+                links.push_back(Node::TextLink{
+                    linkStart,
+                    linkEnd,
+                    std::string(row.substr(second + 1)),
+                });
+            }
+        }
+        if (end == std::string_view::npos) {
+            break;
+        }
+        start = end + 1;
+    }
+    return links;
+}
+
 float attributeFloat(const std::unordered_map<std::string, std::string>& attributes, std::string_view name, float fallback) {
     float out = fallback;
     const std::string value = attributeValue(attributes, name);
@@ -1766,7 +1807,6 @@ std::unique_ptr<Node> convertElement(lxb_dom_element_t* element, Node* parent, s
     node->numericMax = std::max(0.0001f, attributeFloat(node->attributes, "max", 1.0f));
     node->virtualContentWidth = std::max(0.0f, attributeFloat(node->attributes, "data-virtual-width", 0.0f));
     node->virtualContentHeight = std::max(0.0f, attributeFloat(node->attributes, "data-virtual-height", 0.0f));
-
     const std::string inlineStyle = attributeValue(node->attributes, "style");
     if (!inlineStyle.empty()) {
         parseDeclarations(inlineStyle, node->inlineStyle);
@@ -1795,6 +1835,11 @@ std::unique_ptr<Node> convertElement(lxb_dom_element_t* element, Node* parent, s
                 node->children.push_back(std::move(childNode));
             }
         }
+    }
+    const std::string links = attributeValue(node->attributes, "data-links");
+    if (!links.empty()) {
+        const std::string& textValue = !node->value.empty() ? node->value : node->text;
+        node->textLinks = parseTextLinks(links, textValue.size());
     }
     return node;
 }

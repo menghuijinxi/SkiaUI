@@ -263,6 +263,12 @@ struct Node {
         size_t selectionEnd = 0;
     };
 
+    struct TextLink {
+        size_t start = 0;
+        size_t end = 0;
+        std::string action;
+    };
+
     std::string tag;
     std::string id;
     std::vector<std::string> classes;
@@ -278,6 +284,7 @@ struct Node {
     float numericMax = 1.0f;
     float virtualContentWidth = 0.0f;
     float virtualContentHeight = 0.0f;
+    std::vector<TextLink> textLinks;
     std::unordered_map<std::string, std::string> attributes;
     Style style;
     Style inlineStyle;
@@ -411,6 +418,7 @@ private:
         uint64_t revision = 0;
         const std::string* value = nullptr;
         size_t size = 0;
+        float maxWidth = -1.0f;
         std::vector<TextLine> lines;
     };
 

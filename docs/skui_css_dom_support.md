@@ -20,7 +20,7 @@
 | `button` | 普通可命中节点，可通过 `data-action` 发出事件 |
 | `input` | 单行输入框，支持焦点、光标、选区、剪贴板、IME、Ctrl+Z |
 | `textarea` | 多行输入框，复用输入框行为，支持换行、选区、剪贴板、IME、Ctrl+Z |
-| `selectable` | 可框选复制文本标签，支持单节点显式多行文本；普通文本默认不可选中 |
+| `selectable` | 可框选复制文本标签，支持单节点显式多行文本和 `data-links` 文本区间超链接；普通文本默认不可选中 |
 | `progress` | 进度条，`value` / `max` 控制填充比例 |
 | `img` | 加载本地图片资源；SVG 走 SVG DOM，位图走异步加载 |
 | `svg` | 内联 SVG，由 Skia SVG DOM 绘制 |
@@ -35,6 +35,7 @@
 | `class` | 支持多 class，参与 CSS 匹配 |
 | `style` | 内联 CSS 声明，优先级高于 `<style>` 规则 |
 | `data-action` | 命中事件回调中的业务动作名 |
+| `data-links` | `selectable` 专用文本区间动作表，格式为每行 `start:end:action`，区间按 `value` 的 UTF-8 字节偏移计算 |
 | `value` | 输入框值；进度条当前值 |
 | `max` | 进度条最大值 |
 | `placeholder` | 输入框占位文本 |
@@ -202,6 +203,17 @@
 
 `selectable` 支持拖拽选择、双击选中单词或单个非 ASCII 字符、`Ctrl+A`、`Ctrl+C`。同一个 `selectable` 节点内的显式换行文本支持多行选择和分行高亮；当前不支持像浏览器一样跨多个 DOM 节点连续框选。
 
+`selectable` 可以通过 `data-links` 给文本中的局部区间绑定动作。格式是一行一个区间：`start:end:action`，其中 `start` 和 `end` 是 `value` 字符串里的 UTF-8 字节偏移，`end` 不包含在区间内。点击链接区间且没有拖出选区时，会向 `RuntimeOptions::onElementEvent` 发出 `Click` 事件，`event.action` 为该区间动作，`event.text` 为区间文本，`event.value` 为完整文本。拖拽选择仍按普通 `selectable` 处理，`Ctrl+C` 会复制完整选区文本，不会被链接区间拆断。
+
+```html
+<selectable
+  value="first&#10;open link&#10;last"
+  data-links="6:15:open-url:https://example.com">
+</selectable>
+```
+
+建议聊天消息、日志项这类内容保持“一条消息一个 `selectable`”。需要超链接时只更新该节点的 `value` 和 `data-links`，不要把一条消息拆成多个 `selectable`，否则无法在同一条消息内部自然拖选多行文本。
+
 ## 图片和 SVG
 
 - `img[src]` 支持本地资源路径。`.svg` 文件按 SVG 文本读取；位图通过 Skia codec 支持 PNG、JPEG、WebP 和 BMP 异步读取和解码。
@@ -263,7 +275,7 @@
 
 - `setStyleById` 和 `RuntimeUpdates::styles` 会替换该节点完整内联 `style` 声明，不会与旧内联样式做增量合并。
 - `setTextById` 和 `RuntimeUpdates::texts` 更新节点文本；输入框、进度条和需要保留 `\n` 换行的 `selectable` 多行文本应通过 `setValueById` 或 `value` 属性更新。
-- `setAttributeById`、`setAttributesById`、`removeAttributeById` 会同步已知属性到内部状态，包括 `id`、`class`、`style`、`value`、`max`、`placeholder`、`src`、`data-action`、`data-virtual-width`、`data-virtual-height`。
+- `setAttributeById`、`setAttributesById`、`removeAttributeById` 会同步已知属性到内部状态，包括 `id`、`class`、`style`、`value`、`max`、`placeholder`、`src`、`data-action`、`data-links`、`data-virtual-width`、`data-virtual-height`。
 - `class` 属性更新后会重新参与选择器匹配；`style` 属性更新后会重新解析内联样式。
 - `applyUpdates` 会按样式、文本、属性的顺序批量应用，并只请求一次重新布局。
 - `appendHtmlById` / `prependHtmlById` 会把 HTML 片段插入到目标父节点子列表尾部或头部。

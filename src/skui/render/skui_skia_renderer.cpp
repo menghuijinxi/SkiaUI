@@ -141,6 +141,8 @@ bool isUtf8ContinuationByte(unsigned char ch) {
     return (ch & 0xC0) == 0x80;
 }
 
+size_t nextUtf8Boundary(std::string_view value, size_t index);
+
 bool isEditableNode(const Node& node) {
     return node.tag == "input" || node.tag == "textarea";
 }
@@ -172,10 +174,55 @@ void addLineSelectionRect(SkPathBuilder& path, float x, float y, float width, fl
     path.addRect(lineSelectionRect(x, y, width, height));
 }
 
+bool rangesIntersect(size_t leftStart, size_t leftEnd, size_t rightStart, size_t rightEnd) {
+    return leftStart < rightEnd && rightStart < leftEnd;
+}
+
 struct TextLineRange {
     size_t first = 0;
     size_t last = 0;
 };
+
+template <typename MeasureText>
+size_t findSelectableLineEnd(std::string_view value,
+                             size_t start,
+                             size_t hardEnd,
+                             float maxWidth,
+                             MeasureText measureText) {
+    if (maxWidth <= 0.0f || start >= hardEnd) {
+        return hardEnd;
+    }
+
+    size_t lineEnd = start;
+    size_t lastBreak = std::string_view::npos;
+    while (lineEnd < hardEnd) {
+        const size_t next = nextUtf8Boundary(value, lineEnd);
+        const std::string_view candidate(value.data() + start, next - start);
+        if (measureText(candidate) > maxWidth) {
+            break;
+        }
+        if (std::isspace(static_cast<unsigned char>(value[lineEnd])) != 0 ||
+            value[lineEnd] == '/' ||
+            value[lineEnd] == '-' ||
+            value[lineEnd] == '_' ||
+            value[lineEnd] == '?' ||
+            value[lineEnd] == '&' ||
+            value[lineEnd] == '=') {
+            lastBreak = next;
+        }
+        lineEnd = next;
+    }
+
+    if (lineEnd == hardEnd || lineEnd > start) {
+        if (lineEnd < hardEnd && lastBreak != std::string_view::npos &&
+            lastBreak > start) {
+            return lastBreak;
+        }
+        return lineEnd;
+    }
+
+    return nextUtf8Boundary(value, start);
+}
 
 TextLineRange visibleTextLineRange(const SkRect& content,
                                    const Rect& viewport,
@@ -1364,7 +1411,40 @@ void SkiaRenderer::drawText(SkCanvas& canvas, const Node& node) {
             const float baseline = selectableLineTop(content, lineHeight, lines.size(), i) +
                                    lineHeight * 0.5f -
                                    (entry.metrics.fAscent + entry.metrics.fDescent) * 0.5f;
-            canvas.drawTextBlob(entry.blob, textStartX(node, lineText), baseline, fill(textColor));
+            const float lineX = textStartX(node, lineText);
+            float segmentX = lineX;
+            size_t segmentStart = line.start;
+            for (const Node::TextLink& link : node.textLinks) {
+                if (!rangesIntersect(line.start, line.end, link.start, link.end)) {
+                    continue;
+                }
+                const size_t linkStart = std::max(line.start, link.start);
+                const size_t linkEnd = std::min(line.end, link.end);
+                if (segmentStart < linkStart) {
+                    const std::string_view plain(value->data() + segmentStart, linkStart - segmentStart);
+                    const TextEntry& plainEntry = textEntry(plain, node.style.fontSize, node.style.fontBold);
+                    canvas.drawTextBlob(plainEntry.blob, segmentX, baseline, fill(textColor));
+                    segmentX += plainEntry.width;
+                }
+                if (linkStart < linkEnd) {
+                    const std::string_view linked(value->data() + linkStart, linkEnd - linkStart);
+                    const TextEntry& linkedEntry = textEntry(linked, node.style.fontSize, node.style.fontBold);
+                    const SkColor linkColor = SkColorSetRGB(11, 105, 183);
+                    canvas.drawTextBlob(linkedEntry.blob, segmentX, baseline, fill(linkColor));
+                    canvas.drawLine(segmentX,
+                                    baseline + 2.0f,
+                                    segmentX + linkedEntry.width,
+                                    baseline + 2.0f,
+                                    stroke(linkColor, 1.0f));
+                    segmentX += linkedEntry.width;
+                }
+                segmentStart = linkEnd;
+            }
+            if (segmentStart < line.end) {
+                const std::string_view plain(value->data() + segmentStart, line.end - segmentStart);
+                const TextEntry& plainEntry = textEntry(plain, node.style.fontSize, node.style.fontBold);
+                canvas.drawTextBlob(plainEntry.blob, segmentX, baseline, fill(textColor));
+            }
         }
         canvas.restore();
         return;
@@ -1551,27 +1631,64 @@ const std::vector<SkiaRenderer::TextLine>& SkiaRenderer::textLines(const Node& n
     const bool cacheableValue = &value == &node.text ||
                                 &value == &node.value ||
                                 &value == &node.placeholder;
+    const SkRect content = contentRectForText(node);
+    const float maxLineWidth = content.width();
     TextLineCacheEntry& entry = textLineCache_[&node];
     if (cacheableValue &&
         entry.revision == node.textRevision &&
         entry.value == &value &&
-        entry.size == value.size()) {
+        entry.size == value.size() &&
+        entry.maxWidth == maxLineWidth) {
         return entry.lines;
     }
 
     entry.revision = node.textRevision;
     entry.value = cacheableValue ? &value : nullptr;
     entry.size = value.size();
+    entry.maxWidth = maxLineWidth;
     entry.lines.clear();
+
+    const auto appendWrappedTextLines = [&](size_t start, size_t hardEnd) {
+        size_t lineStart = start;
+        while (lineStart < hardEnd) {
+            const size_t lineEnd =
+                findSelectableLineEnd(value,
+                                      lineStart,
+                                      hardEnd,
+                                      maxLineWidth,
+                                      [&](std::string_view text) {
+                                          return textWidth(text,
+                                                           node.style.fontSize,
+                                                           node.style.fontBold);
+                                      });
+            entry.lines.push_back({lineStart, lineEnd});
+            lineStart = lineEnd;
+            while (lineStart < hardEnd &&
+                   std::isspace(static_cast<unsigned char>(value[lineStart])) != 0) {
+                ++lineStart;
+            }
+        }
+        if (start == hardEnd) {
+            entry.lines.push_back({hardEnd, hardEnd});
+        }
+    };
 
     size_t start = 0;
     for (size_t i = 0; i < value.size(); ++i) {
         if (value[i] == '\n') {
-            entry.lines.push_back({start, i});
+            if (node.tag == "selectable" || node.tag == "textarea") {
+                appendWrappedTextLines(start, i);
+            } else {
+                entry.lines.push_back({start, i});
+            }
             start = i + 1;
         }
     }
-    entry.lines.push_back({start, value.size()});
+    if (node.tag == "selectable" || node.tag == "textarea") {
+        appendWrappedTextLines(start, value.size());
+    } else {
+        entry.lines.push_back({start, value.size()});
+    }
     return entry.lines;
 }
 

@@ -514,6 +514,79 @@ int main() {
         ok = expect(buttonClicks == 2, "double-click press should also emit a button click") && ok;
     }
 
+    constexpr std::string_view mouseDownTargetHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      position: relative;
+      width: 220px;
+      height: 120px;
+    }
+    .panel {
+      position: absolute;
+      left: 10px;
+      top: 10px;
+      width: 90px;
+      height: 42px;
+      background-color: #dddddd;
+    }
+    .editor {
+      position: absolute;
+      left: 10px;
+      top: 68px;
+      width: 150px;
+      height: 32px;
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <div id="panel" class="panel">Panel</div>
+    <input id="editor" class="editor" value="">
+  </div>
+</body>
+</html>
+)html";
+    {
+        skui::Runtime mouseDownRuntime(options);
+        mouseDownRuntime.resize(kWidth, kHeight, 1.0f);
+        ok = expect(mouseDownRuntime.loadDocumentFromString(mouseDownTargetHtml),
+                    "mouse down target document should load") && ok;
+
+        int panelMouseDowns = 0;
+        int editorMouseDowns = 0;
+        std::string editorValue;
+        mouseDownRuntime.setElementEventCallback([&](const skui::ElementEvent& event) {
+            if (event.type == skui::ElementEventType::Input && event.id == "editor") {
+                editorValue = event.value;
+                return;
+            }
+            if (event.type != skui::ElementEventType::MouseDown) {
+                return;
+            }
+            if (event.id == "panel") {
+                ++panelMouseDowns;
+            } else if (event.id == "editor") {
+                ++editorMouseDowns;
+            }
+        });
+
+        sendMouse(mouseDownRuntime, skui::EventType::MouseDown, 20.0f, 20.0f);
+        sendMouse(mouseDownRuntime, skui::EventType::MouseUp, 20.0f, 20.0f);
+        ok = expect(panelMouseDowns == 1,
+                    "mouse down should be emitted for non-action hit elements") && ok;
+
+        sendMouse(mouseDownRuntime, skui::EventType::MouseDown, 20.0f, 78.0f);
+        sendMouse(mouseDownRuntime, skui::EventType::MouseUp, 20.0f, 78.0f);
+        sendText(mouseDownRuntime, "a");
+        ok = expect(editorMouseDowns == 1,
+                    "mouse down should be emitted for input elements") && ok;
+        ok = expect(editorValue == "a",
+                    "input should keep focus after mouse down callback") && ok;
+    }
+
 #ifdef _WIN32
     {
         skui::Runtime adapterRuntime(options);
@@ -1051,6 +1124,175 @@ int main() {
     sendKey(multilineSelectableRuntime, 'C', false, true);
     ok = expect(selectableClipboard == "alpha\nbeta\ngamma",
                 "selectable should support drag selection across explicit text lines") && ok;
+
+    constexpr std::string_view multilineSelectableValueHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      position: relative;
+      width: 140px;
+      height: 90px;
+      background-color: #000000;
+    }
+    selectable {
+      position: absolute;
+      left: 10px;
+      top: 10px;
+      width: 120px;
+      height: 70px;
+      color: #ffffff;
+      font-size: 16px;
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <selectable value="one&#10;two&#10;three"></selectable>
+  </div>
+</body>
+</html>
+)html";
+
+    selectableClipboard.clear();
+    skui::Runtime multilineSelectableValueRuntime(selectableOptions);
+    multilineSelectableValueRuntime.resize(kWidth, kHeight, 1.0f);
+    if (!multilineSelectableValueRuntime.loadDocumentFromString(multilineSelectableValueHtml, "")) {
+        std::cerr << "multiline selectable value load failed: "
+                  << multilineSelectableValueRuntime.lastError() << "\n";
+        return 1;
+    }
+    sendMouse(multilineSelectableValueRuntime, skui::EventType::MouseDown, 10.0f, 20.0f);
+    sendMouse(multilineSelectableValueRuntime, skui::EventType::MouseMove, 130.0f, 58.0f);
+    sendMouse(multilineSelectableValueRuntime, skui::EventType::MouseUp, 130.0f, 58.0f);
+    sendKey(multilineSelectableValueRuntime, 'C', false, true);
+    ok = expect(selectableClipboard == "one\ntwo\nthree",
+                "selectable value attribute should preserve explicit text lines") && ok;
+
+    constexpr std::string_view scrolledSelectableHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      position: relative;
+      width: 180px;
+      height: 120px;
+      background-color: #000000;
+    }
+    .scroller {
+      position: absolute;
+      left: 10px;
+      top: 10px;
+      width: 150px;
+      height: 80px;
+      overflow-y: auto;
+      background-color: #111111;
+    }
+    selectable {
+      position: absolute;
+      left: 0px;
+      top: 70px;
+      width: 130px;
+      height: 70px;
+      color: #ffffff;
+      font-size: 16px;
+    }
+    .bottom {
+      position: absolute;
+      left: 0px;
+      top: 180px;
+      width: 1px;
+      height: 20px;
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <div class="scroller">
+      <selectable id="scrolled-copy"></selectable>
+      <div class="bottom"></div>
+    </div>
+  </div>
+</body>
+</html>
+)html";
+
+    selectableClipboard.clear();
+    skui::Runtime scrolledSelectableRuntime(selectableOptions);
+    scrolledSelectableRuntime.resize(kWidth, kHeight, 1.0f);
+    if (!scrolledSelectableRuntime.loadDocumentFromString(scrolledSelectableHtml, "")) {
+        std::cerr << "scrolled selectable load failed: "
+                  << scrolledSelectableRuntime.lastError() << "\n";
+        return 1;
+    }
+    ok = expect(scrolledSelectableRuntime.setValueById("scrolled-copy", "red\ngreen\nblue"),
+                "setValueById should update scrolled selectable multiline text") && ok;
+    sendWheel(scrolledSelectableRuntime, 30.0f, 30.0f, -120.0f);
+    sendMouse(scrolledSelectableRuntime, skui::EventType::MouseDown, 10.0f, 40.0f);
+    sendMouse(scrolledSelectableRuntime, skui::EventType::MouseMove, 130.0f, 78.0f);
+    sendMouse(scrolledSelectableRuntime, skui::EventType::MouseUp, 130.0f, 78.0f);
+    sendKey(scrolledSelectableRuntime, 'C', false, true);
+    ok = expect(selectableClipboard == "red\ngreen\nblue",
+                "selectable should support multiline selection inside a scrolled container") && ok;
+
+    constexpr std::string_view linkedSelectableHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      position: relative;
+      width: 180px;
+      height: 120px;
+      background-color: #000000;
+    }
+    selectable {
+      position: absolute;
+      left: 10px;
+      top: 10px;
+      width: 150px;
+      height: 70px;
+      color: #ffffff;
+      font-size: 16px;
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <selectable value="first&#10;open link&#10;last" data-links="6:15:open-url:https://example.com"></selectable>
+  </div>
+</body>
+</html>
+)html";
+
+    selectableClipboard.clear();
+    std::string linkedAction;
+    skui::RuntimeOptions linkedOptions = selectableOptions;
+    linkedOptions.onElementEvent = [&](const skui::ElementEvent& event) {
+        if (event.type == skui::ElementEventType::Click) {
+            linkedAction = event.action;
+        }
+    };
+    skui::Runtime linkedSelectableRuntime(linkedOptions);
+    linkedSelectableRuntime.resize(kWidth, kHeight, 1.0f);
+    if (!linkedSelectableRuntime.loadDocumentFromString(linkedSelectableHtml, "")) {
+        std::cerr << "linked selectable load failed: "
+                  << linkedSelectableRuntime.lastError() << "\n";
+        return 1;
+    }
+    sendMouse(linkedSelectableRuntime, skui::EventType::MouseDown, 10.0f, 20.0f);
+    sendMouse(linkedSelectableRuntime, skui::EventType::MouseMove, 150.0f, 58.0f);
+    sendMouse(linkedSelectableRuntime, skui::EventType::MouseUp, 150.0f, 58.0f);
+    sendKey(linkedSelectableRuntime, 'C', false, true);
+    ok = expect(selectableClipboard == "first\nopen link\nlast",
+                "selectable links should not split multiline copy selection") && ok;
+    linkedAction.clear();
+    sendMouse(linkedSelectableRuntime, skui::EventType::MouseDown, 18.0f, 33.0f);
+    sendMouse(linkedSelectableRuntime, skui::EventType::MouseUp, 18.0f, 33.0f);
+    ok = expect(linkedAction == "open-url:https://example.com",
+                "clicking a selectable link range should emit its action") && ok;
 
     constexpr std::string_view progressHtml = R"html(
 <!doctype html>
@@ -2065,6 +2307,90 @@ int main() {
                 "resetting virtual height should report success") && ok;
     sendWheel(virtualRuntime, 20.0f, 20.0f, -24000.0f);
     ok = expect(virtualScrollY <= 960.0f, "pooled row position should not expand virtual scroll range") && ok;
+
+    constexpr std::string_view dynamicVirtualListHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      position: relative;
+      width: 180px;
+      height: 140px;
+      background-color: #000000;
+    }
+    .list {
+      position: absolute;
+      left: 10px;
+      top: 10px;
+      width: 120px;
+      height: 90px;
+      overflow-y: auto;
+      overflow-x: hidden;
+      background-color: #111111;
+      scrollbar-gutter: stable;
+    }
+    .content {
+      position: relative;
+      width: 104px;
+      height: 60px;
+    }
+    .title {
+      position: absolute;
+      left: 4px;
+      top: 4px;
+      width: 60px;
+      height: 18px;
+      background-color: #112233;
+    }
+    .row {
+      position: absolute;
+      left: 4px;
+      top: 30px;
+      width: 60px;
+      height: 20px;
+      background-color: #223344;
+      color: #ffffff;
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <div id="dynamic-list" class="list" data-virtual-height="60">
+      <div id="dynamic-content" class="content" style="height: 60px;">
+        <div id="dynamic-title" class="title"></div>
+        <div id="dynamic-row" class="row" style="display: none;"></div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
+)html";
+
+    skui::Runtime dynamicVirtualListRuntime(options);
+    dynamicVirtualListRuntime.resize(kWidth, kHeight, 1.0f);
+    if (!dynamicVirtualListRuntime.loadDocumentFromString(dynamicVirtualListHtml, "")) {
+        std::cerr << "dynamic virtual list load failed: "
+                  << dynamicVirtualListRuntime.lastError() << "\n";
+        return 1;
+    }
+    uint32_t dynamicVirtualTitle = 0;
+    uint32_t dynamicVirtualRow = 0;
+    ok = renderPixel(dynamicVirtualListRuntime, 18, 18, dynamicVirtualTitle) && ok;
+    ok = expect(dynamicVirtualTitle == solidColor(0x11, 0x22, 0x33),
+                "virtual list title should render inside a stable scrollbar container") && ok;
+    ok = expect(dynamicVirtualListRuntime.applyUpdates(
+                    {{{"dynamic-row",
+                       "display:flex;position:absolute;left:4px;top:30px;width:60px;height:20px;"
+                       "background-color:#abcdef;color:#ffffff;font-size:12px;"}},
+                     {{"dynamic-row", "row 1"}},
+                     {{"dynamic-list", "data-virtual-height", "120"},
+                      {"dynamic-content", "style", "height: 120px;"}}}),
+                "dynamic virtual list should accept batched style, text and attribute updates") && ok;
+    ok = renderPixel(dynamicVirtualListRuntime, 18, 46, dynamicVirtualRow) && ok;
+    ok = expect(dynamicVirtualRow == solidColor(0xAB, 0xCD, 0xEF),
+                "pooled row shown by applyUpdates should render inside a virtual list") && ok;
 
     skui::VirtualTableGeometry tableGeometry("row-",
                                              "cell-",

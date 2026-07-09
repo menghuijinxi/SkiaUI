@@ -22,6 +22,8 @@
 namespace skui {
 namespace {
 
+const std::string& selectableTextValue(const Node& node);
+
 void rebindParents(Node& node, Node* parent) {
     node.parent = parent;
     for (auto& child : node.children) {
@@ -200,6 +202,31 @@ Node* actionTarget(Node* leaf) {
     for (Node* current = leaf; current; current = current->parent) {
         if (!current->action.empty()) {
             return current;
+        }
+    }
+    return nullptr;
+}
+
+Node* mouseEventTarget(Node* leaf) {
+    if (Node* target = actionTarget(leaf)) {
+        return target;
+    }
+    if (Node* target = inputTarget(leaf)) {
+        return target;
+    }
+    if (Node* target = selectableTextTarget(leaf)) {
+        return target;
+    }
+    return leaf;
+}
+
+const Node::TextLink* selectableLinkAtIndex(const Node& node, size_t index) {
+    if (!isSelectableTextNode(&node)) {
+        return nullptr;
+    }
+    for (const Node::TextLink& link : node.textLinks) {
+        if (index >= link.start && index < link.end && !link.action.empty()) {
+            return &link;
         }
     }
     return nullptr;
@@ -419,6 +446,20 @@ ElementEvent makeElementEvent(ElementEventType type, const Node& node, const Eve
     event.scrollX = node.scrollX;
     event.scrollY = node.scrollY;
     event.button = source.button;
+    return event;
+}
+
+ElementEvent makeSelectableLinkEvent(const Node& node,
+                                     const Node::TextLink& link,
+                                     const Event& source,
+                                     float x,
+                                     float y) {
+    ElementEvent event = makeElementEvent(ElementEventType::Click, node, source, x, y);
+    event.action = link.action;
+    event.value = selectableTextValue(node);
+    if (link.start < link.end && link.end <= event.value.size()) {
+        event.text = event.value.substr(link.start, link.end - link.start);
+    }
     return event;
 }
 
@@ -1195,6 +1236,45 @@ void syncNodeAttribute(Node& node, const std::string& name) {
         node.src = value;
     } else if (name == "data-action") {
         node.action = value;
+    } else if (name == "data-links") {
+        node.textLinks.clear();
+        size_t start = 0;
+        while (start <= value.size()) {
+            const size_t end = value.find('\n', start);
+            const std::string_view row(value.data() + start,
+                                       (end == std::string::npos ? value.size() : end) - start);
+            const size_t first = row.find(':');
+            const size_t second = first == std::string_view::npos
+                ? std::string_view::npos
+                : row.find(':', first + 1);
+            if (first != std::string_view::npos && second != std::string_view::npos) {
+                size_t linkStart = 0;
+                size_t linkEnd = 0;
+                const std::string startText(row.substr(0, first));
+                const std::string endText(row.substr(first + 1, second - first - 1));
+                const auto startResult = std::from_chars(startText.data(),
+                                                         startText.data() + startText.size(),
+                                                         linkStart);
+                const auto endResult = std::from_chars(endText.data(),
+                                                       endText.data() + endText.size(),
+                                                       linkEnd);
+                const std::string& textValue = selectableTextValue(node);
+                if (startResult.ec == std::errc{} &&
+                    endResult.ec == std::errc{} &&
+                    linkStart < linkEnd &&
+                    linkEnd <= textValue.size()) {
+                    node.textLinks.push_back(Node::TextLink{
+                        linkStart,
+                        linkEnd,
+                        std::string(row.substr(second + 1)),
+                    });
+                }
+            }
+            if (end == std::string::npos) {
+                break;
+            }
+            start = end + 1;
+        }
     } else if (name == "data-virtual-width") {
         node.virtualContentWidth = 0.0f;
         const char* begin = value.data();
@@ -1848,7 +1928,7 @@ bool Runtime::handleEvent(const Event& event) {
             stateChanged = impl_->setFocusedNode(nullptr) || stateChanged;
             layoutNeeded = layoutNeeded || stateChanged;
         }
-        if (Node* target = actionTarget(hit); target && impl_->options.onElementEvent) {
+        if (Node* target = mouseEventTarget(hit); target && impl_->options.onElementEvent) {
             impl_->options.onElementEvent(makeElementEvent(ElementEventType::MouseDown, *target, event, x, y));
         }
         consumed = hit != nullptr;
@@ -1891,7 +1971,7 @@ bool Runtime::handleEvent(const Event& event) {
         } else {
             consumed = hit != nullptr;
         }
-        if (Node* target = actionTarget(hit); target && impl_->options.onElementEvent) {
+        if (Node* target = mouseEventTarget(hit); target && impl_->options.onElementEvent) {
             impl_->options.onElementEvent(makeElementEvent(ElementEventType::MouseDown, *target, event, x, y));
         }
         stateChanged = true;
@@ -1921,10 +2001,35 @@ bool Runtime::handleEvent(const Event& event) {
         }
         if (Node* target = releasedAction ? releasedAction : pressedAction; target && impl_->options.onElementEvent) {
             impl_->options.onElementEvent(makeElementEvent(ElementEventType::MouseUp, *target, event, x, y));
+        } else if (event.button == MouseButton::Right && impl_->options.onElementEvent) {
+            Node* selectable = selectableTextTarget(pressed);
+            if (selectable && selectable == selectableTextTarget(hit)) {
+                impl_->options.onElementEvent(
+                    makeElementEvent(ElementEventType::MouseUp,
+                                     *selectable,
+                                     event,
+                                     x,
+                                     y));
+            }
         }
         if (click) {
             if (impl_->options.onElementEvent) {
                 impl_->options.onElementEvent(makeElementEvent(ElementEventType::Click, *pressedAction, event, x, y));
+            }
+        } else if (event.button == MouseButton::Left) {
+            Node* selectable = selectableTextTarget(pressed);
+            if (!selectable ||
+                selectable != selectableTextTarget(hit) ||
+                !impl_->options.onElementEvent) {
+                break;
+            }
+            const bool selectedText =
+                selectable->selectionStart != selectable->selectionEnd;
+            const size_t index = impl_->selectableIndexAtPoint(*selectable, x, y);
+            if (!selectedText) {
+                if (const Node::TextLink* link = selectableLinkAtIndex(*selectable, index)) {
+                    impl_->options.onElementEvent(makeSelectableLinkEvent(*selectable, *link, event, x, y));
+                }
             }
         }
         consumed = hit != nullptr || pressed != nullptr;
