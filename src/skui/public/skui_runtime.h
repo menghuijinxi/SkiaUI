@@ -171,6 +171,7 @@ public:
     bool replaceHtmlById(std::string_view id, std::string_view html);
     bool removeElementById(std::string_view id);
     bool setVisibleById(std::string_view id, bool visible);
+    bool setConsumesEventsById(std::string_view id, bool consumesEvents);
     [[nodiscard]] bool hasClassById(std::string_view id, std::string_view className) const;
     void setElementEventCallback(ElementEventCallback callback);
 

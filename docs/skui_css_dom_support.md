@@ -177,6 +177,38 @@
 
 `cursor` 会继承。Win32 宿主会把 `skui::Cursor` 映射到系统鼠标光标。
 
+### 指针事件与输入透传
+
+`pointer-events: none` 用于纯视觉元素，例如遮罩、光效、装饰图和提示框背景。设置后该节点不会参与鼠标命中测试，鼠标事件会继续查找其下方可命中的元素；如果最终没有命中可交互元素，`Runtime::handleEvent` 会返回 `false`，宿主可以把事件继续交给下一层界面或 3D 场景。
+
+```html
+<div class="screen">
+  <div class="visual-glow"></div>
+  <button id="open-menu" data-action="open-menu">Open</button>
+</div>
+```
+
+```css
+.screen {
+  width: 3840px;
+  height: 2160px;
+  background-color: transparent;
+}
+
+.visual-glow {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 3840px;
+  height: 420px;
+  pointer-events: none;
+}
+```
+
+运行时可以用 `Runtime::setConsumesEventsById(id, false)` 临时关闭某个元素的输入消耗能力，语义等价于给该元素设置 `pointer-events: none`；传入 `true` 则恢复为 `pointer-events: auto`。这个接口适合弹层动画、临时禁用按钮、装饰层显示隐藏等场景，不需要业务层手动拼接完整 `style` 字符串。
+
+SkUI 的事件返回值表示“UI 是否实际消费了事件”，不是“DOM 是否发生 hover、active 或 focus 状态变化”。因此透明全屏根节点、普通 `div`、普通装饰 `img` 不会因为被命中就阻断宿主输入；只有 `data-action`、输入框、`selectable`、滚动条、拖拽选择等真实交互路径会消费事件。
+
 ## 输入框能力
 
 `input` 和 `textarea` 支持：
@@ -217,7 +249,9 @@
 ## 图片和 SVG
 
 - `img[src]` 支持本地资源路径。`.svg` 文件按 SVG 文本读取；位图通过 Skia codec 支持 PNG、JPEG、WebP 和 BMP 异步读取和解码。
-- 位图图片首次绘制时会进入 renderer 内部后台加载队列；加载完成前该节点不绘制图片内容，加载完成后通过 `RuntimeOptions::requestRedraw` 安排重绘。
+- 位图图片默认按浏览器的 eager 语义处理：样式重算后会扫描 DOM 中的非 SVG `img` 并建立异步请求，即使节点当前是 `display:none`。这用于按钮 normal / active 图这类状态切换场景，避免第一次显示隐藏状态图时出现“闪空”。
+- 大图列表、图片滚动墙等不希望提前请求全部图片的场景，应在图片上写 `loading="lazy"`。lazy 图片不会在 DOM 扫描阶段提前请求，而是在节点真正进入绘制路径时再进入后台加载队列。`SkiaImageScrollerDemo` 的缩略图使用的就是这个模式。
+- 同一个 `img` 运行时切换 `src` 时，renderer 会保留该节点上一张已经显示成功的位图，直到新路径图片加载完成后再替换，避免按下态、悬停态或动态换图时先清空再绘制。
 - 相同解析路径的位图图片会复用缓存，不会为多个 `<img>` 重复加载。
 - 位图绘制会按节点布局盒缩放，并裁剪到节点盒；节点设置 `border-radius` 时也会按圆角裁剪。
 - 内联 `<svg>` 和 SVG 文件都交给 Skia `SkSVGDOM` 渲染。
@@ -267,6 +301,7 @@
 - `replaceHtmlById`
 - `removeElementById`
 - `setVisibleById`
+- `setConsumesEventsById`
 - `hasClassById`
 
 大量列表、表格、聊天记录建议使用批量接口 `applyUpdates`，减少重复样式计算和布局。需要动态增删节点时，可以使用 `appendHtmlById`、`prependHtmlById`、`replaceHtmlById` 和 `removeElementById` 维护指定容器下的子树。动态片段会按当前运行时样式规则重新计算样式和布局。
@@ -282,6 +317,7 @@
 - `replaceHtmlById` 会用 HTML 片段替换目标节点；片段为空或包含多个根元素时会返回失败。
 - `removeElementById` 会删除目标节点及其子树；根节点不能删除。
 - `setVisibleById` 是 `display:none` / `display:flex` 的便捷接口，用于隐藏后不占布局的场景；需要隐藏但保留布局占位时应使用 `setStyleById(id, "visibility:hidden;")` 或 class 切换。
+- `setConsumesEventsById` 是 `pointer-events:auto` / `pointer-events:none` 的便捷接口，用于运行时控制元素是否消费鼠标输入；它只影响命中和事件消费，不改变绘制和布局。
 
 动态 DOM 示例：
 
@@ -308,7 +344,7 @@
 - 没有完整浏览器表单控件。
 - 没有完整 CSS 标准、外部 stylesheet 或 `@keyframes` 动画；当前内置 transition 只覆盖 `opacity` 和
   `transform` 的轻量子集。
-- `img` 只支持本地资源路径；位图支持 PNG、JPEG、WebP 和 BMP，暂不支持网络 URL、`srcset`、懒加载策略和浏览器图片事件。
+- `img` 只支持本地资源路径；位图支持 PNG、JPEG、WebP 和 BMP。懒加载属性使用浏览器一致的 `loading="lazy"`，不支持旧式 `data-loading`。暂不支持网络 URL、`srcset` 和浏览器图片事件。
 - 文本排版是单行、`selectable` 显式多行或简单多行编辑框，不是富文本排版引擎；`selectable` 暂不支持跨 DOM 节点连续选择。
 - 中文双击选词目前按单个非 ASCII 字符处理，不做自然语言分词。
 - 虚拟滚动需要业务层提供数据源并根据 `Scroll` 刷新池化 DOM；SkUI 提供滚动范围、裁剪、事件，以及 `VirtualWindowState` / `VirtualTableAdapter` 辅助类，但不会自动从任意 DOM 推导大数据源。

@@ -27,3 +27,27 @@ cmd.exe /c 'call "C:\Program Files\Microsoft Visual Studio\18\Community\Common7\
 - 再次切回旧图片时，第一帧可以显示背景色，随后异步重新加载并渲染图片。
 - 当前帧正在使用的图片不能为了满足预算被立即删除。
 - 关闭 runtime 时，缓存字节数要和缓存条目一起清零。
+
+## 图片请求需要区分 eager 和 lazy
+
+现象：按钮按下态、hover 态和动态换图如果等到第一次绘制才请求图片，第一次切换会短暂显示空白；但图片滚动列表如果所有 `img` 都提前请求，又会造成大量后台解码和缓存压力。
+
+影响范围：`Runtime` 中的非 SVG `img` 位图请求、状态图切换和长列表图片加载。SVG 文件仍按文本资源路径读取，不走位图请求队列。
+
+参考项目：浏览器会把普通 `<img>` 当作 eager 资源建立请求，即使元素当前不可见；同时通过 `loading="lazy"` 让页面作者显式选择懒加载。浏览器在同一图片元素换源时也会区分 current image 和 pending image，避免新资源未完成前立刻清空旧画面。
+
+解决方案：SkUI 默认在样式重算后扫描 DOM 中的非 SVG `img` 并建立异步请求，覆盖 `display:none` 的状态图，防止首次显示时闪空。显式 `loading="lazy"` 的图片跳过这个提前请求，只在进入绘制路径时排队，适合 `SkiaImageScrollerDemo` 这类大量缩略图滚动列表。同一个 `img` 切换 `src` 时保留上一张已显示位图，直到新图片 ready 后替换。
+
+验证方式：
+
+```powershell
+cmd.exe /c 'call "C:\Program Files\Microsoft Visual Studio\18\Community\Common7\Tools\VsDevCmd.bat" -arch=x64 >nul && cmake --build build\ninja-vcpkg --target SkuiInteractionTests SkiaImageScrollerDemo && build\ninja-vcpkg\SkuiInteractionTests.exe'
+```
+
+快速检查清单：
+
+- 普通隐藏状态图应该在显示前已经完成异步请求。
+- `loading="lazy"` 的隐藏图不应该在 `display:none` 阶段提前请求。
+- lazy 图片首次进入绘制路径后应能异步加载，并通过 `requestRedraw` 驱动下一帧显示。
+- 同一个 `img` 切换 `src` 时，新图未完成前应继续显示旧图。
+- 大图滚动列表应优先使用 `loading="lazy"`，避免 DOM 阶段请求全部图片。

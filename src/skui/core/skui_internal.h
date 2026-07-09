@@ -400,6 +400,7 @@ public:
     size_t textIndexAtPoint(const Node& node, const std::string& value, float x, float y);
     float textStartX(const Node& node, std::string_view value);
     [[nodiscard]] bool consumeImageDirty();
+    void requestBitmapImages(const Document& document);
 
 private:
     struct TextEntry {
@@ -451,6 +452,14 @@ private:
         sk_sp<SkImage> image;
         size_t rowBytes = 0;
         size_t byteSize = 0;
+        uint64_t lastUsedFrame = 0;
+        int width = 0;
+        int height = 0;
+    };
+
+    struct DisplayedBitmapImage {
+        std::string path;
+        sk_sp<SkImage> image;
         uint64_t lastUsedFrame = 0;
         int width = 0;
         int height = 0;
@@ -515,8 +524,20 @@ private:
     void drawInputCaret(SkCanvas& canvas, const Node& node);
     void beginBitmapFrame();
     void endBitmapFrame();
+    void requestBitmapImagesForNode(const Document& document, const Node& node);
+    void requestBitmapImage(const std::string& path);
     BitmapImageEntry bitmapImageEntry(const std::string& path);
     sk_sp<SkImage> bitmapImageForEntry(const std::string& path, const BitmapImageEntry& entry);
+    sk_sp<SkImage> displayBitmapImageForNode(const Node& node,
+                                             const std::string& path,
+                                             const BitmapImageEntry& entry,
+                                             int& imageWidth,
+                                             int& imageHeight);
+    void drawBitmapImage(SkCanvas& canvas,
+                         const Node& node,
+                         SkImage& image,
+                         int imageWidth,
+                         int imageHeight);
     void enqueueBitmapLoad(const std::shared_ptr<BitmapImageState>& state, const std::string& path) const;
     void ensureBitmapWorkers(const std::shared_ptr<BitmapImageState>& state) const;
     void stopBitmapLoads(const std::shared_ptr<BitmapImageState>& state);
@@ -533,6 +554,7 @@ private:
     std::unordered_map<std::string, std::string> svgFileCache_;
     std::unordered_map<const Node*, TextLineCacheEntry> textLineCache_;
     std::unordered_map<const Node*, BoxCacheEntry> boxCache_;
+    std::unordered_map<const Node*, DisplayedBitmapImage> displayedBitmapImages_;
     std::shared_ptr<BitmapImageState> bitmapState_;
 };
 

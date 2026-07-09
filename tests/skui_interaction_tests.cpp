@@ -704,6 +704,110 @@ int main() {
     ok = expect(pointerEventsNormal != pointerEventsHover, "pointer-events:none overlay should not block hover") && ok;
     ok = expect(pointerEventsClicks == 1, "pointer-events:none overlay should not block click") && ok;
 
+    constexpr std::string_view pointerPassThroughHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .screen {
+      position: relative;
+      width: 160px;
+      height: 100px;
+      background-color: transparent;
+    }
+    .button {
+      position: absolute;
+      left: 20px;
+      top: 20px;
+      width: 60px;
+      height: 30px;
+      background-color: #123456;
+      cursor: pointer;
+    }
+    .decor {
+      position: absolute;
+      right: 10px;
+      top: 10px;
+      width: 30px;
+      height: 30px;
+      background-color: rgba(255,255,255,0);
+    }
+  </style>
+</head>
+<body>
+  <div class="screen">
+    <div id="button" class="button" data-action="button-click"></div>
+    <div id="decor" class="decor"></div>
+  </div>
+</body>
+</html>
+)html";
+    skui::Runtime pointerPassThroughRuntime(options);
+    pointerPassThroughRuntime.resize(kWidth, kHeight, 1.0f);
+    if (!pointerPassThroughRuntime.loadDocumentFromString(pointerPassThroughHtml, "")) {
+        std::cerr << "pointer pass-through load failed: "
+                  << pointerPassThroughRuntime.lastError() << "\n";
+        return 1;
+    }
+    int passThroughClicks = 0;
+    pointerPassThroughRuntime.setElementEventCallback([&](const skui::ElementEvent& event) {
+        if (event.type == skui::ElementEventType::Click && event.action == "button-click") {
+            ++passThroughClicks;
+        }
+    });
+    skui::Event passThroughDown;
+    passThroughDown.type = skui::EventType::MouseDown;
+    passThroughDown.button = skui::MouseButton::Left;
+    passThroughDown.x = 120.0f;
+    passThroughDown.y = 80.0f;
+    ok = expect(!pointerPassThroughRuntime.handleEvent(passThroughDown),
+                "transparent non-interactive area should not consume mouse down") && ok;
+
+    skui::Event passThroughUp = passThroughDown;
+    passThroughUp.type = skui::EventType::MouseUp;
+    ok = expect(!pointerPassThroughRuntime.handleEvent(passThroughUp),
+                "transparent non-interactive area should not consume mouse up") && ok;
+
+    skui::Event decorDown = passThroughDown;
+    decorDown.x = 140.0f;
+    decorDown.y = 20.0f;
+    ok = expect(!pointerPassThroughRuntime.handleEvent(decorDown),
+                "non-interactive decorative element should not consume mouse down") && ok;
+    skui::Event decorUp = decorDown;
+    decorUp.type = skui::EventType::MouseUp;
+    ok = expect(!pointerPassThroughRuntime.handleEvent(decorUp),
+                "non-interactive decorative element should not consume mouse up") && ok;
+
+    skui::Event buttonDown = passThroughDown;
+    buttonDown.x = 30.0f;
+    buttonDown.y = 30.0f;
+    ok = expect(pointerPassThroughRuntime.handleEvent(buttonDown),
+                "data-action element should consume mouse down") && ok;
+    skui::Event buttonUp = buttonDown;
+    buttonUp.type = skui::EventType::MouseUp;
+    ok = expect(pointerPassThroughRuntime.handleEvent(buttonUp),
+                "data-action element should consume mouse up") && ok;
+    ok = expect(passThroughClicks == 1,
+                "data-action element should still emit click") && ok;
+
+    ok = expect(pointerPassThroughRuntime.setConsumesEventsById("button", false),
+                "setConsumesEventsById should disable pointer events at runtime") && ok;
+    ok = expect(!pointerPassThroughRuntime.handleEvent(buttonDown),
+                "runtime-disabled pointer events should not consume mouse down") && ok;
+    ok = expect(!pointerPassThroughRuntime.handleEvent(buttonUp),
+                "runtime-disabled pointer events should not consume mouse up") && ok;
+    ok = expect(passThroughClicks == 1,
+                "runtime-disabled pointer events should not emit click") && ok;
+
+    ok = expect(pointerPassThroughRuntime.setConsumesEventsById("button", true),
+                "setConsumesEventsById should restore pointer events at runtime") && ok;
+    ok = expect(pointerPassThroughRuntime.handleEvent(buttonDown),
+                "runtime-restored pointer events should consume mouse down") && ok;
+    ok = expect(pointerPassThroughRuntime.handleEvent(buttonUp),
+                "runtime-restored pointer events should consume mouse up") && ok;
+    ok = expect(passThroughClicks == 2,
+                "runtime-restored pointer events should emit click") && ok;
+
     constexpr std::string_view selectorHtml = R"html(
 <!doctype html>
 <html>
@@ -1749,9 +1853,9 @@ int main() {
         ok = renderPixels(parallelImageRuntime, parallelPixels) && ok;
         for (int i = 0; i < imageCount; ++i) {
             const int x = i * (imageSize + imageGap) + imageSize / 2;
-            ok = expect(pixelAt(parallelPixels, x, imageSize / 2) ==
-                            solidColor(0x00, 0x00, 0x00),
-                        "parallel bitmap load should not block the first render") && ok;
+            const uint32_t initialPixel = pixelAt(parallelPixels, x, imageSize / 2);
+            ok = expect(initialPixel == solidColor(0x00, 0x00, 0x00) || isMostlyRed(initialPixel),
+                        "parallel bitmap first render should be empty or already loaded") && ok;
         }
 
         bool allImagesReady = false;
@@ -1802,6 +1906,246 @@ int main() {
                     "unicode bitmap image load should request redraw") && ok;
         ok = expect(isMostlyRed(unicodeImageAfter),
                     "unicode bitmap image should render after loading") && ok;
+    }
+
+    {
+        const std::filesystem::path swapDir = std::filesystem::temp_directory_path() / "skui_bitmap_swap";
+        std::filesystem::create_directories(swapDir);
+        ok = expect(writeRedPngFixture(swapDir / "normal.png"),
+                    "normal bitmap fixture should be written") && ok;
+        ok = expect(writeBluePngFixture(swapDir / "pressed.png"),
+                    "pressed bitmap fixture should be written") && ok;
+
+        constexpr std::string_view swapHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      position: relative;
+      width: 140px;
+      height: 90px;
+      background-color: #000000;
+    }
+    .button-image {
+      position: absolute;
+      left: 10px;
+      top: 10px;
+      width: 20px;
+      height: 20px;
+    }
+  </style>
+</head>
+<body>
+  <div class="root"><img id="buttonImage" class="button-image" src="normal.png"></div>
+</body>
+</html>
+)html";
+
+        skui::RuntimeOptions swapOptions = options;
+        swapOptions.assetRoot = utf8PathText(swapDir);
+        skui::Runtime swapRuntime(swapOptions);
+        swapRuntime.resize(kWidth, kHeight, 1.0f);
+        ok = expect(swapRuntime.loadDocumentFromString(swapHtml, utf8PathText(swapDir)),
+                    "bitmap swap document should load") && ok;
+
+        uint32_t swapPixel = 0;
+        ok = renderPixel(swapRuntime, 20, 20, swapPixel) && ok;
+        ok = expect(swapPixel == solidColor(0x00, 0x00, 0x00),
+                    "initial bitmap should still load asynchronously") && ok;
+        waitForDirty(swapRuntime);
+        ok = renderPixel(swapRuntime, 20, 20, swapPixel) && ok;
+        ok = expect(isMostlyRed(swapPixel), "initial bitmap should render after async load") && ok;
+
+        ok = expect(swapRuntime.setAttributeById("buttonImage", "src", "pressed.png"),
+                    "bitmap src should switch to pending pressed image") && ok;
+        ok = renderPixel(swapRuntime, 20, 20, swapPixel) && ok;
+        ok = expect(isMostlyRed(swapPixel),
+                    "pending bitmap switch should keep drawing current image") && ok;
+        waitForDirty(swapRuntime);
+        ok = renderPixel(swapRuntime, 20, 20, swapPixel) && ok;
+        ok = expect(isMostlyBlue(swapPixel),
+                    "pending bitmap should replace current image after loading") && ok;
+
+        std::filesystem::remove_all(swapDir);
+    }
+
+    {
+        const std::filesystem::path hiddenSwapDir =
+            std::filesystem::temp_directory_path() / "skui_hidden_bitmap_swap";
+        std::filesystem::create_directories(hiddenSwapDir);
+        ok = expect(writeRedPngFixture(hiddenSwapDir / "normal.png"),
+                    "hidden normal bitmap fixture should be written") && ok;
+        ok = expect(writeBluePngFixture(hiddenSwapDir / "active.png"),
+                    "hidden active bitmap fixture should be written") && ok;
+
+        constexpr std::string_view hiddenSwapHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      position: relative;
+      width: 140px;
+      height: 90px;
+      background-color: #000000;
+    }
+    .menu-item {
+      position: absolute;
+      left: 10px;
+      top: 10px;
+      width: 20px;
+      height: 20px;
+    }
+    .menu-image {
+      position: absolute;
+      left: 0px;
+      top: 0px;
+      width: 20px;
+      height: 20px;
+    }
+    .active-image {
+      display: none;
+    }
+    .menu-item.active .normal {
+      display: none;
+    }
+    .menu-item.active .active-image {
+      display: flex;
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <button id="button" class="menu-item">
+      <img class="menu-image normal" src="normal.png">
+      <img class="menu-image active-image" src="active.png">
+    </button>
+  </div>
+</body>
+</html>
+)html";
+
+        std::atomic_int hiddenSwapRedraws{0};
+        skui::RuntimeOptions hiddenSwapOptions = options;
+        hiddenSwapOptions.assetRoot = utf8PathText(hiddenSwapDir);
+        hiddenSwapOptions.requestRedraw = [&] {
+            hiddenSwapRedraws.fetch_add(1);
+        };
+        skui::Runtime hiddenSwapRuntime(hiddenSwapOptions);
+        hiddenSwapRuntime.resize(kWidth, kHeight, 1.0f);
+        ok = expect(hiddenSwapRuntime.loadDocumentFromString(hiddenSwapHtml, utf8PathText(hiddenSwapDir)),
+                    "hidden bitmap swap document should load") && ok;
+
+        uint32_t hiddenSwapPixel = 0;
+        for (int retry = 0; retry < 100 && hiddenSwapRedraws.load() < 2; ++retry) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        ok = expect(hiddenSwapRedraws.load() >= 2,
+                    "hidden and visible bitmap nodes should both request image loads") && ok;
+        ok = renderPixel(hiddenSwapRuntime, 20, 20, hiddenSwapPixel) && ok;
+        ok = expect(isMostlyRed(hiddenSwapPixel),
+                    "visible normal bitmap should render after async load") && ok;
+        ok = expect(hiddenSwapRuntime.addClassById("button", "active"),
+                    "hidden bitmap swap should switch to active class") && ok;
+        ok = renderPixel(hiddenSwapRuntime, 20, 20, hiddenSwapPixel) && ok;
+        ok = expect(isMostlyBlue(hiddenSwapPixel),
+                    "hidden active bitmap should be ready when it first becomes visible") && ok;
+
+        std::filesystem::remove_all(hiddenSwapDir);
+    }
+
+    {
+        const std::filesystem::path lazySwapDir =
+            std::filesystem::temp_directory_path() / "skui_lazy_hidden_bitmap_swap";
+        std::filesystem::create_directories(lazySwapDir);
+        ok = expect(writeRedPngFixture(lazySwapDir / "normal.png"),
+                    "lazy hidden normal bitmap fixture should be written") && ok;
+        ok = expect(writeBluePngFixture(lazySwapDir / "active.png"),
+                    "lazy hidden active bitmap fixture should be written") && ok;
+
+        constexpr std::string_view lazySwapHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      position: relative;
+      width: 140px;
+      height: 90px;
+      background-color: #000000;
+    }
+    .menu-item {
+      position: absolute;
+      left: 10px;
+      top: 10px;
+      width: 20px;
+      height: 20px;
+    }
+    .menu-image {
+      position: absolute;
+      left: 0px;
+      top: 0px;
+      width: 20px;
+      height: 20px;
+    }
+    .active-image {
+      display: none;
+    }
+    .menu-item.active .normal {
+      display: none;
+    }
+    .menu-item.active .active-image {
+      display: flex;
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <button id="button" class="menu-item">
+      <img class="menu-image normal" src="normal.png">
+      <img class="menu-image active-image" src="active.png" loading="lazy">
+    </button>
+  </div>
+</body>
+</html>
+)html";
+
+        std::atomic_int lazySwapRedraws{0};
+        skui::RuntimeOptions lazySwapOptions = options;
+        lazySwapOptions.assetRoot = utf8PathText(lazySwapDir);
+        lazySwapOptions.requestRedraw = [&] {
+            lazySwapRedraws.fetch_add(1);
+        };
+        skui::Runtime lazySwapRuntime(lazySwapOptions);
+        lazySwapRuntime.resize(kWidth, kHeight, 1.0f);
+        ok = expect(lazySwapRuntime.loadDocumentFromString(lazySwapHtml, utf8PathText(lazySwapDir)),
+                    "lazy hidden bitmap swap document should load") && ok;
+
+        uint32_t lazySwapPixel = 0;
+        for (int retry = 0; retry < 100 && lazySwapRedraws.load() < 1; ++retry) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        ok = expect(lazySwapRedraws.load() == 1,
+                    "lazy hidden bitmap should not request while display none") && ok;
+        ok = renderPixel(lazySwapRuntime, 20, 20, lazySwapPixel) && ok;
+        ok = expect(isMostlyRed(lazySwapPixel),
+                    "lazy swap should render visible normal bitmap after async load") && ok;
+        ok = expect(lazySwapRuntime.addClassById("button", "active"),
+                    "lazy hidden bitmap swap should switch to active class") && ok;
+        ok = renderPixel(lazySwapRuntime, 20, 20, lazySwapPixel) && ok;
+        ok = expect(lazySwapPixel == solidColor(0x00, 0x00, 0x00),
+                    "lazy hidden active bitmap should not be ready when first shown") && ok;
+        bool lazyActiveReady = false;
+        for (int retry = 0; retry < 100 && !lazyActiveReady; ++retry) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            ok = renderPixel(lazySwapRuntime, 20, 20, lazySwapPixel) && ok;
+            lazyActiveReady = isMostlyBlue(lazySwapPixel);
+        }
+        ok = expect(isMostlyBlue(lazySwapPixel),
+                    "lazy hidden active bitmap should render after first visible load") && ok;
+
+        std::filesystem::remove_all(lazySwapDir);
     }
 
     {
@@ -1857,8 +2201,8 @@ int main() {
         ok = expect(budgetRuntime.setAttributeById("photo", "src", "blue.png"),
                     "bitmap src should switch to blue") && ok;
         ok = renderPixel(budgetRuntime, 20, 20, budgetPixel) && ok;
-        ok = expect(budgetPixel == solidColor(0x00, 0x00, 0x00),
-                    "budgeted bitmap should not block the first blue render") && ok;
+        ok = expect(isMostlyRed(budgetPixel),
+                    "budgeted bitmap switch should keep drawing current red image") && ok;
         waitForDirty(budgetRuntime);
         ok = renderPixel(budgetRuntime, 20, 20, budgetPixel) && ok;
         ok = expect(isMostlyBlue(budgetPixel), "blue bitmap should render after async load") && ok;
@@ -1866,8 +2210,8 @@ int main() {
         ok = expect(budgetRuntime.setAttributeById("photo", "src", "red.png"),
                     "bitmap src should switch back to red") && ok;
         ok = renderPixel(budgetRuntime, 20, 20, budgetPixel) && ok;
-        ok = expect(budgetPixel == solidColor(0x00, 0x00, 0x00),
-                    "evicted red bitmap should be loaded again after switching back") && ok;
+        ok = expect(isMostlyBlue(budgetPixel),
+                    "evicted bitmap switch should keep drawing current blue image") && ok;
         waitForDirty(budgetRuntime);
         ok = renderPixel(budgetRuntime, 20, 20, budgetPixel) && ok;
         ok = expect(isMostlyRed(budgetPixel), "evicted red bitmap should render after reload") && ok;

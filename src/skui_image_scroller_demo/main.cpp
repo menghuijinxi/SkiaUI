@@ -184,7 +184,7 @@ std::string buildImageDocument(const std::filesystem::path& folder) {
         const std::string fileName = widePathText(images[i].path.filename());
         html << "<div class=\"tile\" style=\"left:" << left << "px;top:" << top << "px;width:" << kTileWidth
              << "px;height:" << kTileHeight << "px;\">";
-        html << "<img class=\"thumb\" src=\"" << htmlEscape(fileName) << "\">";
+        html << "<img class=\"thumb\" src=\"" << htmlEscape(fileName) << "\" loading=\"lazy\">";
         html << "<div class=\"name\">" << htmlEscape(fileName) << "</div></div>";
     }
 

@@ -220,6 +220,12 @@ Node* mouseEventTarget(Node* leaf) {
     return leaf;
 }
 
+bool isPointerConsumingTarget(Node* leaf) {
+    return actionTarget(leaf) ||
+           inputTarget(leaf) ||
+           selectableTextTarget(leaf);
+}
+
 const Node::TextLink* selectableLinkAtIndex(const Node& node, size_t index) {
     if (!isSelectableTextNode(&node)) {
         return nullptr;
@@ -1171,7 +1177,16 @@ bool isDisplayDeclaration(std::string_view declaration) {
     return lowerAscii(trim(declaration.substr(0, colon))) == "display";
 }
 
-std::string styleWithDisplay(std::string_view declarations, bool visible) {
+bool isPointerEventsDeclaration(std::string_view declaration) {
+    const size_t colon = declaration.find(':');
+    if (colon == std::string_view::npos) {
+        return false;
+    }
+    return lowerAscii(trim(declaration.substr(0, colon))) == "pointer-events";
+}
+
+std::string styleWithoutDeclaration(std::string_view declarations,
+                                    bool (*matches)(std::string_view)) {
     std::string updated;
     size_t start = 0;
     while (start < declarations.size()) {
@@ -1181,7 +1196,7 @@ std::string styleWithDisplay(std::string_view declarations, bool visible) {
                 ? declarations.substr(start)
                 : declarations.substr(start, end - start);
         const std::string trimmed = trim(declaration);
-        if (!trimmed.empty() && !isDisplayDeclaration(trimmed)) {
+        if (!trimmed.empty() && !matches(trimmed)) {
             if (!updated.empty() && updated.back() != ';') {
                 updated += "; ";
             }
@@ -1192,10 +1207,24 @@ std::string styleWithDisplay(std::string_view declarations, bool visible) {
         }
         start = end + 1;
     }
+    return updated;
+}
+
+std::string styleWithDisplay(std::string_view declarations, bool visible) {
+    std::string updated = styleWithoutDeclaration(declarations, isDisplayDeclaration);
     if (!updated.empty() && updated.back() != ';') {
         updated += "; ";
     }
     updated += visible ? "display: flex" : "display: none";
+    return updated;
+}
+
+std::string styleWithPointerEvents(std::string_view declarations, bool consumesEvents) {
+    std::string updated = styleWithoutDeclaration(declarations, isPointerEventsDeclaration);
+    if (!updated.empty() && updated.back() != ';') {
+        updated += "; ";
+    }
+    updated += consumesEvents ? "pointer-events: auto" : "pointer-events: none";
     return updated;
 }
 
@@ -1331,6 +1360,7 @@ public:
         }
         recomputeStyles(document, options, viewportWidth, viewportHeight);
         startTransitions(snapshots);
+        renderer.requestBitmapImages(document);
         if (traceEnabled) {
             perf::Trace::write("skui", "style_recompute", width, height, perf::Trace::elapsedMs(styleStart));
         }
@@ -1851,7 +1881,7 @@ bool Runtime::handleEvent(const Event& event) {
             impl_->hoveredLeaf = hit;
             stateChanged = true;
         }
-        consumed = hit != nullptr;
+        consumed = impl_->mousePressed && isPointerConsumingTarget(impl_->pressedLeaf);
         break;
     case EventType::MouseDown:
         if (event.button == MouseButton::None) {
@@ -1931,7 +1961,7 @@ bool Runtime::handleEvent(const Event& event) {
         if (Node* target = mouseEventTarget(hit); target && impl_->options.onElementEvent) {
             impl_->options.onElementEvent(makeElementEvent(ElementEventType::MouseDown, *target, event, x, y));
         }
-        consumed = hit != nullptr;
+        consumed = consumed || isPointerConsumingTarget(hit);
         stateChanged = true;
         layoutNeeded = true;
         break;
@@ -1969,7 +1999,7 @@ bool Runtime::handleEvent(const Event& event) {
             stateChanged = true;
             layoutNeeded = true;
         } else {
-            consumed = hit != nullptr;
+            consumed = isPointerConsumingTarget(hit);
         }
         if (Node* target = mouseEventTarget(hit); target && impl_->options.onElementEvent) {
             impl_->options.onElementEvent(makeElementEvent(ElementEventType::MouseDown, *target, event, x, y));
@@ -2021,6 +2051,7 @@ bool Runtime::handleEvent(const Event& event) {
             if (!selectable ||
                 selectable != selectableTextTarget(hit) ||
                 !impl_->options.onElementEvent) {
+                consumed = isPointerConsumingTarget(pressed) || isPointerConsumingTarget(hit);
                 break;
             }
             const bool selectedText =
@@ -2032,7 +2063,9 @@ bool Runtime::handleEvent(const Event& event) {
                 }
             }
         }
-        consumed = hit != nullptr || pressed != nullptr;
+        consumed = consumed ||
+                   isPointerConsumingTarget(hit) ||
+                   isPointerConsumingTarget(pressed);
         impl_->mousePressed = false;
         impl_->pressedButton = MouseButton::None;
         impl_->pressedLeaf = nullptr;
@@ -2263,7 +2296,7 @@ bool Runtime::handleEvent(const Event& event) {
     } else if (scrollChanged || stateChanged || textChanged) {
         impl_->dirty = true;
     }
-    return consumed || stateChanged || scrollChanged;
+    return consumed;
 }
 
 void Runtime::render(SkCanvas& canvas) {
@@ -2622,6 +2655,22 @@ bool Runtime::setVisibleById(std::string_view id, bool visible) {
         return false;
     }
     const std::string nextStyle = styleWithDisplay(node->attributes["style"], visible);
+    node->attributes["style"] = nextStyle;
+    syncNodeAttribute(*node, "style");
+    impl_->lastError.clear();
+    impl_->finishDocumentMutation();
+    return true;
+}
+
+bool Runtime::setConsumesEventsById(std::string_view id, bool consumesEvents) {
+    if (!impl_->hasDocument || !impl_->document.root || id.empty()) {
+        return false;
+    }
+    Node* node = findById(*impl_->document.root, id);
+    if (!node) {
+        return false;
+    }
+    const std::string nextStyle = styleWithPointerEvents(node->attributes["style"], consumesEvents);
     node->attributes["style"] = nextStyle;
     syncNodeAttribute(*node, "style");
     impl_->lastError.clear();

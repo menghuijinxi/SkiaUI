@@ -406,6 +406,7 @@ void SkiaRenderer::clearCaches() {
     svgDomCache_.clear();
     textCache_.clear();
     clearNodeCaches();
+    displayedBitmapImages_.clear();
     bitmapState_.reset();
 }
 
@@ -421,6 +422,7 @@ void SkiaRenderer::shutdownCaches() {
     textCache_.clear();
     textLineCache_.clear();
     boxCache_.clear();
+    displayedBitmapImages_.clear();
     bitmapState_.reset();
 }
 
@@ -860,24 +862,13 @@ void SkiaRenderer::drawImage(SkCanvas& canvas, const Document& document, const N
             return;
         }
         BitmapImageEntry entry = bitmapImageEntry(path);
-        sk_sp<SkImage> image = bitmapImageForEntry(path, entry);
+        int imageWidth = 0;
+        int imageHeight = 0;
+        sk_sp<SkImage> image = displayBitmapImageForNode(node, path, entry, imageWidth, imageHeight);
         if (!image) {
             return;
         }
-        canvas.save();
-        if (node.style.borderRadius.any()) {
-            canvas.clipRRect(makeRRect(node.layout, node.style.borderRadius), SkClipOp::kIntersect, true);
-        } else {
-            canvas.clipRect(node.layout.sk(), SkClipOp::kIntersect, true);
-        }
-        SkPaint paint;
-        paint.setAntiAlias(true);
-        const SkSamplingOptions sampling = entry.width < 2 || entry.height < 2
-                                             ? SkSamplingOptions(SkFilterMode::kNearest)
-                                             : SkSamplingOptions(SkFilterMode::kLinear);
-        const SkRect srcRect = SkRect::MakeWH(static_cast<float>(entry.width), static_cast<float>(entry.height));
-        canvas.drawImageRect(image.get(), srcRect, node.layout.sk(), sampling, &paint, SkCanvas::kStrict_SrcRectConstraint);
-        canvas.restore();
+        drawBitmapImage(canvas, node, *image, imageWidth, imageHeight);
         return;
     }
 
@@ -889,6 +880,67 @@ void SkiaRenderer::drawImage(SkCanvas& canvas, const Document& document, const N
         ++traceSvgCount_;
     }
     drawSvgMarkup(canvas, *svg, node.layout, node.style.color);
+}
+
+sk_sp<SkImage> SkiaRenderer::displayBitmapImageForNode(const Node& node,
+                                                       const std::string& path,
+                                                       const BitmapImageEntry& entry,
+                                                       int& imageWidth,
+                                                       int& imageHeight) {
+    sk_sp<SkImage> image = bitmapImageForEntry(path, entry);
+    if (image) {
+        DisplayedBitmapImage& displayed = displayedBitmapImages_[&node];
+        displayed.path = path;
+        displayed.image = image;
+        displayed.lastUsedFrame = entry.lastUsedFrame;
+        displayed.width = entry.width;
+        displayed.height = entry.height;
+        imageWidth = displayed.width;
+        imageHeight = displayed.height;
+        return image;
+    }
+
+    const auto displayedIt = displayedBitmapImages_.find(&node);
+    if (displayedIt == displayedBitmapImages_.end() || !displayedIt->second.image) {
+        return nullptr;
+    }
+    if (bitmapState_) {
+        std::lock_guard lock(bitmapState_->mutex);
+        displayedIt->second.lastUsedFrame = bitmapState_->frame;
+    }
+    imageWidth = displayedIt->second.width;
+    imageHeight = displayedIt->second.height;
+    return displayedIt->second.image;
+}
+
+void SkiaRenderer::drawBitmapImage(SkCanvas& canvas,
+                                   const Node& node,
+                                   SkImage& image,
+                                   int imageWidth,
+                                   int imageHeight) {
+    if (imageWidth <= 0 || imageHeight <= 0) {
+        return;
+    }
+
+    canvas.save();
+    if (node.style.borderRadius.any()) {
+        canvas.clipRRect(makeRRect(node.layout, node.style.borderRadius), SkClipOp::kIntersect, true);
+    } else {
+        canvas.clipRect(node.layout.sk(), SkClipOp::kIntersect, true);
+    }
+    SkPaint paint;
+    paint.setAntiAlias(true);
+    const SkSamplingOptions sampling = imageWidth < 2 || imageHeight < 2
+                                           ? SkSamplingOptions(SkFilterMode::kNearest)
+                                           : SkSamplingOptions(SkFilterMode::kLinear);
+    const SkRect srcRect = SkRect::MakeWH(static_cast<float>(imageWidth), static_cast<float>(imageHeight));
+    canvas.drawImageRect(&image,
+                         srcRect,
+                         node.layout.sk(),
+                         sampling,
+                         &paint,
+                         SkCanvas::kStrict_SrcRectConstraint);
+    canvas.restore();
 }
 
 sk_sp<SkImage> SkiaRenderer::bitmapImageForEntry(const std::string& path, const BitmapImageEntry& entry) {
@@ -936,8 +988,72 @@ void SkiaRenderer::endBitmapFrame() {
     if (!state) {
         return;
     }
-    std::lock_guard lock(state->mutex);
-    pruneBitmapCacheLocked(*state);
+    uint64_t frame = 0;
+    {
+        std::lock_guard lock(state->mutex);
+        frame = state->frame;
+        pruneBitmapCacheLocked(*state);
+    }
+
+    for (auto it = displayedBitmapImages_.begin(); it != displayedBitmapImages_.end();) {
+        if (it->second.lastUsedFrame != frame) {
+            it = displayedBitmapImages_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+void SkiaRenderer::requestBitmapImages(const Document& document) {
+    if (!document.root) {
+        return;
+    }
+    requestBitmapImagesForNode(document, *document.root);
+}
+
+namespace {
+
+bool shouldRequestBitmapImageEagerly(const Node& node) {
+    auto it = node.attributes.find("loading");
+    if (it == node.attributes.end()) {
+        return true;
+    }
+    return lowerAscii(trim(it->second)) != "lazy";
+}
+
+}  // namespace
+
+void SkiaRenderer::requestBitmapImagesForNode(const Document& document, const Node& node) {
+    if (node.tag == "img" &&
+        !node.src.empty() &&
+        !isSvgSource(node.src) &&
+        shouldRequestBitmapImageEagerly(node)) {
+        const std::string path = resolveAssetPath(document, node.src);
+        if (!path.empty()) {
+            requestBitmapImage(path);
+        }
+    }
+
+    for (const auto& child : node.children) {
+        requestBitmapImagesForNode(document, *child);
+    }
+}
+
+void SkiaRenderer::requestBitmapImage(const std::string& path) {
+    if (!bitmapState_) {
+        bitmapState_ = std::make_shared<BitmapImageState>();
+        bitmapState_->budgetBytes = bitmapCacheBudgetBytes_;
+        bitmapState_->workerCount = bitmapLoadWorkerCount_;
+    }
+    std::shared_ptr<BitmapImageState> state = bitmapState_;
+    {
+        std::lock_guard lock(state->mutex);
+        if (state->cache.find(path) != state->cache.end()) {
+            return;
+        }
+        state->cache.emplace(path, BitmapImageEntry{});
+    }
+    enqueueBitmapLoad(state, path);
 }
 
 SkiaRenderer::BitmapImageEntry SkiaRenderer::bitmapImageEntry(const std::string& path) {
@@ -1023,7 +1139,7 @@ void SkiaRenderer::pruneBitmapCacheLocked(BitmapImageState& state) {
             if (entry.state != ImageState::Ready || entry.byteSize == 0) {
                 continue;
             }
-            if (entry.lastUsedFrame == state.frame) {
+            if (state.frame != 0 && entry.lastUsedFrame == state.frame) {
                 continue;
             }
             if (entry.lastUsedFrame < oldestFrame) {

@@ -271,6 +271,44 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCmd) {
 
 自定义后端传给 `Runtime::resize(width, height, dpiScale)` 的 `dpiScale` 应只表示平台 DPI 倍率。如果宿主不希望 SkUI 跟随系统 DPI，就传 `1.0f`；如果还需要用户自定义 UI 缩放，设置 `RuntimeOptions::scale` 或运行时调用 `Runtime::setScale(scale)`。SkUI 内部会用 `dpiScale * scale` 统一处理逻辑视口、Skia 绘制缩放和输入命中坐标。
 
+### 透明叠层与事件透传
+
+`Runtime::handleEvent(event)` 的返回值表示 SkUI 是否实际消费了该事件。集成到 3D 场景、游戏视口、编辑器视口或其他下层 UI 时，宿主应只在返回 `true` 时拦截平台事件；返回 `false` 时应继续交给下一层处理。
+
+典型流程：
+
+```cpp
+skui::Event event;
+event.type = skui::EventType::MouseDown;
+event.x = pointerX;
+event.y = pointerY;
+event.button = skui::MouseButton::Left;
+
+const bool consumed = runtime.handleEvent(event);
+if (!consumed) {
+    // 继续交给 3D 场景、编辑器视口或宿主自己的输入系统。
+}
+```
+
+透明全屏页面可以正常作为 SkUI 根容器存在。只要空白区域没有命中可交互目标，`handleEvent` 会返回 `false`。可交互目标包括 `data-action` 元素、输入框、`selectable`、滚动条和拖拽选择中的元素；普通容器、普通图片、装饰层不会因为被命中就消费事件。
+
+纯视觉元素建议静态写 `pointer-events: none`：
+
+```css
+.overlay-light {
+  pointer-events: none;
+}
+```
+
+运行时需要切换时使用：
+
+```cpp
+runtime.setConsumesEventsById("overlay-light", false);
+runtime.setConsumesEventsById("overlay-light", true);
+```
+
+这个接口只修改元素的指针事件命中能力，不改变 `display`、`visibility`、布局或绘制。显示隐藏仍按原语义选择：`setVisibleById(id, false)` 表示 `display:none` 且不占布局；`visibility:hidden` 表示隐藏绘制和命中但保留布局占位；`setConsumesEventsById(id, false)` 表示仍显示、仍占布局，但不消费鼠标事件。
+
 最小宿主循环示例：
 
 ```cpp
@@ -372,7 +410,7 @@ ui.setElementEventCallback([&ui](const skui::ElementEvent& event) {
 });
 ```
 
-注意：不要依赖完整 JavaScript 或浏览器 DOM API。SkUI 的动态能力来自 C++ 回调和运行时更新接口。简单状态更新优先使用 `applyUpdates` 批量同步样式、文本和属性；需要运行时增删 UI 节点时，使用 `appendHtmlById`、`prependHtmlById`、`replaceHtmlById`、`removeElementById`。隐藏节点有两种语义：`setVisibleById(id, false)` 使用 `display:none`，隐藏后不占布局；`setStyleById(id, "visibility:hidden;")` 隐藏绘制和命中但保留布局占位。
+注意：不要依赖完整 JavaScript 或浏览器 DOM API。SkUI 的动态能力来自 C++ 回调和运行时更新接口。简单状态更新优先使用 `applyUpdates` 批量同步样式、文本和属性；需要运行时增删 UI 节点时，使用 `appendHtmlById`、`prependHtmlById`、`replaceHtmlById`、`removeElementById`。隐藏节点有两种语义：`setVisibleById(id, false)` 使用 `display:none`，隐藏后不占布局；`setStyleById(id, "visibility:hidden;")` 隐藏绘制和命中但保留布局占位。元素仍显示但不应消耗输入时，使用 `setConsumesEventsById(id, false)` 或 CSS `pointer-events: none`。
 
 聊天记录、日志查看器这类只读文本建议使用 `selectable`。单个 `selectable` 节点内支持显式换行、多行拖选、分行高亮和 `Ctrl+C`；如果运行时写入带 `\n` 的文本，应使用 `setValueById` 保留换行。当前选择范围不会跨多个 DOM 节点，跨消息连续框选需要业务层合并为同一个 `selectable` 或后续扩展跨节点选择模型。
 
@@ -582,7 +620,9 @@ table.refresh(ui, currentScrollY, tableViewportHeight, source);
 2. `RuntimeOptions::assetRoot`。
 3. 原始路径。
 
-`img` 的位图资源首帧会先排队，由 renderer 后台 worker 读取并交给 Skia codec 解码；当前覆盖 PNG、JPEG、WebP 和 BMP。自定义宿主如果不用 `SkuiWin32Dx12`，需要设置 `RuntimeOptions::requestRedraw`，用于在图片完成加载后安排重绘；Win32/DX12 宿主已经接入这个回调。SVG 文件仍按文本读取并交给 Skia SVG DOM 渲染。
+`img` 的位图资源由 renderer 后台 worker 读取并交给 Skia codec 解码；当前覆盖 PNG、JPEG、WebP 和 BMP。默认 `img` 是 eager 行为：样式重算后会为 DOM 中的非 SVG 图片建立异步请求，包括当前 `display:none` 的状态图，适合按钮 normal / active 图、hover 图等需要首次切换不闪空的 UI 资源。需要长列表或图片墙按可见区域加载时，在图片上写浏览器一致的 `loading="lazy"`；lazy 图片不会在 DOM 扫描阶段提前请求，而是在进入绘制路径时再排队。`SkiaImageScrollerDemo` 的缩略图使用 `loading="lazy"`，用于避免滚动图片列表一次性请求全部文件。
+
+同一个 `img` 运行时切换 `src` 时，SkUI 会保留该节点上一张已经显示成功的位图，直到新图片加载完成后再替换。这接近浏览器 current / pending image 的表现，可以避免按下态或动态换图时先显示空白。自定义宿主如果不用 `SkuiWin32Dx12`，需要设置 `RuntimeOptions::requestRedraw`，用于在图片完成加载后安排重绘；Win32/DX12 宿主已经接入这个回调。SVG 文件仍按文本读取并交给 Skia SVG DOM 渲染。
 
 Demo 构建后会把 `assets/skui_demo` 和 `assets/skui_relay_demo` 复制到 exe 目录。其他项目也应该在构建后复制自己的 HTML、SVG 等资源。
 
