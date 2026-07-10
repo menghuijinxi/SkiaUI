@@ -150,12 +150,27 @@
       color: #657285;
       font-size: 14px;
     }
-    .notice-card {
+    .stage-content {
       position: absolute;
       left: 24px;
       top: 94px;
-      right: 312px;
-      height: 98px;
+      right: 24px;
+      bottom: 24px;
+      display: flex;
+      flex-direction: column;
+    }
+    .card-row {
+      display: flex;
+      flex-direction: row;
+      align-items: flex-start;
+      flex-shrink: 0;
+      margin-bottom: 28px;
+    }
+    .notice-card {
+      position: relative;
+      flex-grow: 1;
+      margin-right: 24px;
+      padding: 15px 18px 16px;
       background-color: #eaf7ee;
       border-color: #9ccfad;
       border-width: 1px;
@@ -163,30 +178,26 @@
       border-radius: 8px;
     }
     .notice-title {
-      position: absolute;
-      left: 18px;
-      top: 15px;
-      width: 360px;
-      height: 24px;
+      display: block;
+      position: relative;
+      margin-bottom: 5px;
       color: #185c2c;
       font-size: 16px;
       font-weight: bold;
+      line-height: 1.38;
     }
     .notice-text {
-      position: absolute;
-      left: 18px;
-      top: 44px;
-      width: 340px;
-      height: 22px;
+      display: block;
+      position: relative;
       color: #367247;
       font-size: 14px;
+      line-height: 1.38;
     }
     .motion-card {
-      position: absolute;
-      right: 24px;
-      top: 94px;
+      position: relative;
       width: 260px;
-      height: 98px;
+      flex-shrink: 0;
+      padding: 15px 18px 16px;
       background-color: #eef4ff;
       border-color: #9bbdf5;
       border-width: 1px;
@@ -195,30 +206,25 @@
       transition: transform 600ms ease, opacity 600ms ease;
     }
     .motion-title {
-      position: absolute;
-      left: 18px;
-      top: 15px;
-      width: 220px;
-      height: 24px;
+      display: block;
+      position: relative;
+      margin-bottom: 5px;
       color: #174a8f;
       font-size: 16px;
       font-weight: bold;
+      line-height: 1.38;
     }
     .motion-text {
-      position: absolute;
-      left: 18px;
-      top: 44px;
-      width: 220px;
-      height: 22px;
+      display: block;
+      position: relative;
       color: #4f6688;
       font-size: 13px;
+      line-height: 1.38;
     }
     .list {
-      position: absolute;
-      left: 24px;
-      top: 220px;
-      right: 24px;
-      bottom: 24px;
+      position: relative;
+      flex-grow: 1;
+      min-height: 0;
       background-color: #f8fafc;
       border-color: #e1e7ef;
       border-width: 1px;
@@ -331,15 +337,18 @@
     <div class="stage">
       <selectable class="stage-title">Live area</selectable>
       <selectable class="stage-note">The list below uses normal column layout; the blue card uses CSS transition.</selectable>
-      <div id="notice-card" class="notice-card">
-        <selectable class="notice-title">Visible card</selectable>
-        <selectable class="notice-text">This block uses display none, so hidden state removes it from layout and hit testing.</selectable>
-      </div>
-      <div id="motion-card" class="motion-card">
-        <selectable class="motion-title">Animated card</selectable>
-        <selectable class="motion-text">Runtime style changes drive transform and opacity transitions.</selectable>
-      </div>
-      <div class="list">
+      <div class="stage-content">
+        <div class="card-row">
+          <div id="notice-card" class="notice-card">
+            <selectable class="notice-title">Visible card</selectable>
+            <selectable class="notice-text">This block uses display none, so hidden state removes it from layout and hit testing.</selectable>
+          </div>
+          <div id="motion-card" class="motion-card">
+            <selectable class="motion-title">Animated card</selectable>
+            <selectable class="motion-text">Runtime style changes drive transform and opacity transitions.</selectable>
+          </div>
+        </div>
+        <div class="list">
         <selectable class="list-title">Messages</selectable>
         <selectable class="list-note">Scrollbar should appear, shrink and grow as items are hidden, added or removed.</selectable>
         <div id="message-viewport" class="message-viewport">
@@ -385,6 +394,7 @@
               <selectable class="message-text">Initial item used to keep the viewport scrollable.</selectable>
             </div>
           </div>
+        </div>
         </div>
       </div>
     </div>
