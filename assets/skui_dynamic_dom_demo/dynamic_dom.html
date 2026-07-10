@@ -33,10 +33,92 @@
       position: absolute;
       left: 36px;
       top: 66px;
-      width: 920px;
+      width: 720px;
       height: 24px;
       color: #5d6b7c;
       font-size: 15px;
+    }
+    @keyframes note-sprite-frames {
+      0% { background-position: 0% 0%; }
+      1.851852% { background-position: 12.5% 0%; }
+      3.703704% { background-position: 25% 0%; }
+      5.555556% { background-position: 37.5% 0%; }
+      7.407407% { background-position: 50% 0%; }
+      9.259259% { background-position: 62.5% 0%; }
+      11.111111% { background-position: 75% 0%; }
+      12.962963% { background-position: 87.5% 0%; }
+      14.814815% { background-position: 100% 0%; }
+      16.666667% { background-position: 0% 20%; }
+      18.518519% { background-position: 12.5% 20%; }
+      20.370370% { background-position: 25% 20%; }
+      22.222222% { background-position: 37.5% 20%; }
+      24.074074% { background-position: 50% 20%; }
+      25.925926% { background-position: 62.5% 20%; }
+      27.777778% { background-position: 75% 20%; }
+      29.629630% { background-position: 87.5% 20%; }
+      31.481481% { background-position: 100% 20%; }
+      33.333333% { background-position: 0% 40%; }
+      35.185185% { background-position: 12.5% 40%; }
+      37.037037% { background-position: 25% 40%; }
+      38.888889% { background-position: 37.5% 40%; }
+      40.740741% { background-position: 50% 40%; }
+      42.592593% { background-position: 62.5% 40%; }
+      44.444444% { background-position: 75% 40%; }
+      46.296296% { background-position: 87.5% 40%; }
+      48.148148% { background-position: 100% 40%; }
+      50% { background-position: 0% 60%; }
+      51.851852% { background-position: 12.5% 60%; }
+      53.703704% { background-position: 25% 60%; }
+      55.555556% { background-position: 37.5% 60%; }
+      57.407407% { background-position: 50% 60%; }
+      59.259259% { background-position: 62.5% 60%; }
+      61.111111% { background-position: 75% 60%; }
+      62.962963% { background-position: 87.5% 60%; }
+      64.814815% { background-position: 100% 60%; }
+      66.666667% { background-position: 0% 80%; }
+      68.518519% { background-position: 12.5% 80%; }
+      70.370370% { background-position: 25% 80%; }
+      72.222222% { background-position: 37.5% 80%; }
+      74.074074% { background-position: 50% 80%; }
+      75.925926% { background-position: 62.5% 80%; }
+      77.777778% { background-position: 75% 80%; }
+      79.629630% { background-position: 87.5% 80%; }
+      81.481481% { background-position: 100% 80%; }
+      83.333333% { background-position: 0% 100%; }
+      85.185185% { background-position: 12.5% 100%; }
+      87.037037% { background-position: 25% 100%; }
+      88.888889% { background-position: 37.5% 100%; }
+      90.740741% { background-position: 50% 100%; }
+      92.592593% { background-position: 62.5% 100%; }
+      94.444444% { background-position: 75% 100%; }
+      96.296296% { background-position: 87.5% 100%; }
+      98.148148%, 100% { background-position: 100% 100%; }
+    }
+    .sprite-caption {
+      position: absolute;
+      right: 124px;
+      top: 32px;
+      width: 240px;
+      height: 24px;
+      color: #5d6b7c;
+      font-size: 14px;
+    }
+    .sprite-preview {
+      position: absolute;
+      right: 36px;
+      top: 18px;
+      width: 72px;
+      height: 72px;
+      background-color: #ffffff;
+      background-image: url("note_sprite.png");
+      background-size: 900% 600%;
+      background-position: 0% 0%;
+      background-repeat: no-repeat;
+      border-color: #d4dde7;
+      border-width: 1px;
+      border-style: solid;
+      border-radius: 8px;
+      animation: note-sprite-frames 2.25s step-end infinite;
     }
     .toolbar {
       position: absolute;
@@ -318,7 +400,9 @@
 <body>
   <div class="screen">
     <selectable class="title">Dynamic DOM Demo</selectable>
-    <selectable class="subtitle">Tests inline links, display none, visibility hidden, append, replace, delete, auto layout and scrollbars.</selectable>
+    <selectable class="subtitle">Tests DOM updates, layout, transitions and browser-style CSS sprite animation.</selectable>
+    <selectable class="sprite-caption">CSS sprite: 9 x 6, 54 frames, 24 FPS</selectable>
+    <div class="sprite-preview"></div>
 
     <div class="toolbar">
       <selectable class="toolbar-title">Operations</selectable>

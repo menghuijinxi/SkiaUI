@@ -9,7 +9,6 @@
 
 #include <algorithm>
 #include <charconv>
-#include <chrono>
 #include <cctype>
 #include <cmath>
 #include <cstdint>
@@ -965,8 +964,6 @@ std::optional<TransitionDefinition> transitionFor(const Style& style, Transition
     return std::nullopt;
 }
 
-using AnimationClock = std::chrono::steady_clock;
-
 struct ActiveAnimation {
     Node* node = nullptr;
     TransitionProperty property = TransitionProperty::Opacity;
@@ -974,10 +971,25 @@ struct ActiveAnimation {
     float toOpacity = 1.0f;
     Transform fromTransform;
     Transform toTransform;
-    AnimationClock::time_point start;
+    double startSeconds = 0.0;
     float durationSeconds = 0.0f;
     float delaySeconds = 0.0f;
     Easing easing = Easing::Ease;
+};
+
+struct ActiveKeyframeAnimation {
+    Node* node = nullptr;
+    size_t animationIndex = 0;
+    AnimationDefinition definition;
+    double startSeconds = 0.0;
+    std::optional<double> pauseStartedSeconds;
+    double pausedSeconds = 0.0;
+};
+
+struct KeyframeAnimationSample {
+    bool applies = false;
+    bool needsFrame = false;
+    BackgroundPosition position;
 };
 
 struct StyleSnapshot {
@@ -988,8 +1000,117 @@ struct StyleSnapshot {
     Transform targetTransform;
 };
 
-float elapsedSeconds(AnimationClock::time_point from, AnimationClock::time_point to) {
-    return std::chrono::duration<float>(to - from).count();
+bool sameAnimationTiming(const AnimationTimingFunction& lhs,
+                         const AnimationTimingFunction& rhs) {
+    return lhs.kind == rhs.kind &&
+           lhs.easing == rhs.easing &&
+           lhs.steps == rhs.steps &&
+           lhs.stepPosition == rhs.stepPosition;
+}
+
+bool sameAnimationDefinition(const AnimationDefinition& lhs,
+                             const AnimationDefinition& rhs) {
+    return lhs.name == rhs.name &&
+           nearlyEqual(lhs.durationSeconds, rhs.durationSeconds) &&
+           nearlyEqual(lhs.delaySeconds, rhs.delaySeconds) &&
+           nearlyEqual(lhs.iterationCount, rhs.iterationCount) &&
+           sameAnimationTiming(lhs.timing, rhs.timing) &&
+           lhs.direction == rhs.direction &&
+           lhs.fillMode == rhs.fillMode;
+}
+
+bool fillsBackwards(AnimationFillMode fillMode) {
+    return fillMode == AnimationFillMode::Backwards ||
+           fillMode == AnimationFillMode::Both;
+}
+
+bool fillsForwards(AnimationFillMode fillMode) {
+    return fillMode == AnimationFillMode::Forwards ||
+           fillMode == AnimationFillMode::Both;
+}
+
+float directedAnimationProgress(float progress,
+                                size_t iterationIndex,
+                                AnimationDirection direction) {
+    bool reverse = direction == AnimationDirection::Reverse;
+    if (direction == AnimationDirection::Alternate) {
+        reverse = iterationIndex % 2 == 1;
+    } else if (direction == AnimationDirection::AlternateReverse) {
+        reverse = iterationIndex % 2 == 0;
+    }
+    return reverse ? 1.0f - progress : progress;
+}
+
+float animationTimingValue(const AnimationTimingFunction& timing, float progress) {
+    progress = clampf(progress, 0.0f, 1.0f);
+    if (timing.kind == AnimationTimingKind::Easing) {
+        return easingValue(timing.easing, progress);
+    }
+
+    const float stepCount = static_cast<float>(std::max(1, timing.steps));
+    if (timing.stepPosition == AnimationStepPosition::Start) {
+        return clampf((std::floor(progress * stepCount) + 1.0f) / stepCount,
+                      0.0f,
+                      1.0f);
+    }
+    if (progress >= 1.0f) {
+        return 1.0f;
+    }
+    return clampf(std::floor(progress * stepCount) / stepCount, 0.0f, 1.0f);
+}
+
+Length mixLength(const Length& from, const Length& to, float amount) {
+    if (from.unit != to.unit) {
+        return amount < 1.0f ? from : to;
+    }
+    return Length{mix(from.value, to.value, amount), from.unit};
+}
+
+BackgroundPosition mixBackgroundPosition(const BackgroundPosition& from,
+                                         const BackgroundPosition& to,
+                                         float amount) {
+    return {
+        mixLength(from.x, to.x, amount),
+        mixLength(from.y, to.y, amount),
+    };
+}
+
+BackgroundPosition keyframePosition(const Keyframe& frame,
+                                    const BackgroundPosition& fallback) {
+    return frame.style.flags.backgroundPosition
+               ? frame.style.backgroundPosition
+               : fallback;
+}
+
+BackgroundPosition evaluateKeyframes(const KeyframesDefinition& keyframes,
+                                     const BackgroundPosition& fallback,
+                                     const AnimationTimingFunction& timing,
+                                     float progress) {
+    if (keyframes.frames.empty()) {
+        return fallback;
+    }
+    if (progress <= keyframes.frames.front().offset) {
+        return keyframePosition(keyframes.frames.front(), fallback);
+    }
+    if (progress >= keyframes.frames.back().offset) {
+        return keyframePosition(keyframes.frames.back(), fallback);
+    }
+
+    const auto upper = std::upper_bound(
+        keyframes.frames.begin(),
+        keyframes.frames.end(),
+        progress,
+        [](float value, const Keyframe& frame) {
+            return value < frame.offset;
+        });
+    const Keyframe& to = *upper;
+    const Keyframe& from = *(upper - 1);
+    const float span = std::max(0.000001f, to.offset - from.offset);
+    const float localProgress = (progress - from.offset) / span;
+    const float timedProgress = animationTimingValue(timing, localProgress);
+    return mixBackgroundPosition(keyframePosition(from, fallback),
+                                 keyframePosition(to, fallback),
+                                 timedProgress);
 }
 
 void clearAnimatedStyle(Node& node) {
@@ -1015,6 +1136,10 @@ Style renderedStyle(const Node& node) {
         if (node.animatedStyleFlags.transform) {
             style.transform = node.animatedStyle.transform;
             style.flags.transform = true;
+        }
+        if (node.animatedStyleFlags.backgroundPosition) {
+            style.backgroundPosition = node.animatedStyle.backgroundPosition;
+            style.flags.backgroundPosition = true;
         }
     }
     return style;
@@ -1080,6 +1205,13 @@ void writeAnimatedTransform(Node& node, const Transform& transform) {
     node.hasAnimatedStyle = true;
 }
 
+void writeAnimatedBackgroundPosition(Node& node,
+                                     const BackgroundPosition& position) {
+    node.animatedStyle.backgroundPosition = position;
+    node.animatedStyleFlags.backgroundPosition = true;
+    node.hasAnimatedStyle = true;
+}
+
 void removeAnimationFor(std::vector<ActiveAnimation>& animations, const Node* node, TransitionProperty property) {
     animations.erase(std::remove_if(animations.begin(),
                                     animations.end(),
@@ -1116,6 +1248,27 @@ void clearAnimationsForMissingNodes(std::vector<ActiveAnimation>& animations, co
                                     animations.end(),
                                     [&document](const ActiveAnimation& animation) {
                                         return !animation.node || !containsNode(*document.root, animation.node);
+                                    }),
+                     animations.end());
+}
+
+void clearKeyframeAnimationsForNode(
+    std::vector<ActiveKeyframeAnimation>& animations,
+    Node* node) {
+    if (!node) {
+        return;
+    }
+    animations.erase(std::remove_if(animations.begin(),
+                                    animations.end(),
+                                    [node](const ActiveKeyframeAnimation& animation) {
+                                        for (Node* current = animation.node;
+                                             current;
+                                             current = current->parent) {
+                                            if (current == node) {
+                                                return true;
+                                            }
+                                        }
+                                        return false;
                                     }),
                      animations.end());
 }
@@ -1321,6 +1474,183 @@ public:
         return std::max(0.1f, std::max(0.1f, dpiScale) * userScale());
     }
 
+    bool hasBackgroundPositionKeyframes(
+        const KeyframesDefinition& keyframes) const {
+        return std::any_of(keyframes.frames.begin(),
+                           keyframes.frames.end(),
+                           [](const Keyframe& frame) {
+                               return frame.style.flags.backgroundPosition;
+                           });
+    }
+
+    void collectKeyframeAnimations(
+        Node& node,
+        double currentTimeSeconds,
+        std::vector<ActiveKeyframeAnimation>& nextAnimations) {
+        for (size_t index = 0; index < node.style.animations.size(); ++index) {
+            const AnimationDefinition& definition = node.style.animations[index];
+            const auto keyframesIt = document.keyframes.find(definition.name);
+            if (keyframesIt == document.keyframes.end() ||
+                !hasBackgroundPositionKeyframes(keyframesIt->second)) {
+                continue;
+            }
+
+            const auto existing = std::find_if(
+                keyframeAnimations.begin(),
+                keyframeAnimations.end(),
+                [&node, index, &definition](
+                    const ActiveKeyframeAnimation& animation) {
+                    return animation.node == &node &&
+                           animation.animationIndex == index &&
+                           sameAnimationDefinition(animation.definition,
+                                                   definition);
+                });
+
+            ActiveKeyframeAnimation animation;
+            if (existing != keyframeAnimations.end()) {
+                animation = *existing;
+                const bool shouldPause =
+                    definition.playState == AnimationPlayState::Paused;
+                if (shouldPause && !animation.pauseStartedSeconds) {
+                    animation.pauseStartedSeconds = currentTimeSeconds;
+                } else if (!shouldPause &&
+                           animation.pauseStartedSeconds) {
+                    animation.pausedSeconds +=
+                        currentTimeSeconds -
+                        *animation.pauseStartedSeconds;
+                    animation.pauseStartedSeconds.reset();
+                }
+                animation.definition = definition;
+            } else {
+                animation.node = &node;
+                animation.animationIndex = index;
+                animation.definition = definition;
+                animation.startSeconds = currentTimeSeconds;
+                if (definition.playState == AnimationPlayState::Paused) {
+                    animation.pauseStartedSeconds = currentTimeSeconds;
+                }
+            }
+            nextAnimations.push_back(std::move(animation));
+        }
+
+        for (auto& child : node.children) {
+            collectKeyframeAnimations(
+                *child,
+                currentTimeSeconds,
+                nextAnimations);
+        }
+    }
+
+    void syncKeyframeAnimations(double currentTimeSeconds) {
+        if (!document.root) {
+            keyframeAnimations.clear();
+            keyframeFramePending = false;
+            return;
+        }
+
+        std::vector<ActiveKeyframeAnimation> nextAnimations;
+        collectKeyframeAnimations(
+            *document.root,
+            currentTimeSeconds,
+            nextAnimations);
+        keyframeAnimations = std::move(nextAnimations);
+    }
+
+    KeyframeAnimationSample sampleKeyframeAnimation(
+        const ActiveKeyframeAnimation& animation,
+        double currentTimeSeconds) const {
+        KeyframeAnimationSample sample;
+        const auto keyframesIt =
+            document.keyframes.find(animation.definition.name);
+        if (!animation.node ||
+            keyframesIt == document.keyframes.end() ||
+            animation.definition.durationSeconds <= 0.0f) {
+            return sample;
+        }
+
+        const double sampleTimeSeconds =
+            animation.pauseStartedSeconds.value_or(currentTimeSeconds);
+        const float elapsed = static_cast<float>(
+            sampleTimeSeconds -
+            animation.startSeconds -
+            animation.pausedSeconds);
+        const float activeTime = elapsed - animation.definition.delaySeconds;
+        const bool running =
+            animation.definition.playState == AnimationPlayState::Running;
+
+        float progress = 0.0f;
+        size_t iterationIndex = 0;
+        if (activeTime < 0.0f) {
+            sample.needsFrame = running;
+            if (!fillsBackwards(animation.definition.fillMode)) {
+                return sample;
+            }
+        } else {
+            const float duration = animation.definition.durationSeconds;
+            const bool finite = animation.definition.iterationCount >= 0.0f;
+            const float totalDuration =
+                finite ? duration * animation.definition.iterationCount
+                       : 0.0f;
+            if (finite && activeTime >= totalDuration) {
+                if (!fillsForwards(animation.definition.fillMode)) {
+                    return sample;
+                }
+
+                const float completedIterations =
+                    animation.definition.iterationCount;
+                const float wholeIterations = std::floor(completedIterations);
+                const float fractional =
+                    completedIterations - wholeIterations;
+                if (fractional <= 0.000001f &&
+                    completedIterations > 0.0f) {
+                    iterationIndex =
+                        static_cast<size_t>(wholeIterations - 1.0f);
+                    progress = 1.0f;
+                } else {
+                    iterationIndex = static_cast<size_t>(wholeIterations);
+                    progress = fractional;
+                }
+            } else {
+                sample.needsFrame = running;
+                const float iteration = activeTime / duration;
+                const float wholeIteration = std::floor(iteration);
+                iterationIndex =
+                    static_cast<size_t>(std::max(0.0f, wholeIteration));
+                progress = iteration - wholeIteration;
+            }
+        }
+
+        progress = directedAnimationProgress(
+            progress,
+            iterationIndex,
+            animation.definition.direction);
+        sample.position = evaluateKeyframes(
+            keyframesIt->second,
+            animation.node->style.backgroundPosition,
+            animation.definition.timing,
+            progress);
+        sample.applies = true;
+        return sample;
+    }
+
+    bool applyKeyframeAnimations(double currentTimeSeconds) {
+        keyframeFramePending = false;
+        bool changed = false;
+        for (const ActiveKeyframeAnimation& animation : keyframeAnimations) {
+            const KeyframeAnimationSample sample =
+                sampleKeyframeAnimation(animation, currentTimeSeconds);
+            keyframeFramePending =
+                keyframeFramePending || sample.needsFrame;
+            if (!sample.applies) {
+                continue;
+            }
+            writeAnimatedBackgroundPosition(*animation.node,
+                                            sample.position);
+            changed = true;
+        }
+        return changed;
+    }
+
     void recomputeAndLayout() {
         const float viewportWidth = logicalWidth();
         const float viewportHeight = logicalHeight();
@@ -1334,6 +1664,8 @@ public:
         }
         recomputeStyles(document, options, viewportWidth, viewportHeight);
         startTransitions(snapshots);
+        syncKeyframeAnimations(animationTimeSeconds);
+        applyKeyframeAnimations(animationTimeSeconds);
         renderer.requestBitmapImages(document);
         if (traceEnabled) {
             perf::Trace::write("skui", "style_recompute", width, height, perf::Trace::elapsedMs(styleStart));
@@ -1388,7 +1720,7 @@ public:
         animation.property = TransitionProperty::Opacity;
         animation.fromOpacity = snapshot.renderedOpacity;
         animation.toOpacity = nextOpacity;
-        animation.start = AnimationClock::now();
+        animation.startSeconds = animationTimeSeconds;
         animation.durationSeconds = transition->durationSeconds;
         animation.delaySeconds = transition->delaySeconds;
         animation.easing = transition->easing;
@@ -1414,7 +1746,7 @@ public:
         animation.property = TransitionProperty::Transform;
         animation.fromTransform = snapshot.renderedTransform;
         animation.toTransform = nextTransform;
-        animation.start = AnimationClock::now();
+        animation.startSeconds = animationTimeSeconds;
         animation.durationSeconds = transition->durationSeconds;
         animation.delaySeconds = transition->delaySeconds;
         animation.easing = transition->easing;
@@ -1458,7 +1790,8 @@ public:
     }
 
     bool advanceAnimations() {
-        if (activeAnimations.empty() || !document.root) {
+        if ((activeAnimations.empty() && keyframeAnimations.empty()) ||
+            !document.root) {
             return false;
         }
 
@@ -1469,10 +1802,11 @@ public:
         clearAnimationsForMissingNodes(activeAnimations, document);
 
         bool changed = false;
-        const auto now = AnimationClock::now();
         for (ActiveAnimation& animation : activeAnimations) {
-            const float elapsed =
-                elapsedSeconds(animation.start, now) - animation.delaySeconds;
+            const float elapsed = static_cast<float>(
+                                      animationTimeSeconds -
+                                      animation.startSeconds) -
+                                  animation.delaySeconds;
             const float progress =
                 animation.durationSeconds <= 0.0f
                     ? 1.0f
@@ -1496,21 +1830,29 @@ public:
             std::remove_if(
                 activeAnimations.begin(),
                 activeAnimations.end(),
-                [now](const ActiveAnimation& animation) {
-                    return elapsedSeconds(animation.start, now) >=
-                           animation.delaySeconds + animation.durationSeconds;
+                [this](const ActiveAnimation& animation) {
+                    return animationTimeSeconds -
+                               animation.startSeconds >=
+                           static_cast<double>(
+                               animation.delaySeconds +
+                               animation.durationSeconds);
                 }),
             activeAnimations.end());
+        changed = applyKeyframeAnimations(animationTimeSeconds) || changed;
         applyAnimatedStyles(*document.root);
-        if (!activeAnimations.empty()) {
+        if (hasPendingAnimationFrame()) {
             requestAnimationFrame();
         }
         dirty = changed || dirty;
         return changed;
     }
 
+    bool hasPendingAnimationFrame() const {
+        return !activeAnimations.empty() || keyframeFramePending;
+    }
+
     void requestAnimationFrame() const {
-        if (!activeAnimations.empty() && options.requestRedraw) {
+        if (hasPendingAnimationFrame() && options.requestRedraw) {
             options.requestRedraw();
         }
     }
@@ -1645,6 +1987,8 @@ public:
 
     void clearReferencesTo(const Node& subtree) {
         clearAnimationsForNode(activeAnimations, const_cast<Node*>(&subtree));
+        clearKeyframeAnimationsForNode(keyframeAnimations,
+                                       const_cast<Node*>(&subtree));
         if (containsNode(subtree, focusedNode)) {
             setFocusedNode(nullptr);
         }
@@ -1719,6 +2063,9 @@ public:
     Cursor currentCursor = Cursor::Default;
     std::unordered_map<const Node*, EditableLineCacheEntry> editableLineCache;
     std::vector<ActiveAnimation> activeAnimations;
+    std::vector<ActiveKeyframeAnimation> keyframeAnimations;
+    double animationTimeSeconds = 0.0;
+    bool keyframeFramePending = false;
     std::string lastError;
 };
 
@@ -1741,6 +2088,8 @@ bool Runtime::loadDocument(const std::string& path) {
     impl_->renderer.clearCaches();
     impl_->editableLineCache.clear();
     impl_->activeAnimations.clear();
+    impl_->keyframeAnimations.clear();
+    impl_->keyframeFramePending = false;
     if (impl_->document.root) {
         rebindParents(*impl_->document.root, nullptr);
     }
@@ -1774,6 +2123,8 @@ bool Runtime::loadDocumentFromString(std::string_view html, std::string_view bas
     impl_->renderer.clearCaches();
     impl_->editableLineCache.clear();
     impl_->activeAnimations.clear();
+    impl_->keyframeAnimations.clear();
+    impl_->keyframeFramePending = false;
     if (impl_->document.root) {
         rebindParents(*impl_->document.root, nullptr);
     }
@@ -2327,6 +2678,16 @@ bool Runtime::handleEvent(const Event& event) {
     return consumed;
 }
 
+bool Runtime::tick(float deltaSeconds) {
+    if (!std::isfinite(deltaSeconds) || deltaSeconds < 0.0f) {
+        return impl_->hasPendingAnimationFrame();
+    }
+
+    impl_->animationTimeSeconds += static_cast<double>(deltaSeconds);
+    impl_->advanceAnimations();
+    return impl_->hasPendingAnimationFrame();
+}
+
 void Runtime::render(SkCanvas& canvas) {
     const auto traceStart = perf::Trace::now();
     if (!impl_->hasDocument || !impl_->document.root) {
@@ -2334,7 +2695,6 @@ void Runtime::render(SkCanvas& canvas) {
         return;
     }
 
-    impl_->advanceAnimations();
     impl_->renderer.draw(impl_->document, canvas, impl_->width, impl_->height, impl_->effectiveScale());
     impl_->dirty = false;
     perf::Trace::write("skui", "runtime_render", impl_->width, impl_->height, perf::Trace::elapsedMs(traceStart));

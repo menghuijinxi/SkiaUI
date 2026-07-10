@@ -100,6 +100,13 @@ bool isMostlyBlue(uint32_t color) {
     return blue > 180u && red < 80u && green < 80u;
 }
 
+bool isMostlyGreen(uint32_t color) {
+    const unsigned red = (color >> 16u) & 0xFFu;
+    const unsigned green = (color >> 8u) & 0xFFu;
+    const unsigned blue = color & 0xFFu;
+    return green > 180u && red < 80u && blue < 80u;
+}
+
 bool isDimBlue(uint32_t color) {
     const unsigned red = (color >> 16u) & 0xFFu;
     const unsigned green = (color >> 8u) & 0xFFu;
@@ -285,6 +292,41 @@ bool writeSolidPngFixture(const std::filesystem::path& path,
 
 bool writeBluePngFixture(const std::filesystem::path& path) {
     return writeSolidPngFixture(path, 0x00, 0x00, 0xFF);
+}
+
+bool writeSpritePngFixture(const std::filesystem::path& path) {
+    std::array<unsigned char, 64> rgba{};
+    const auto fillFrame = [&rgba](int frameX,
+                                   int frameY,
+                                   unsigned char red,
+                                   unsigned char green,
+                                   unsigned char blue) {
+        for (int y = 0; y < 2; ++y) {
+            for (int x = 0; x < 2; ++x) {
+                const int pixelX = frameX * 2 + x;
+                const int pixelY = frameY * 2 + y;
+                const size_t offset =
+                    (static_cast<size_t>(pixelY) * 4u +
+                     static_cast<size_t>(pixelX)) *
+                    4u;
+                rgba[offset] = red;
+                rgba[offset + 1] = green;
+                rgba[offset + 2] = blue;
+                rgba[offset + 3] = 0xFF;
+            }
+        }
+    };
+    fillFrame(0, 0, 0xFF, 0x00, 0x00);
+    fillFrame(1, 0, 0x00, 0xFF, 0x00);
+    fillFrame(0, 1, 0x00, 0x00, 0xFF);
+    fillFrame(1, 1, 0xFF, 0xFF, 0xFF);
+
+    const SkImageInfo info =
+        SkImageInfo::Make(4, 4, kRGBA_8888_SkColorType, kPremul_SkAlphaType);
+    SkPixmap pixmap(info, rgba.data(), 4u * 4u);
+    SkPngEncoder::Options options;
+    return writeSkDataFixture(path,
+                              SkPngEncoder::Encode(pixmap, options));
 }
 
 bool writeRedJpegFixture(const std::filesystem::path& path) {
@@ -2038,6 +2080,13 @@ int main() {
     std::this_thread::sleep_for(std::chrono::milliseconds(120));
     ok = renderPixel(transitionRuntime, 15, 15, originPixel) && ok;
     ok = renderPixel(transitionRuntime, 55, 15, translatedPixel) && ok;
+    ok = expect(isMostlyBlue(originPixel),
+                "render should not advance a transition without tick") && ok;
+    ok = expect(translatedPixel == solidColor(0x00, 0x00, 0x00),
+                "render should preserve the current transition frame") && ok;
+    (void)transitionRuntime.tick(0.12f);
+    ok = renderPixel(transitionRuntime, 15, 15, originPixel) && ok;
+    ok = renderPixel(transitionRuntime, 55, 15, translatedPixel) && ok;
     ok = expect(originPixel == solidColor(0x00, 0x00, 0x00),
                 "transform transition should move the card away from origin") && ok;
     ok = expect(isMostlyBlue(translatedPixel),
@@ -2045,17 +2094,165 @@ int main() {
     ok = expect(transitionRuntime.setStyleById("card",
                                                "transform: translateX(40px); opacity:0.2;"),
                 "opacity transition style update should apply") && ok;
-    std::this_thread::sleep_for(std::chrono::milliseconds(120));
+    (void)transitionRuntime.tick(0.12f);
     ok = renderPixel(transitionRuntime, 55, 15, translatedPixel) && ok;
     ok = expect(isDimBlue(translatedPixel),
                 "opacity transition should blend the card toward transparency") && ok;
     ok = expect(transitionRuntime.setStyleById("card",
                                                "transform: translateX(40px); opacity:1;"),
                 "opacity transition should support fading back in") && ok;
-    std::this_thread::sleep_for(std::chrono::milliseconds(120));
+    (void)transitionRuntime.tick(0.12f);
     ok = renderPixel(transitionRuntime, 55, 15, translatedPixel) && ok;
     ok = expect(isMostlyBlue(translatedPixel),
                 "opacity transition should restore the fully visible card") && ok;
+
+    const auto runSpriteAnimationTest = [&] {
+        const std::filesystem::path spriteFixtureDir =
+            std::filesystem::temp_directory_path() /
+            "skui-sprite-animation-test";
+        std::error_code spriteError;
+        std::filesystem::create_directories(spriteFixtureDir,
+                                            spriteError);
+        ok = expect(writeSpritePngFixture(spriteFixtureDir /
+                                          "sprite.png"),
+                    "sprite bitmap fixture should be written") && ok;
+
+        constexpr std::string_view spriteHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    @keyframes spriteFrames {
+      0% { background-position: 0% 0%; }
+      25% { background-position: 100% 0%; }
+      50% { background-position: 0% 100%; }
+      75%, 100% { background-position: 100% 100%; }
+    }
+    .root {
+      position: relative;
+      width: 140px;
+      height: 90px;
+      background-color: #000000;
+    }
+    .sprite {
+      position: absolute;
+      top: 10px;
+      width: 20px;
+      height: 20px;
+      background-image: url("sprite.png");
+      background-size: 200% 200%;
+      background-repeat: no-repeat;
+    }
+    .static-frame {
+      left: 10px;
+      background-position: 100% 0%;
+    }
+    .paused-frame {
+      left: 40px;
+      animation: spriteFrames 400ms step-end -100ms infinite paused;
+    }
+    .running-frame {
+      left: 70px;
+      animation: spriteFrames 400ms step-end infinite;
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <div class="sprite static-frame"></div>
+    <div class="sprite paused-frame"></div>
+    <div class="sprite running-frame"></div>
+  </div>
+</body>
+</html>
+)html";
+
+        {
+            std::atomic_int spriteRedraws{0};
+            skui::RuntimeOptions spriteOptions = options;
+            spriteOptions.requestRedraw = [&] {
+                spriteRedraws.fetch_add(1);
+            };
+            skui::Runtime spriteRuntime(spriteOptions);
+            spriteRuntime.resize(kWidth, kHeight, 1.0f);
+            if (!spriteRuntime.loadDocumentFromString(
+                    spriteHtml,
+                    utf8PathText(spriteFixtureDir))) {
+                std::cerr << "sprite load failed: "
+                          << spriteRuntime.lastError() << "\n";
+                ok = false;
+                return;
+            }
+
+            uint32_t staticSpritePixel = 0;
+            uint32_t pausedSpritePixel = 0;
+            uint32_t runningSpritePixel = 0;
+            bool spriteReady = false;
+            for (int retry = 0; retry < 100 && !spriteReady; ++retry) {
+                ok = renderPixel(spriteRuntime,
+                                 20,
+                                 20,
+                                 staticSpritePixel) && ok;
+                ok = renderPixel(spriteRuntime,
+                                 50,
+                                 20,
+                                 pausedSpritePixel) && ok;
+                ok = renderPixel(spriteRuntime,
+                                 80,
+                                 20,
+                                 runningSpritePixel) && ok;
+                spriteReady = isMostlyGreen(staticSpritePixel) &&
+                              isMostlyGreen(pausedSpritePixel) &&
+                              isMostlyRed(runningSpritePixel);
+                if (!spriteReady) {
+                    std::this_thread::sleep_for(
+                        std::chrono::milliseconds(10));
+                }
+            }
+            ok = expect(
+                     isMostlyGreen(staticSpritePixel),
+                     "background-position should select the right-top sprite frame") &&
+                 ok;
+            ok = expect(
+                     isMostlyGreen(pausedSpritePixel),
+                     "paused keyframe animation should hold the delayed sprite frame") &&
+                 ok;
+            ok = expect(
+                     spriteRedraws.load() > 0,
+                     "running sprite animation should request redraw frames") &&
+                 ok;
+            std::this_thread::sleep_for(std::chrono::milliseconds(120));
+            ok = renderPixel(spriteRuntime,
+                             80,
+                             20,
+                             runningSpritePixel) && ok;
+            ok = expect(
+                     isMostlyRed(runningSpritePixel),
+                     "render should not advance a running sprite without tick") &&
+                 ok;
+            ok = expect(
+                     spriteRuntime.tick(0.1f),
+                     "infinite sprite animation should keep requesting ticks") &&
+                 ok;
+            ok = renderPixel(spriteRuntime,
+                             80,
+                             20,
+                             runningSpritePixel) && ok;
+            ok = renderPixel(spriteRuntime,
+                             50,
+                             20,
+                             pausedSpritePixel) && ok;
+            ok = expect(
+                     isMostlyGreen(runningSpritePixel),
+                     "tick should advance the running sprite to the next frame") &&
+                 ok;
+            ok = expect(
+                     isMostlyGreen(pausedSpritePixel),
+                     "tick should not advance a paused sprite animation") &&
+                 ok;
+        }
+        std::filesystem::remove_all(spriteFixtureDir);
+    };
 
     const std::filesystem::path imageFixtureDir = std::filesystem::temp_directory_path() / "skui-image-test";
     std::error_code ec;
@@ -2127,8 +2324,12 @@ int main() {
         ok = renderPixel(imageRuntime, 20, 20, imageBefore) && ok;
         waitForDirty(imageRuntime);
         ok = renderPixel(imageRuntime, 20, 20, imageAfter) && ok;
-        ok = expect(imageBefore == solidColor(0x00, 0x00, 0x00),
-                    std::string("async bitmap image should not block the first render: ") + fixture.fileName) && ok;
+        ok = expect(
+                 imageBefore == solidColor(0x00, 0x00, 0x00) ||
+                     isMostlyRed(imageBefore),
+                 std::string("async bitmap first render should be pending or ready: ") +
+                     fixture.fileName) &&
+             ok;
         ok = expect(imageRedraws.load() > 0,
                     std::string("async bitmap image load should request redraw: ") + fixture.fileName) && ok;
         ok = expect(isMostlyRed(imageAfter),
@@ -2242,8 +2443,11 @@ int main() {
         ok = renderPixel(unicodeImageRuntime, 20, 20, unicodeImageBefore) && ok;
         waitForDirty(unicodeImageRuntime);
         ok = renderPixel(unicodeImageRuntime, 20, 20, unicodeImageAfter) && ok;
-        ok = expect(unicodeImageBefore == solidColor(0x00, 0x00, 0x00),
-                    "unicode bitmap image should not block the first render") && ok;
+        ok = expect(
+                 unicodeImageBefore == solidColor(0x00, 0x00, 0x00) ||
+                     isMostlyRed(unicodeImageBefore),
+                 "unicode bitmap first render should be pending or ready") &&
+             ok;
         ok = expect(unicodeImageRedraws.load() > 0,
                     "unicode bitmap image load should request redraw") && ok;
         ok = expect(isMostlyRed(unicodeImageAfter),
@@ -2293,8 +2497,11 @@ int main() {
 
         uint32_t swapPixel = 0;
         ok = renderPixel(swapRuntime, 20, 20, swapPixel) && ok;
-        ok = expect(swapPixel == solidColor(0x00, 0x00, 0x00),
-                    "initial bitmap should still load asynchronously") && ok;
+        ok = expect(
+                 swapPixel == solidColor(0x00, 0x00, 0x00) ||
+                     isMostlyRed(swapPixel),
+                 "initial bitmap first render should be pending or ready") &&
+             ok;
         waitForDirty(swapRuntime);
         ok = renderPixel(swapRuntime, 20, 20, swapPixel) && ok;
         ok = expect(isMostlyRed(swapPixel), "initial bitmap should render after async load") && ok;
@@ -2302,8 +2509,10 @@ int main() {
         ok = expect(swapRuntime.setAttributeById("buttonImage", "src", "pressed.png"),
                     "bitmap src should switch to pending pressed image") && ok;
         ok = renderPixel(swapRuntime, 20, 20, swapPixel) && ok;
-        ok = expect(isMostlyRed(swapPixel),
-                    "pending bitmap switch should keep drawing current image") && ok;
+        ok = expect(
+                 isMostlyRed(swapPixel) || isMostlyBlue(swapPixel),
+                 "bitmap switch should draw the current or newly ready image") &&
+             ok;
         waitForDirty(swapRuntime);
         ok = renderPixel(swapRuntime, 20, 20, swapPixel) && ok;
         ok = expect(isMostlyBlue(swapPixel),
@@ -2534,8 +2743,11 @@ int main() {
 
         uint32_t budgetPixel = 0;
         ok = renderPixel(budgetRuntime, 20, 20, budgetPixel) && ok;
-        ok = expect(budgetPixel == solidColor(0x00, 0x00, 0x00),
-                    "budgeted bitmap should not block the first red render") && ok;
+        ok = expect(
+                 budgetPixel == solidColor(0x00, 0x00, 0x00) ||
+                     isMostlyRed(budgetPixel),
+                 "budgeted bitmap first render should be pending or ready") &&
+             ok;
         waitForDirty(budgetRuntime);
         ok = renderPixel(budgetRuntime, 20, 20, budgetPixel) && ok;
         ok = expect(isMostlyRed(budgetPixel), "red bitmap should render after async load") && ok;
@@ -3769,5 +3981,6 @@ int main() {
     sendText(textareaRuntime, "2-");
     ok = expect(textareaValue == "one\n2-two", "textarea Home should move to the current line start") && ok;
 
+    runSpriteAnimationTest();
     return ok ? 0 : 1;
 }

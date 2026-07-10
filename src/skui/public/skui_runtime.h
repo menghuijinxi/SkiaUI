@@ -152,6 +152,7 @@ public:
     void beginUpdate();
     void endUpdate();
     bool handleEvent(const Event& event);
+    [[nodiscard]] bool tick(float deltaSeconds);
     void render(SkCanvas& canvas);
     bool renderToBgraPixels(uint32_t* pixels, int width, int height, size_t rowBytes, float dpiScale);
     void setScale(float scale);

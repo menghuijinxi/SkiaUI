@@ -68,7 +68,7 @@
 - 兄弟选择器 `+` / `~`
 - `:not()`、`:has()`、`:is()`
 - CSS 变量
-- 完整 `@keyframes` 动画
+- 完整 CSS Animation 标准；当前提供面向雪碧图的 `@keyframes` / `animation` 子集
 - 外部 CSS 文件自动加载
 
 ## 媒体查询
@@ -125,7 +125,11 @@
 | --- | --- |
 | `color` | 文本色；`progress` 的填充色；SVG 的 `currentColor` |
 | `background-color` | 背景色 |
-| `background` | 支持颜色、`linear-gradient(...)`、`linear-gradient(to right, ...)`、`linear-gradient(to bottom, ...)`、`linear-gradient-x(...)`、`linear-gradient-y(...)`、`radial-gradient(...)` |
+| `background` | 支持颜色、单独的 `url(...)`、`linear-gradient(...)`、`linear-gradient(to right, ...)`、`linear-gradient(to bottom, ...)`、`linear-gradient-x(...)`、`linear-gradient-y(...)`、`radial-gradient(...)` |
+| `background-image` | 本地位图 `url(...)` 或 `none` |
+| `background-size` | 1-2 个 `px`、百分比或 `auto`；百分比相对元素背景区域 |
+| `background-position` | 1-2 个 `px`、百分比或 `left` / `right` / `top` / `bottom` / `center`；百分比按浏览器的“容器尺寸减背景尺寸”公式计算 |
+| `background-repeat` | `repeat`、`no-repeat`、`repeat-x`、`repeat-y` |
 | `border` | 简单 shorthand：宽度、`solid` / `none`、颜色 |
 | `border-color` | 边框色 |
 | `border-width` | 数字或 `px` |
@@ -143,6 +147,41 @@
 - `#RRGGBB`
 - `rgb(r,g,b)`
 - `rgba(r,g,b,a)`，`a` 可用 `0-1` 或 `0-255`
+
+### 关键帧动画
+
+当前支持轻量 CSS Animation 子集，主要用于浏览器式雪碧图：
+
+- `@keyframes` 和 `@-webkit-keyframes`
+- `from`、`to`、百分比以及逗号分隔的关键帧选择器
+- `animation` shorthand，可设置时长、延迟、迭代次数 / `infinite`、方向、fill mode、播放状态
+- `linear`、`ease` 系列、`step-start`、`step-end`、`steps(n, start|end)`
+- 动画时间线只由 `Runtime::tick(deltaSeconds)` 推进，`Runtime::render()` 只绘制当前状态
+- `tick()` 返回是否仍需要后续动画帧；引擎可传入固定步长或本帧真实增量，实现与自身 tick 同步
+- Win32 封装会在每次实际绘制前使用单调时钟自动调用 `tick()`；正在运行的动画掉帧后会按实际经过时间追赶
+- 当前关键帧可动画化属性仅为 `background-position`
+
+引擎循环中的典型调用顺序为：
+
+```cpp
+const bool animationPending = runtime.tick(deltaSeconds);
+runtime.render(canvas);
+```
+
+即使 `animationPending` 为 `false`，业务数据、输入或窗口尺寸变化仍可能要求重新绘制；该返回值只表示动画系统是否还需要继续推进。
+
+9 列、6 行、24 FPS 雪碧图可使用：
+
+```css
+.sprite {
+  width: 72px;
+  height: 72px;
+  background-image: url("note_sprite.png");
+  background-size: 900% 600%;
+  background-repeat: no-repeat;
+  animation: note-sprite-frames 2.25s step-end infinite;
+}
+```
 
 `border-radius` 展开规则与浏览器 CSS shorthand 一致：一个值应用到四角，两个值为左上/右下与右上/左下，三个值为左上、右上/左下、右下，四个值为左上、右上、右下、左下。当前只支持圆形半径，不支持 `border-radius: 8px / 4px` 这类椭圆半径语法。分角圆角会作用于背景、边框、`progress` 填充和 `overflow` 裁剪。
 
@@ -344,8 +383,8 @@ SkUI 的事件返回值表示“UI 是否实际消费了事件”，不是“DOM
 
 - 没有 JavaScript。
 - 没有完整浏览器表单控件。
-- 没有完整 CSS 标准、外部 stylesheet 或 `@keyframes` 动画；当前内置 transition 只覆盖 `opacity` 和
-  `transform` 的轻量子集。
+- 没有完整 CSS 标准或外部 stylesheet。transition 只覆盖 `opacity` 和 `transform`；关键帧动画当前只覆盖
+  `background-position`。
 - `img` 只支持本地资源路径；位图支持 PNG、JPEG、WebP 和 BMP。懒加载属性使用浏览器一致的 `loading="lazy"`，不支持旧式 `data-loading`。暂不支持网络 URL、`srcset` 和浏览器图片事件。
 - 文本排版是单行、`selectable` 显式多行或简单多行编辑框，不是富文本排版引擎；`selectable` 暂不支持跨 DOM 节点连续选择。
 - 中文双击选词目前按单个非 ASCII 字符处理，不做自然语言分词。

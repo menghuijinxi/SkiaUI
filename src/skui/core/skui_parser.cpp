@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <charconv>
 #include <cctype>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -78,7 +79,7 @@ std::optional<float> parseSeconds(std::string_view raw) {
     if (result.ec != std::errc{} || result.ptr != end) {
         return std::nullopt;
     }
-    return std::max(0.0f, seconds * multiplier);
+    return seconds * multiplier;
 }
 
 std::optional<Length> parseLength(std::string_view raw) {
@@ -128,6 +129,139 @@ std::vector<std::string> splitCommaList(std::string_view raw) {
                                }),
                 items.end());
     return items;
+}
+
+std::optional<std::string> parseCssUrl(std::string_view raw) {
+    const std::string value = trim(raw);
+    const std::string valueLower = lower(value);
+    if (valueLower == "none") {
+        return std::string{};
+    }
+    if (!valueLower.starts_with("url(") || value.size() < 5 || value.back() != ')') {
+        return std::nullopt;
+    }
+
+    std::string path = trim(std::string_view(value).substr(4, value.size() - 5));
+    if (path.size() >= 2 &&
+        ((path.front() == '"' && path.back() == '"') ||
+         (path.front() == '\'' && path.back() == '\''))) {
+        path = path.substr(1, path.size() - 2);
+    }
+    return path;
+}
+
+std::optional<Length> parseBackgroundPositionValue(std::string_view raw, bool horizontal) {
+    const std::string value = lower(trim(raw));
+    if (value == "center") {
+        return Length{50.0f, LengthUnit::Percent};
+    }
+    if (horizontal) {
+        if (value == "left") {
+            return Length{0.0f, LengthUnit::Percent};
+        }
+        if (value == "right") {
+            return Length{100.0f, LengthUnit::Percent};
+        }
+    } else {
+        if (value == "top") {
+            return Length{0.0f, LengthUnit::Percent};
+        }
+        if (value == "bottom") {
+            return Length{100.0f, LengthUnit::Percent};
+        }
+    }
+    std::optional<Length> length = parseLength(value);
+    if (!length || length->unit == LengthUnit::Auto) {
+        return std::nullopt;
+    }
+    return length;
+}
+
+std::optional<BackgroundPosition> parseBackgroundPosition(std::string_view raw) {
+    const std::vector<std::string> tokens = splitWhitespace(raw);
+    if (tokens.empty() || tokens.size() > 2) {
+        return std::nullopt;
+    }
+
+    BackgroundPosition position;
+    if (tokens.size() == 1) {
+        const std::string value = lower(tokens.front());
+        if (value == "top" || value == "bottom") {
+            position.x = {50.0f, LengthUnit::Percent};
+            std::optional<Length> y = parseBackgroundPositionValue(tokens.front(), false);
+            if (!y) {
+                return std::nullopt;
+            }
+            position.y = *y;
+            return position;
+        }
+
+        std::optional<Length> x = parseBackgroundPositionValue(tokens.front(), true);
+        if (!x) {
+            return std::nullopt;
+        }
+        position.x = *x;
+        position.y = {50.0f, LengthUnit::Percent};
+        return position;
+    }
+
+    std::optional<Length> x = parseBackgroundPositionValue(tokens[0], true);
+    std::optional<Length> y = parseBackgroundPositionValue(tokens[1], false);
+    if (!x || !y) {
+        const std::string first = lower(tokens[0]);
+        const std::string second = lower(tokens[1]);
+        const bool firstVertical = first == "top" || first == "bottom";
+        const bool secondHorizontal = second == "left" || second == "right";
+        if (!firstVertical || !secondHorizontal) {
+            return std::nullopt;
+        }
+        x = parseBackgroundPositionValue(tokens[1], true);
+        y = parseBackgroundPositionValue(tokens[0], false);
+    }
+    if (!x || !y) {
+        return std::nullopt;
+    }
+
+    position.x = *x;
+    position.y = *y;
+    return position;
+}
+
+std::optional<BackgroundSize> parseBackgroundSize(std::string_view raw) {
+    const std::vector<std::string> tokens = splitWhitespace(raw);
+    if (tokens.empty() || tokens.size() > 2) {
+        return std::nullopt;
+    }
+
+    std::optional<Length> width = parseLength(tokens[0]);
+    std::optional<Length> height =
+        tokens.size() > 1 ? parseLength(tokens[1])
+                          : std::optional<Length>{Length{0.0f, LengthUnit::Auto}};
+    if (!width || !height) {
+        return std::nullopt;
+    }
+    if ((width->unit != LengthUnit::Auto && width->value < 0.0f) ||
+        (height->unit != LengthUnit::Auto && height->value < 0.0f)) {
+        return std::nullopt;
+    }
+    return BackgroundSize{*width, *height};
+}
+
+std::optional<BackgroundRepeat> parseBackgroundRepeat(std::string_view raw) {
+    const std::string value = lower(trim(raw));
+    if (value == "repeat") {
+        return BackgroundRepeat::Repeat;
+    }
+    if (value == "no-repeat") {
+        return BackgroundRepeat::NoRepeat;
+    }
+    if (value == "repeat-x") {
+        return BackgroundRepeat::RepeatX;
+    }
+    if (value == "repeat-y") {
+        return BackgroundRepeat::RepeatY;
+    }
+    return std::nullopt;
 }
 
 std::string attr(lxb_dom_element_t* element, const char* name) {
@@ -536,6 +670,174 @@ std::optional<Easing> parseEasing(std::string_view raw) {
     return std::nullopt;
 }
 
+std::optional<AnimationTimingFunction> parseAnimationTimingFunction(std::string_view raw) {
+    if (std::optional<Easing> easing = parseEasing(raw)) {
+        AnimationTimingFunction timing;
+        timing.easing = *easing;
+        return timing;
+    }
+
+    const std::string value = lower(trim(raw));
+    if (value == "step-start") {
+        AnimationTimingFunction timing;
+        timing.kind = AnimationTimingKind::Steps;
+        timing.stepPosition = AnimationStepPosition::Start;
+        return timing;
+    }
+    if (value == "step-end") {
+        AnimationTimingFunction timing;
+        timing.kind = AnimationTimingKind::Steps;
+        timing.stepPosition = AnimationStepPosition::End;
+        return timing;
+    }
+    if (!value.starts_with("steps(") || value.back() != ')') {
+        return std::nullopt;
+    }
+
+    const std::vector<std::string> args =
+        splitCommaList(std::string_view(value).substr(6, value.size() - 7));
+    if (args.empty() || args.size() > 2) {
+        return std::nullopt;
+    }
+
+    int steps = 0;
+    const auto result = std::from_chars(args[0].data(),
+                                        args[0].data() + args[0].size(),
+                                        steps);
+    if (result.ec != std::errc{} || result.ptr != args[0].data() + args[0].size() ||
+        steps <= 0) {
+        return std::nullopt;
+    }
+
+    AnimationTimingFunction timing;
+    timing.kind = AnimationTimingKind::Steps;
+    timing.steps = steps;
+    if (args.size() == 2) {
+        const std::string position = lower(trim(args[1]));
+        if (position == "start" || position == "jump-start") {
+            timing.stepPosition = AnimationStepPosition::Start;
+        } else if (position == "end" || position == "jump-end") {
+            timing.stepPosition = AnimationStepPosition::End;
+        } else {
+            return std::nullopt;
+        }
+    }
+    return timing;
+}
+
+bool isAnimationTimeToken(std::string_view raw) {
+    const std::string value = lower(trim(raw));
+    if (value == "0") {
+        return true;
+    }
+    if (!value.ends_with("ms") && !value.ends_with("s")) {
+        return false;
+    }
+    return parseSeconds(value).has_value();
+}
+
+void parseAnimation(std::string_view raw, Style& style) {
+    const std::string value = lower(trim(raw));
+    style.animations.clear();
+    style.flags.animation = true;
+    if (value.empty() || value == "none") {
+        return;
+    }
+
+    for (const std::string& item : splitCommaList(raw)) {
+        AnimationDefinition animation;
+        bool hasDuration = false;
+        bool hasDelay = false;
+        bool valid = true;
+        for (const std::string& token : splitWhitespace(item)) {
+            const std::string tokenLower = lower(token);
+            if (std::optional<AnimationTimingFunction> timing =
+                    parseAnimationTimingFunction(token)) {
+                animation.timing = *timing;
+                continue;
+            }
+            if (isAnimationTimeToken(token)) {
+                std::optional<float> seconds = parseSeconds(token);
+                if (!seconds) {
+                    valid = false;
+                    break;
+                }
+                if (!hasDuration) {
+                    animation.durationSeconds = *seconds;
+                    hasDuration = true;
+                } else if (!hasDelay) {
+                    animation.delaySeconds = *seconds;
+                    hasDelay = true;
+                } else {
+                    valid = false;
+                    break;
+                }
+                continue;
+            }
+            if (tokenLower == "infinite") {
+                animation.iterationCount = -1.0f;
+                continue;
+            }
+            if (tokenLower == "normal") {
+                animation.direction = AnimationDirection::Normal;
+                continue;
+            }
+            if (tokenLower == "reverse") {
+                animation.direction = AnimationDirection::Reverse;
+                continue;
+            }
+            if (tokenLower == "alternate") {
+                animation.direction = AnimationDirection::Alternate;
+                continue;
+            }
+            if (tokenLower == "alternate-reverse") {
+                animation.direction = AnimationDirection::AlternateReverse;
+                continue;
+            }
+            if (tokenLower == "forwards") {
+                animation.fillMode = AnimationFillMode::Forwards;
+                continue;
+            }
+            if (tokenLower == "backwards") {
+                animation.fillMode = AnimationFillMode::Backwards;
+                continue;
+            }
+            if (tokenLower == "both") {
+                animation.fillMode = AnimationFillMode::Both;
+                continue;
+            }
+            if (tokenLower == "running") {
+                animation.playState = AnimationPlayState::Running;
+                continue;
+            }
+            if (tokenLower == "paused") {
+                animation.playState = AnimationPlayState::Paused;
+                continue;
+            }
+
+            float iterations = 0.0f;
+            if (parseFloat(token, iterations) && iterations >= 0.0f) {
+                animation.iterationCount = iterations;
+                continue;
+            }
+            if (animation.name.empty()) {
+                animation.name = token;
+                continue;
+            }
+            valid = false;
+            break;
+        }
+
+        if (valid &&
+            !animation.name.empty() &&
+            hasDuration &&
+            animation.durationSeconds > 0.0f &&
+            animation.iterationCount != 0.0f) {
+            style.animations.push_back(std::move(animation));
+        }
+    }
+}
+
 std::optional<TransitionProperty> parseTransitionProperty(std::string_view raw) {
     const std::string value = lower(trim(raw));
     if (value == "all") {
@@ -859,6 +1161,22 @@ void mergeStyle(Style& target, const Style& source) {
         target.backgroundColor = source.backgroundColor;
         target.flags.backgroundColor = true;
     }
+    if (f.backgroundImage) {
+        target.backgroundImage = source.backgroundImage;
+        target.flags.backgroundImage = true;
+    }
+    if (f.backgroundPosition) {
+        target.backgroundPosition = source.backgroundPosition;
+        target.flags.backgroundPosition = true;
+    }
+    if (f.backgroundSize) {
+        target.backgroundSize = source.backgroundSize;
+        target.flags.backgroundSize = true;
+    }
+    if (f.backgroundRepeat) {
+        target.backgroundRepeat = source.backgroundRepeat;
+        target.flags.backgroundRepeat = true;
+    }
     if (f.borderColor) {
         target.borderColor = source.borderColor;
         target.flags.borderColor = true;
@@ -910,6 +1228,10 @@ void mergeStyle(Style& target, const Style& source) {
     if (f.transition) {
         target.transitions = source.transitions;
         target.flags.transition = true;
+    }
+    if (f.animation) {
+        target.animations = source.animations;
+        target.flags.animation = true;
     }
     if (f.overflowX) {
         target.overflowX = source.overflowX;
@@ -1128,6 +1450,7 @@ void applyAnimatedStylesToSelf(Node& node) {
     animated.flags = node.animatedStyleFlags;
     animated.opacity = node.animatedStyle.opacity;
     animated.transform = node.animatedStyle.transform;
+    animated.backgroundPosition = node.animatedStyle.backgroundPosition;
     mergeStyle(node.style, animated);
 }
 
@@ -1288,9 +1611,14 @@ struct MediaContext {
     std::optional<float> maxViewportHeight;
 };
 
-void parseStyleSheet(std::string_view css, std::vector<StyleRule>& rules, MediaContext media = {});
+void parseStyleSheet(std::string_view css,
+                     std::vector<StyleRule>& rules,
+                     std::unordered_map<std::string, KeyframesDefinition>& keyframes,
+                     MediaContext media = {});
 
-void collectStyleSheets(lxb_dom_node_t* root, std::vector<StyleRule>& rules) {
+void collectStyleSheets(lxb_dom_node_t* root,
+                        std::vector<StyleRule>& rules,
+                        std::unordered_map<std::string, KeyframesDefinition>& keyframes) {
     if (!root) {
         return;
     }
@@ -1306,11 +1634,11 @@ void collectStyleSheets(lxb_dom_node_t* root, std::vector<StyleRule>& rules) {
                     }
                 }
             }
-            parseStyleSheet(css, rules);
+            parseStyleSheet(css, rules, keyframes);
         }
     }
     for (lxb_dom_node_t* child = root->first_child; child; child = child->next) {
-        collectStyleSheets(child, rules);
+        collectStyleSheets(child, rules, keyframes);
     }
 }
 
@@ -1455,9 +1783,34 @@ void applyDeclaration(Style& style, std::string_view rawName, std::string_view r
     } else if (name == "background-color") {
         style.backgroundColor = parseColor(value, style.backgroundColor);
         style.flags.backgroundColor = true;
+    } else if (name == "background-image") {
+        if (std::optional<std::string> image = parseCssUrl(value)) {
+            style.backgroundImage = std::move(*image);
+            style.flags.backgroundImage = true;
+        }
+    } else if (name == "background-position") {
+        if (std::optional<BackgroundPosition> position = parseBackgroundPosition(value)) {
+            style.backgroundPosition = *position;
+            style.flags.backgroundPosition = true;
+        }
+    } else if (name == "background-size") {
+        if (std::optional<BackgroundSize> size = parseBackgroundSize(value)) {
+            style.backgroundSize = *size;
+            style.flags.backgroundSize = true;
+        }
+    } else if (name == "background-repeat") {
+        if (std::optional<BackgroundRepeat> repeat = parseBackgroundRepeat(value)) {
+            style.backgroundRepeat = *repeat;
+            style.flags.backgroundRepeat = true;
+        }
     } else if (name == "background") {
-        parseGradient(value, style);
-        if (!style.flags.backgroundGradient) {
+        if (std::optional<std::string> image = parseCssUrl(value)) {
+            style.backgroundImage = std::move(*image);
+            style.flags.backgroundImage = true;
+        } else {
+            parseGradient(value, style);
+        }
+        if (!style.flags.backgroundGradient && !style.flags.backgroundImage) {
             style.backgroundColor = parseColor(value, style.backgroundColor);
             style.flags.backgroundColor = true;
         }
@@ -1501,6 +1854,8 @@ void applyDeclaration(Style& style, std::string_view rawName, std::string_view r
         }
     } else if (name == "transition") {
         parseTransition(value, style);
+    } else if (name == "animation") {
+        parseAnimation(value, style);
     } else if (name == "overflow") {
         if (std::optional<Overflow> overflow = parseOverflow(value)) {
             style.overflowX = *overflow;
@@ -1807,8 +2162,12 @@ MediaContext parseMediaCondition(std::string_view header, MediaContext inherited
         const std::string remainingLower = lower(std::string(std::string_view(condition).substr(start)));
         const size_t found = remainingLower.find(" and ");
         const size_t andPos = found == std::string::npos ? std::string::npos : start + found;
-        const std::string_view part = condition.substr(start,
-                                                       andPos == std::string::npos ? condition.size() - start : andPos - start);
+        const std::string_view part =
+            std::string_view(condition).substr(
+                start,
+                andPos == std::string::npos
+                    ? condition.size() - start
+                    : andPos - start);
         parseMediaFeature(part, inherited);
         if (andPos == std::string::npos) {
             break;
@@ -1818,7 +2177,85 @@ MediaContext parseMediaCondition(std::string_view header, MediaContext inherited
     return inherited;
 }
 
-void parseStyleSheet(std::string_view css, std::vector<StyleRule>& rules, MediaContext media) {
+std::optional<float> parseKeyframeOffset(std::string_view raw) {
+    std::string value = lower(trim(raw));
+    if (value == "from") {
+        return 0.0f;
+    }
+    if (value == "to") {
+        return 1.0f;
+    }
+    if (!value.ends_with("%")) {
+        return std::nullopt;
+    }
+    value.pop_back();
+
+    float percentage = 0.0f;
+    if (!parseFloat(value, percentage) || percentage < 0.0f || percentage > 100.0f) {
+        return std::nullopt;
+    }
+    return percentage / 100.0f;
+}
+
+void parseKeyframes(std::string_view name,
+                    std::string_view css,
+                    std::unordered_map<std::string, KeyframesDefinition>& keyframes) {
+    const std::string animationName = trim(name);
+    if (animationName.empty()) {
+        return;
+    }
+
+    KeyframesDefinition definition;
+    definition.name = animationName;
+    size_t start = 0;
+    while (start < css.size()) {
+        const size_t open = css.find('{', start);
+        if (open == std::string_view::npos) {
+            break;
+        }
+        const std::optional<size_t> close = findMatchingBrace(css, open);
+        if (!close) {
+            break;
+        }
+
+        const std::string selectorText = trim(css.substr(start, open - start));
+        const std::string block = trim(css.substr(open + 1, *close - open - 1));
+        Style style;
+        parseDeclarations(block, style);
+        for (const std::string& selector : splitCommaList(selectorText)) {
+            if (std::optional<float> offset = parseKeyframeOffset(selector)) {
+                definition.frames.push_back(Keyframe{*offset, style});
+            }
+        }
+        start = *close + 1;
+    }
+
+    if (definition.frames.empty()) {
+        return;
+    }
+    std::stable_sort(definition.frames.begin(),
+                     definition.frames.end(),
+                     [](const Keyframe& lhs, const Keyframe& rhs) {
+                         return lhs.offset < rhs.offset;
+                     });
+    std::vector<Keyframe> normalized;
+    normalized.reserve(definition.frames.size());
+    for (Keyframe& frame : definition.frames) {
+        if (!normalized.empty() &&
+            std::abs(normalized.back().offset - frame.offset) <= 0.000001f) {
+            normalized.back() = std::move(frame);
+        } else {
+            normalized.push_back(std::move(frame));
+        }
+    }
+    definition.frames = std::move(normalized);
+    keyframes[animationName] = std::move(definition);
+}
+
+void parseStyleSheet(std::string_view css,
+                     std::vector<StyleRule>& rules,
+                     std::unordered_map<std::string, KeyframesDefinition>& keyframes,
+                     MediaContext media) {
     const std::string cleanedCss = stripCssComments(css);
     css = cleanedCss;
     size_t start = 0;
@@ -1833,8 +2270,34 @@ void parseStyleSheet(std::string_view css, std::vector<StyleRule>& rules, MediaC
         }
         const std::string selectorText = trim(css.substr(start, open - start));
         const std::string block = trim(css.substr(open + 1, *close - open - 1));
-        if (lower(selectorText).rfind("@media", 0) == 0) {
-            parseStyleSheet(block, rules, parseMediaCondition(selectorText, media));
+        const std::string selectorLower = lower(selectorText);
+        if (selectorLower.rfind("@media", 0) == 0) {
+            const MediaContext nestedMedia =
+                parseMediaCondition(selectorText, media);
+            parseStyleSheet(block,
+                            rules,
+                            keyframes,
+                            nestedMedia);
+            start = *close + 1;
+            continue;
+        }
+        constexpr std::string_view keyframesPrefix = "@keyframes";
+        constexpr std::string_view webkitKeyframesPrefix = "@-webkit-keyframes";
+        if (selectorLower.rfind(keyframesPrefix, 0) == 0) {
+            parseKeyframes(std::string_view(selectorText).substr(keyframesPrefix.size()),
+                           block,
+                           keyframes);
+            start = *close + 1;
+            continue;
+        }
+        if (selectorLower.rfind(webkitKeyframesPrefix, 0) == 0) {
+            parseKeyframes(std::string_view(selectorText).substr(webkitKeyframesPrefix.size()),
+                           block,
+                           keyframes);
+            start = *close + 1;
+            continue;
+        }
+        if (!selectorText.empty() && selectorText.front() == '@') {
             start = *close + 1;
             continue;
         }
@@ -1859,7 +2322,11 @@ void parseStyleSheet(std::string_view css, std::vector<StyleRule>& rules, MediaC
     }
 }
 
-std::unique_ptr<Node> convertElement(lxb_dom_element_t* element, Node* parent, std::vector<StyleRule>& rules) {
+std::unique_ptr<Node> convertElement(
+    lxb_dom_element_t* element,
+    Node* parent,
+    std::vector<StyleRule>& rules,
+    std::unordered_map<std::string, KeyframesDefinition>& keyframes) {
     if (!element) {
         return nullptr;
     }
@@ -1874,7 +2341,7 @@ std::unique_ptr<Node> convertElement(lxb_dom_element_t* element, Node* parent, s
                 }
             }
         }
-        parseStyleSheet(css, rules);
+        parseStyleSheet(css, rules, keyframes);
         return nullptr;
     }
     if (tag == "script" || tag == "head" || tag == "meta" || tag == "title") {
@@ -1928,7 +2395,10 @@ std::unique_ptr<Node> convertElement(lxb_dom_element_t* element, Node* parent, s
                 }
             } else if (child->type == LXB_DOM_NODE_TYPE_ELEMENT) {
                 std::unique_ptr<Node> childNode =
-                    convertElement(lxb_dom_interface_element(child), node.get(), rules);
+                    convertElement(lxb_dom_interface_element(child),
+                                   node.get(),
+                                   rules,
+                                   keyframes);
                 if (childNode) {
                     node->children.push_back(std::move(childNode));
                 }
@@ -1995,13 +2465,17 @@ bool DocumentParser::loadString(std::string_view html,
     }
 
     std::vector<StyleRule> rules;
+    std::unordered_map<std::string, KeyframesDefinition> keyframes;
     if (lxb_html_head_element_t* head = lxb_html_document_head_element(htmlDocument.get())) {
-        collectStyleSheets(lxb_dom_interface_node(head), rules);
+        collectStyleSheets(lxb_dom_interface_node(head), rules, keyframes);
     }
 
     lxb_dom_element_t* documentElement =
         lxb_dom_document_element(lxb_dom_interface_document(htmlDocument.get()));
-    std::unique_ptr<Node> root = convertElement(documentElement, nullptr, rules);
+    std::unique_ptr<Node> root = convertElement(documentElement,
+                                                nullptr,
+                                                rules,
+                                                keyframes);
     if (!root || root->tag != "html") {
         error = "HTML document element conversion failed";
         return false;
@@ -2009,6 +2483,7 @@ bool DocumentParser::loadString(std::string_view html,
 
     outDocument.root = std::move(root);
     outDocument.rules = std::move(rules);
+    outDocument.keyframes = std::move(keyframes);
     outDocument.basePath = std::string(basePath);
     RuntimeOptions styleOptions;
     styleOptions.theme = theme_;

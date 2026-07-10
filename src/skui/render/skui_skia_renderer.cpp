@@ -45,6 +45,74 @@ std::vector<SkColor4f> gradientColors(const std::vector<SkColor>& colors) {
     return stops;
 }
 
+struct ResolvedBackgroundSize {
+    float width = 0.0f;
+    float height = 0.0f;
+};
+
+float resolveBackgroundDimension(const Length& length, float reference) {
+    if (length.unit == LengthUnit::Percent) {
+        return reference * length.value / 100.0f;
+    }
+    if (length.unit == LengthUnit::Px) {
+        return length.value;
+    }
+    return 0.0f;
+}
+
+ResolvedBackgroundSize resolveBackgroundSize(const BackgroundSize& size,
+                                             const Rect& rect,
+                                             int imageWidth,
+                                             int imageHeight) {
+    const bool autoWidth = size.width.unit == LengthUnit::Auto;
+    const bool autoHeight = size.height.unit == LengthUnit::Auto;
+    if (autoWidth && autoHeight) {
+        return {
+            static_cast<float>(imageWidth),
+            static_cast<float>(imageHeight),
+        };
+    }
+
+    const float aspectRatio =
+        imageHeight > 0 ? static_cast<float>(imageWidth) /
+                              static_cast<float>(imageHeight)
+                        : 1.0f;
+    float width = autoWidth
+                      ? 0.0f
+                      : resolveBackgroundDimension(size.width, rect.w);
+    float height = autoHeight
+                       ? 0.0f
+                       : resolveBackgroundDimension(size.height, rect.h);
+    if (autoWidth) {
+        width = height * aspectRatio;
+    } else if (autoHeight) {
+        height = aspectRatio > 0.0f ? width / aspectRatio : 0.0f;
+    }
+    return {width, height};
+}
+
+float resolveBackgroundOffset(const Length& position,
+                              float containerSize,
+                              float imageSize) {
+    if (position.unit == LengthUnit::Percent) {
+        return (containerSize - imageSize) * position.value / 100.0f;
+    }
+    if (position.unit == LengthUnit::Px) {
+        return position.value;
+    }
+    return 0.0f;
+}
+
+bool repeatsBackgroundX(BackgroundRepeat repeat) {
+    return repeat == BackgroundRepeat::Repeat ||
+           repeat == BackgroundRepeat::RepeatX;
+}
+
+bool repeatsBackgroundY(BackgroundRepeat repeat) {
+    return repeat == BackgroundRepeat::Repeat ||
+           repeat == BackgroundRepeat::RepeatY;
+}
+
 SkRRect makeRRect(const Rect& rect, const CornerRadii& radii) {
     SkVector corners[4] = {
         {radii.topLeft, radii.topLeft},
@@ -558,7 +626,7 @@ void SkiaRenderer::drawNode(SkCanvas& canvas, const Document& document, const No
     const bool drawsSelf = node.style.visibility != Visibility::Hidden;
     if (!rejected && drawsSelf) {
         auto start = traceRender_ ? perf::Trace::now() : perf::Trace::Clock::time_point{};
-        drawBox(canvas, node);
+        drawBox(canvas, document, node);
         if (traceRender_) {
             traceBoxMs_ += perf::Trace::elapsedMs(start);
             start = perf::Trace::now();
@@ -620,14 +688,17 @@ void SkiaRenderer::drawNode(SkCanvas& canvas, const Document& document, const No
     canvas.restoreToCount(saveCount);
 }
 
-void SkiaRenderer::drawBox(SkCanvas& canvas, const Node& node) {
+void SkiaRenderer::drawBox(SkCanvas& canvas,
+                           const Document& document,
+                           const Node& node) {
     const Rect r = node.layout;
     if (r.w <= 0.0f || r.h <= 0.0f) {
         return;
     }
 
     const bool hasBackground = SkColorGetA(node.style.backgroundColor) > 0 ||
-                               node.style.backgroundGradient.kind != GradientKind::None;
+                               node.style.backgroundGradient.kind != GradientKind::None ||
+                               !node.style.backgroundImage.empty();
     const SkColor borderColor = node.style.flags.borderColor ? node.style.borderColor : node.style.color;
     const bool hasBorder = node.style.borderStyle == BorderStyle::Solid &&
                            node.style.borderWidth > 0.0f &&
@@ -636,10 +707,13 @@ void SkiaRenderer::drawBox(SkCanvas& canvas, const Node& node) {
         return;
     }
 
-    drawBoxDirect(canvas, node, r);
+    drawBoxDirect(canvas, document, node, r);
 }
 
-void SkiaRenderer::drawBoxDirect(SkCanvas& canvas, const Node& node, const Rect& rect) {
+void SkiaRenderer::drawBoxDirect(SkCanvas& canvas,
+                                 const Document& document,
+                                 const Node& node,
+                                 const Rect& rect) {
     const Rect r = rect;
     if (SkColorGetA(node.style.backgroundColor) > 0 || node.style.backgroundGradient.kind != GradientKind::None) {
         SkPaint paint = backgroundPaint(node, r);
@@ -650,6 +724,8 @@ void SkiaRenderer::drawBoxDirect(SkCanvas& canvas, const Node& node, const Rect&
             canvas.drawRect(r.sk(), paint);
         }
     }
+
+    drawBackgroundImage(canvas, document, node, r);
 
     const SkColor borderColor = node.style.flags.borderColor ? node.style.borderColor : node.style.color;
     if (node.style.borderStyle == BorderStyle::Solid &&
@@ -681,6 +757,102 @@ void SkiaRenderer::drawBoxDirect(SkCanvas& canvas, const Node& node, const Rect&
             }
         }
     }
+}
+
+void SkiaRenderer::drawBackgroundImage(SkCanvas& canvas,
+                                       const Document& document,
+                                       const Node& node,
+                                       const Rect& rect) {
+    if (node.style.backgroundImage.empty() ||
+        isSvgSource(node.style.backgroundImage)) {
+        return;
+    }
+
+    const std::string path =
+        resolveAssetPath(document, node.style.backgroundImage);
+    if (path.empty()) {
+        return;
+    }
+
+    const BitmapImageEntry entry = bitmapImageEntry(path);
+    sk_sp<SkImage> image = bitmapImageForEntry(path, entry);
+    if (!image || entry.width <= 0 || entry.height <= 0) {
+        return;
+    }
+
+    const ResolvedBackgroundSize size =
+        resolveBackgroundSize(node.style.backgroundSize,
+                              rect,
+                              entry.width,
+                              entry.height);
+    if (size.width <= 0.0f || size.height <= 0.0f) {
+        return;
+    }
+
+    float firstX =
+        rect.x + resolveBackgroundOffset(node.style.backgroundPosition.x,
+                                         rect.w,
+                                         size.width);
+    float firstY =
+        rect.y + resolveBackgroundOffset(node.style.backgroundPosition.y,
+                                         rect.h,
+                                         size.height);
+    const bool repeatX = repeatsBackgroundX(node.style.backgroundRepeat);
+    const bool repeatY = repeatsBackgroundY(node.style.backgroundRepeat);
+    if (repeatX) {
+        while (firstX > rect.x) {
+            firstX -= size.width;
+        }
+        while (firstX + size.width <= rect.x) {
+            firstX += size.width;
+        }
+    }
+    if (repeatY) {
+        while (firstY > rect.y) {
+            firstY -= size.height;
+        }
+        while (firstY + size.height <= rect.y) {
+            firstY += size.height;
+        }
+    }
+
+    canvas.save();
+    if (node.style.borderRadius.any()) {
+        canvas.clipRRect(makeRRect(rect, node.style.borderRadius),
+                         SkClipOp::kIntersect,
+                         true);
+    } else {
+        canvas.clipRect(rect.sk(), SkClipOp::kIntersect, true);
+    }
+
+    SkPaint paint;
+    paint.setAntiAlias(true);
+    const SkRect source =
+        SkRect::MakeWH(static_cast<float>(entry.width),
+                       static_cast<float>(entry.height));
+    const SkSamplingOptions sampling(SkFilterMode::kLinear);
+    constexpr int kMaxBackgroundTiles = 4096;
+    int tileCount = 0;
+    const float endX = repeatX ? rect.x + rect.w : firstX + size.width;
+    const float endY = repeatY ? rect.y + rect.h : firstY + size.height;
+    for (float y = firstY;
+         y < endY && tileCount < kMaxBackgroundTiles;
+         y += repeatY ? size.height : endY - firstY) {
+        for (float x = firstX;
+             x < endX && tileCount < kMaxBackgroundTiles;
+             x += repeatX ? size.width : endX - firstX) {
+            const SkRect destination =
+                SkRect::MakeXYWH(x, y, size.width, size.height);
+            canvas.drawImageRect(image.get(),
+                                 source,
+                                 destination,
+                                 sampling,
+                                 &paint,
+                                 SkCanvas::kStrict_SrcRectConstraint);
+            ++tileCount;
+        }
+    }
+    canvas.restore();
 }
 
 void SkiaRenderer::drawProgress(SkCanvas& canvas, const Node& node) {
@@ -945,6 +1117,15 @@ void SkiaRenderer::requestBitmapImagesForNode(const Document& document, const No
         !isSvgSource(node.src) &&
         shouldRequestBitmapImageEagerly(node)) {
         const std::string path = resolveAssetPath(document, node.src);
+        if (!path.empty()) {
+            requestBitmapImage(path);
+        }
+    }
+
+    if (!node.style.backgroundImage.empty() &&
+        !isSvgSource(node.style.backgroundImage)) {
+        const std::string path =
+            resolveAssetPath(document, node.style.backgroundImage);
         if (!path.empty()) {
             requestBitmapImage(path);
         }

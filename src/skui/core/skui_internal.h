@@ -108,9 +108,55 @@ enum class Easing {
     EaseInOut
 };
 
+enum class BackgroundRepeat {
+    Repeat,
+    NoRepeat,
+    RepeatX,
+    RepeatY
+};
+
+enum class AnimationTimingKind {
+    Easing,
+    Steps
+};
+
+enum class AnimationStepPosition {
+    Start,
+    End
+};
+
+enum class AnimationDirection {
+    Normal,
+    Reverse,
+    Alternate,
+    AlternateReverse
+};
+
+enum class AnimationFillMode {
+    None,
+    Forwards,
+    Backwards,
+    Both
+};
+
+enum class AnimationPlayState {
+    Running,
+    Paused
+};
+
 struct Length {
     float value = 0.0f;
     LengthUnit unit = LengthUnit::Px;
+};
+
+struct BackgroundPosition {
+    Length x = {0.0f, LengthUnit::Percent};
+    Length y = {0.0f, LengthUnit::Percent};
+};
+
+struct BackgroundSize {
+    Length width = {0.0f, LengthUnit::Auto};
+    Length height = {0.0f, LengthUnit::Auto};
 };
 
 struct Gradient {
@@ -163,6 +209,24 @@ struct TransitionDefinition {
     Easing easing = Easing::Ease;
 };
 
+struct AnimationTimingFunction {
+    AnimationTimingKind kind = AnimationTimingKind::Easing;
+    Easing easing = Easing::Ease;
+    int steps = 1;
+    AnimationStepPosition stepPosition = AnimationStepPosition::End;
+};
+
+struct AnimationDefinition {
+    std::string name;
+    float durationSeconds = 0.0f;
+    float delaySeconds = 0.0f;
+    float iterationCount = 1.0f;
+    AnimationTimingFunction timing;
+    AnimationDirection direction = AnimationDirection::Normal;
+    AnimationFillMode fillMode = AnimationFillMode::None;
+    AnimationPlayState playState = AnimationPlayState::Running;
+};
+
 struct Style {
     struct Flags {
         bool display = false;
@@ -195,6 +259,10 @@ struct Style {
         bool insetBottom = false;
         bool color = false;
         bool backgroundColor = false;
+        bool backgroundImage = false;
+        bool backgroundPosition = false;
+        bool backgroundSize = false;
+        bool backgroundRepeat = false;
         bool borderColor = false;
         bool borderWidth = false;
         bool borderStyle = false;
@@ -208,6 +276,7 @@ struct Style {
         bool opacity = false;
         bool transform = false;
         bool transition = false;
+        bool animation = false;
         bool overflowX = false;
         bool overflowY = false;
         bool scrollbarGutter = false;
@@ -237,6 +306,10 @@ struct Style {
     EdgeValues inset;
     SkColor color = SkColorSetARGB(235, 239, 247, 253);
     SkColor backgroundColor = SK_ColorTRANSPARENT;
+    std::string backgroundImage;
+    BackgroundPosition backgroundPosition;
+    BackgroundSize backgroundSize;
+    BackgroundRepeat backgroundRepeat = BackgroundRepeat::Repeat;
     SkColor borderColor = SK_ColorTRANSPARENT;
     float borderWidth = 0.0f;
     BorderStyle borderStyle = BorderStyle::None;
@@ -247,11 +320,22 @@ struct Style {
     float opacity = 1.0f;
     Transform transform;
     std::vector<TransitionDefinition> transitions;
+    std::vector<AnimationDefinition> animations;
     Overflow overflowX = Overflow::Visible;
     Overflow overflowY = Overflow::Visible;
     bool scrollbarGutterStable = false;
     PointerEvents pointerEvents = PointerEvents::Auto;
     Cursor cursor = Cursor::Auto;
+};
+
+struct Keyframe {
+    float offset = 0.0f;
+    Style style;
+};
+
+struct KeyframesDefinition {
+    std::string name;
+    std::vector<Keyframe> frames;
 };
 
 struct Node {
@@ -354,6 +438,7 @@ struct StyleRule {
 struct Document {
     std::unique_ptr<Node> root;
     std::vector<StyleRule> rules;
+    std::unordered_map<std::string, KeyframesDefinition> keyframes;
     std::string basePath;
 };
 
@@ -503,8 +588,15 @@ private:
     SkPaint stroke(SkColor color, float width) const;
     SkPaint backgroundPaint(const Node& node, const Rect& rect) const;
     void drawNode(SkCanvas& canvas, const Document& document, const Node& node);
-    void drawBox(SkCanvas& canvas, const Node& node);
-    void drawBoxDirect(SkCanvas& canvas, const Node& node, const Rect& rect);
+    void drawBox(SkCanvas& canvas, const Document& document, const Node& node);
+    void drawBoxDirect(SkCanvas& canvas,
+                       const Document& document,
+                       const Node& node,
+                       const Rect& rect);
+    void drawBackgroundImage(SkCanvas& canvas,
+                             const Document& document,
+                             const Node& node,
+                             const Rect& rect);
     void drawProgress(SkCanvas& canvas, const Node& node);
     void drawImage(SkCanvas& canvas, const Document& document, const Node& node);
     void drawInlineSvg(SkCanvas& canvas, const Node& node);

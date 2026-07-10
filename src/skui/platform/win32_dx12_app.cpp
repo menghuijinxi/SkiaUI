@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <memory>
@@ -173,12 +174,25 @@ private:
     int runtimeLayoutWidth_ = 0;
     int runtimeLayoutHeight_ = 0;
     float runtimeLayoutDpiScale_ = 0.0f;
+    std::optional<std::chrono::steady_clock::time_point> lastAnimationTick_;
+    bool animationTickPending_ = false;
     static Impl* get(HWND hwnd) {
         return reinterpret_cast<Impl*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
     }
 
     float runtimeDpiScale() const {
         return options_.useSystemDpiScale ? dpiScaleForDpi(dpi_) : 1.0f;
+    }
+
+    void tickRuntimeForRender() {
+        const auto now = std::chrono::steady_clock::now();
+        float deltaSeconds = 0.0f;
+        if (lastAnimationTick_ && animationTickPending_) {
+            deltaSeconds =
+                std::chrono::duration<float>(now - *lastAnimationTick_).count();
+        }
+        lastAnimationTick_ = now;
+        animationTickPending_ = runtime_.tick(deltaSeconds);
     }
 
     float effectiveWindowScale() const {
@@ -288,7 +302,8 @@ private:
             app->framePacing_.noteRedrawDispatch();
             app->redrawMessagePending_.store(false);
             app->markFrameDirty();
-            app->requestRepaint(hwnd, true);
+            // 动画会持续请求下一帧。这里只失效窗口，让输入消息优先于 WM_PAINT 处理。
+            app->requestRepaint(hwnd, false);
             return 0;
         case WM_WINDOWPOSCHANGING: {
             auto* pos = reinterpret_cast<WINDOWPOS*>(lParam);
@@ -356,8 +371,7 @@ private:
             hwnd,
             width,
             height,
-            [this](SkCanvas& canvas, int drawWidth, int drawHeight) {
-                resizeRuntimeForRender(drawWidth, drawHeight);
+            [this](SkCanvas& canvas, int, int) {
                 runtime_.render(canvas);
             },
             [this](uint32_t* pixels, int drawWidth, int drawHeight, size_t rowBytes) {
@@ -383,7 +397,6 @@ private:
         if (!surface) {
             return false;
         }
-        resizeRuntimeForRender(width, height);
         runtime_.render(*surface->getCanvas());
         return true;
     }
@@ -461,6 +474,8 @@ private:
             return;
         }
 
+        resizeRuntimeForRender(width, height);
+        tickRuntimeForRender();
         const bool renderedD3D = renderD3D(hwnd, width, height);
         if (renderedD3D) {
             hasPresentedFrame_ = true;
