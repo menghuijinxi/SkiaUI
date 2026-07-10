@@ -1,5 +1,7 @@
 #include "skui_internal.h"
 
+#include "include/ports/SkTypeface_win.h"
+
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -12,6 +14,7 @@
 #endif
 
 #include <algorithm>
+#include <array>
 #include <charconv>
 #include <cctype>
 #include <limits>
@@ -23,6 +26,52 @@ namespace {
 
 bool isTextareaScrollableNode(const Node& node) {
     return node.tag == "textarea";
+}
+
+struct UiFontResources {
+    sk_sp<SkFontMgr> manager;
+    sk_sp<SkTypeface> regular;
+    sk_sp<SkTypeface> bold;
+};
+
+sk_sp<SkTypeface> pickUiTypeface(const sk_sp<SkFontMgr>& manager, bool bold) {
+    if (!manager) {
+        return nullptr;
+    }
+
+    const SkFontStyle style =
+        bold ? SkFontStyle::Bold() : SkFontStyle::Normal();
+    constexpr std::array<const char*, 5> kFamilies = {
+        "Microsoft YaHei UI",
+        "Microsoft YaHei",
+        "Segoe UI",
+        "Arial",
+        nullptr,
+    };
+    for (const char* family : kFamilies) {
+        sk_sp<SkTypeface> typeface =
+            manager->matchFamilyStyle(family, style);
+        if (typeface) {
+            return typeface;
+        }
+    }
+    return nullptr;
+}
+
+UiFontResources createUiFontResources() {
+    UiFontResources resources;
+    resources.manager = SkFontMgr_New_DirectWrite();
+    if (!resources.manager) {
+        resources.manager = SkFontMgr_New_GDI();
+    }
+    resources.regular = pickUiTypeface(resources.manager, false);
+    resources.bold = pickUiTypeface(resources.manager, true);
+    return resources;
+}
+
+const UiFontResources& uiFontResources() {
+    static const UiFontResources resources = createUiFontResources();
+    return resources;
 }
 
 } // namespace
@@ -42,6 +91,30 @@ SkColor rgba(unsigned r, unsigned g, unsigned b, unsigned a) {
                           static_cast<uint8_t>(std::min(r, 255u)),
                           static_cast<uint8_t>(std::min(g, 255u)),
                           static_cast<uint8_t>(std::min(b, 255u)));
+}
+
+sk_sp<SkFontMgr> uiFontManager() {
+    return uiFontResources().manager;
+}
+
+SkFont makeUiFont(float size, bool bold) {
+    const UiFontResources& resources = uiFontResources();
+    SkFont font(bold ? resources.bold : resources.regular, size);
+    font.setEdging(SkFont::Edging::kAntiAlias);
+    font.setSubpixel(true);
+    return font;
+}
+
+float measureUiTextWidth(std::string_view value, float size, bool bold) {
+    if (value.empty()) {
+        return 0.0f;
+    }
+
+    const SkFont font = makeUiFont(size, bold);
+    return font.measureText(
+        value.data(),
+        value.size(),
+        SkTextEncoding::kUTF8);
 }
 
 float clampf(float value, float lo, float hi) {

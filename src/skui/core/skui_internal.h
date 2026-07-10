@@ -567,9 +567,6 @@ private:
     size_t bitmapCacheBudgetBytes_ = 0;
     size_t bitmapLoadWorkerCount_ = 1;
     RequestRedrawCallback requestRedraw_;
-    sk_sp<SkFontMgr> fontMgr_;
-    sk_sp<SkTypeface> regular_;
-    sk_sp<SkTypeface> bold_;
     std::unordered_map<std::string, TextEntry> textCache_;
     bool traceRender_ = false;
     double traceBoxMs_ = 0.0;
@@ -584,7 +581,6 @@ private:
     int traceSvgCount_ = 0;
     int traceNodeCount_ = 0;
 
-    sk_sp<SkTypeface> pickTypeface(bool bold);
     SkFont font(float size, bool bold) const;
     SkPaint fill(SkColor color) const;
     SkPaint stroke(SkColor color, float width) const;
@@ -648,6 +644,9 @@ private:
 SkColor rgb(unsigned r, unsigned g, unsigned b);
 SkColor rgba(unsigned r, unsigned g, unsigned b, unsigned a);
 SkColor parseColor(std::string_view value, SkColor fallback);
+sk_sp<SkFontMgr> uiFontManager();
+SkFont makeUiFont(float size, bool bold);
+float measureUiTextWidth(std::string_view value, float size, bool bold);
 float clampf(float value, float lo, float hi);
 std::string trim(std::string_view value);
 std::vector<std::string> splitWhitespace(std::string_view value);

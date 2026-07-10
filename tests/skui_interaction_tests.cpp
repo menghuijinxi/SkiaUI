@@ -1182,6 +1182,95 @@ int main() {
              "wrapped selectable text should expand its auto-height parent") &&
          ok;
 
+    constexpr std::string_view siblingWrappedTextHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      position: relative;
+      width: 180px;
+      height: 140px;
+      background-color: #000000;
+    }
+    .card {
+      position: absolute;
+      left: 5px;
+      top: 5px;
+      width: 92px;
+      padding: 5px;
+      background-color: #112233;
+    }
+    .title {
+      display: block;
+      position: relative;
+      margin-bottom: 5px;
+      background-color: #ff0000;
+      color: #ffffff;
+      font-size: 16px;
+      font-weight: bold;
+    }
+    .body {
+      display: block;
+      position: relative;
+      background-color: #0000ff;
+      color: #ffffff;
+      font-size: 14px;
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <div class="card">
+      <selectable class="title">Visible card</selectable>
+      <selectable class="body">This block uses display none.</selectable>
+    </div>
+  </div>
+</body>
+</html>
+)html";
+
+    skui::Runtime siblingWrappedTextRuntime(options);
+    constexpr int siblingWrappedTextWidth = 180;
+    constexpr int siblingWrappedTextHeight = 140;
+    siblingWrappedTextRuntime.resize(
+        siblingWrappedTextWidth,
+        siblingWrappedTextHeight,
+        1.0f);
+    if (!siblingWrappedTextRuntime.loadDocumentFromString(
+            siblingWrappedTextHtml,
+            "")) {
+        std::cerr << "sibling wrapped text load failed: "
+                  << siblingWrappedTextRuntime.lastError() << "\n";
+        return 1;
+    }
+    uint32_t wrappedTitleSecondLine = 0;
+    uint32_t wrappedBodyStart = 0;
+    ok = renderPixelAt(
+             siblingWrappedTextRuntime,
+             siblingWrappedTextWidth,
+             siblingWrappedTextHeight,
+             80,
+             40,
+             wrappedTitleSecondLine) &&
+         ok;
+    ok = renderPixelAt(
+             siblingWrappedTextRuntime,
+             siblingWrappedTextWidth,
+             siblingWrappedTextHeight,
+             80,
+             65,
+             wrappedBodyStart) &&
+         ok;
+    ok = expect(
+             wrappedTitleSecondLine == solidColor(0xFF, 0x00, 0x00),
+             "wrapped title should reserve its second line before the next text node") &&
+         ok;
+    ok = expect(
+             wrappedBodyStart == solidColor(0x00, 0x00, 0xFF),
+             "following text node should start after the wrapped title") &&
+         ok;
+
     constexpr std::string_view browserBoxSizingHtml = R"html(
 <!doctype html>
 <html>
@@ -1395,7 +1484,7 @@ int main() {
              balancedCardsWidth,
              balancedCardsHeight,
              20,
-             115,
+             140,
              noticeCardOutside) &&
          ok;
     ok = renderPixelAt(
@@ -1416,11 +1505,11 @@ int main() {
          ok;
     ok = expect(
              noticeCardInside == solidColor(0x22, 0x88, 0x44),
-             "flexible notice card should contain its two-line text") &&
+             "flexible notice card should contain its wrapped text") &&
          ok;
     ok = expect(
              noticeCardOutside == solidColor(0x00, 0x00, 0x00),
-             "flexible notice card should not reserve a third text line") &&
+             "flexible notice card should stop after its measured text lines") &&
          ok;
     ok = expect(
              motionCardInside == solidColor(0x22, 0x44, 0x88),

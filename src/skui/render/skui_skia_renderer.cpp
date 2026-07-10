@@ -16,7 +16,6 @@
 #include "include/core/SkStream.h"
 #include "include/codec/SkCodec.h"
 #include "include/effects/SkGradient.h"
-#include "include/ports/SkTypeface_win.h"
 #include "modules/svg/include/SkSVGDOM.h"
 
 #include <algorithm>
@@ -426,14 +425,7 @@ SkiaRenderer::SkiaRenderer(RuntimeOptions options)
       clearColor_(options.clearColor),
       bitmapCacheBudgetBytes_(options.bitmapCacheBudgetBytes),
       bitmapLoadWorkerCount_(normalizeBitmapWorkerCount(options.bitmapLoadWorkerCount)),
-      requestRedraw_(std::move(options.requestRedraw)) {
-    fontMgr_ = SkFontMgr_New_DirectWrite();
-    if (!fontMgr_) {
-        fontMgr_ = SkFontMgr_New_GDI();
-    }
-    regular_ = pickTypeface(false);
-    bold_ = pickTypeface(true);
-}
+      requestRedraw_(std::move(options.requestRedraw)) {}
 
 SkiaRenderer::~SkiaRenderer() {
     shutdownCaches();
@@ -463,26 +455,8 @@ void SkiaRenderer::shutdownCaches() {
     bitmapState_.reset();
 }
 
-sk_sp<SkTypeface> SkiaRenderer::pickTypeface(bool bold) {
-    const SkFontStyle style = bold ? SkFontStyle::Bold() : SkFontStyle::Normal();
-    const std::array<const char*, 5> families = {"Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", "Arial", nullptr};
-    for (const char* family : families) {
-        if (!fontMgr_) {
-            continue;
-        }
-        sk_sp<SkTypeface> typeface = fontMgr_->matchFamilyStyle(family, style);
-        if (typeface) {
-            return typeface;
-        }
-    }
-    return nullptr;
-}
-
 SkFont SkiaRenderer::font(float size, bool bold) const {
-    SkFont f(bold ? bold_ : regular_, size);
-    f.setEdging(SkFont::Edging::kAntiAlias);
-    f.setSubpixel(true);
-    return f;
+    return makeUiFont(size, bold);
 }
 
 SkPaint SkiaRenderer::fill(SkColor color) const {
@@ -1379,7 +1353,8 @@ bool SkiaRenderer::drawSvgDom(SkCanvas& canvas, const std::string& svg, const Re
     if (it == svgDomCache_.end()) {
         SkMemoryStream stream(key.data(), key.size(), false);
         SvgDomEntry entry;
-        entry.dom = SkSVGDOM::Builder().setFontManager(fontMgr_).make(stream);
+        entry.dom =
+            SkSVGDOM::Builder().setFontManager(uiFontManager()).make(stream);
         it = svgDomCache_.emplace(key, std::move(entry)).first;
     }
 

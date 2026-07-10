@@ -10,81 +10,6 @@
 namespace skui {
 namespace {
 
-float estimateTextCharWidth(unsigned char ch, float fontSize) {
-    if (ch < 0x80) {
-        if (std::isspace(ch) != 0) {
-            return fontSize * 0.32f;
-        }
-        if (std::isdigit(ch) != 0) {
-            return fontSize * 0.56f;
-        }
-        if (std::islower(ch) != 0) {
-            switch (ch) {
-            case 'i':
-            case 'j':
-            case 'l':
-                return fontSize * 0.28f;
-            case 'f':
-            case 'r':
-            case 't':
-                return fontSize * 0.38f;
-            case 'm':
-            case 'w':
-                return fontSize * 0.78f;
-            default:
-                return fontSize * 0.52f;
-            }
-        }
-        if (std::isupper(ch) != 0) {
-            switch (ch) {
-            case 'I':
-                return fontSize * 0.30f;
-            case 'M':
-            case 'W':
-                return fontSize * 0.82f;
-            default:
-                return fontSize * 0.62f;
-            }
-        }
-        switch (ch) {
-        case '.':
-        case ',':
-        case ':':
-        case ';':
-        case '!':
-        case '|':
-        case '\'':
-        case '`':
-            return fontSize * 0.28f;
-        case '(':
-        case ')':
-        case '[':
-        case ']':
-        case '{':
-        case '}':
-            return fontSize * 0.36f;
-        case '-':
-        case '_':
-        case '/':
-        case '\\':
-            return fontSize * 0.42f;
-        case '?':
-            return fontSize * 0.52f;
-        case '@':
-            return fontSize * 0.90f;
-        default:
-            return fontSize * 0.52f;
-        }
-    }
-    if ((ch & 0xE0) == 0xC0) {
-        return fontSize * 0.92f;
-    }
-    if ((ch & 0xF0) == 0xE0 || (ch & 0xF8) == 0xF0) {
-        return fontSize * 1.02f;
-    }
-    return fontSize * 0.56f;
-}
-
 size_t utf8Advance(unsigned char ch) {
     if (ch < 0x80) {
         return 1;
@@ -99,16 +24,6 @@ size_t utf8Advance(unsigned char ch) {
         return 4;
     }
     return 1;
-}
-
-float estimateTextWidth(std::string_view value, float fontSize) {
-    float width = 0.0f;
-    for (size_t i = 0; i < value.size();) {
-        const unsigned char ch = static_cast<unsigned char>(value[i]);
-        width += estimateTextCharWidth(ch, fontSize);
-        i += std::min(utf8Advance(ch), value.size() - i);
-    }
-    return width;
 }
 
 size_t nextUtf8Boundary(std::string_view value, size_t index) {
@@ -234,7 +149,10 @@ YGSize measureTextNode(YGNodeConstRef node,
         ? uiNode->value
         : (!uiNode->text.empty() ? uiNode->text : uiNode->placeholder);
     const auto measureText = [&](std::string_view text) {
-        return estimateTextWidth(text, uiNode->style.fontSize);
+        return measureUiTextWidth(
+            text,
+            uiNode->style.fontSize,
+            uiNode->style.fontBold);
     };
     float measuredWidth = measureText(value);
     float measuredHeight = uiNode->style.fontSize * 1.35f;
@@ -282,22 +200,31 @@ TextareaScrollMetrics textareaScrollMetrics(const Node& node) {
     const float paddingLeft = node.resolvedPadding.left;
     const float paddingRight = node.resolvedPadding.right;
 
-    float currentLineWidth = 0.0f;
     float maxLineWidth = 0.0f;
     size_t lines = 1;
-    for (size_t i = 0; i < value.size();) {
-        const unsigned char ch = static_cast<unsigned char>(value[i]);
-        if (ch == '\n') {
-            maxLineWidth = std::max(maxLineWidth, currentLineWidth);
-            currentLineWidth = 0.0f;
+    size_t lineStart = 0;
+    for (size_t index = 0; index < value.size(); ++index) {
+        if (value[index] == '\n') {
+            maxLineWidth = std::max(
+                maxLineWidth,
+                measureUiTextWidth(
+                    std::string_view(
+                        value.data() + lineStart,
+                        index - lineStart),
+                    node.style.fontSize,
+                    node.style.fontBold));
             ++lines;
-            ++i;
-            continue;
+            lineStart = index + 1;
         }
-        currentLineWidth += estimateTextCharWidth(ch, node.style.fontSize);
-        i += std::min(utf8Advance(ch), value.size() - i);
     }
-    maxLineWidth = std::max(maxLineWidth, currentLineWidth);
+    maxLineWidth = std::max(
+        maxLineWidth,
+        measureUiTextWidth(
+            std::string_view(
+                value.data() + lineStart,
+                value.size() - lineStart),
+            node.style.fontSize,
+            node.style.fontBold));
     return {
         paddingLeft + paddingRight + maxLineWidth,
         paddingTop + paddingBottom + static_cast<float>(lines) * lineHeight,
