@@ -52,35 +52,23 @@ cmd.exe /c 'call "C:\Program Files\Microsoft Visual Studio\18\Community\Common7\
 - 同一个 `img` 切换 `src` 时，新图未完成前应继续显示旧图。
 - 大图滚动列表应优先使用 `loading="lazy"`，避免 DOM 阶段请求全部图片。
 
-## 滚动平滑度需要同时保证状态插值和帧调度
+## 滚轮输入采用直接偏移映射
 
-现象：鼠标滚轮会把内容一次性跳到新的偏移，拖动滚动条滑块时则会出现停顿和跨帧跳跃，
-整体手感明显弱于浏览器。
+现象：为滚轮加入目标曲线、速度积分或惯性后，连续输入会出现段落感、延迟或周期性停顿。
+多轮参数调整仍会在不同滚轮节奏下产生新的手感问题。
 
-影响范围：SkUI 的纵向和横向滚轮滚动、滚动条滑块拖动，以及所有依赖
-`RuntimeOptions::requestRedraw` 连续刷新的动画。
+影响范围：SkUI 的纵向和横向鼠标滚轮滚动。滚动条滑块拖动本来就是指针到偏移的一比一映射。
 
-根因：
+最终取舍：
 
-- 运行时收到滚轮事件后直接写入最终 `scrollX` / `scrollY`，没有目标偏移和时间插值。
-- Win32 使用普通无效区刷新；连续鼠标移动期间，低优先级 `WM_PAINT` 可能被合并或延后。
-- DXGI 交换链使用同步间隔 0 呈现，没有用显示器刷新节奏约束连续动画帧。
-
-排查路径：
-
-1. 从 `Runtime::handleEvent()` 的 `MouseWheel` 分支确认偏移是否一次写到最终值。
-2. 检查动画是否持续调用 `requestRedraw`，以及每次渲染后是否仍会请求下一帧。
-3. 检查鼠标捕获期间的 `WM_MOUSEMOVE` 是否会立即提交脏帧。
-4. 检查 `Present1` 的同步间隔，排除无节奏快速提交造成的抖动和撕裂。
-
-最终解决方案：
-
-- 为滚动节点维护可累加的目标偏移，并使用保留速度的临界阻尼弹簧追踪目标。
-- 同一方向的后续滚轮事件只扩展目标，不同步跳变位置，也不重置已有速度和计时。
-- 一个轴首次启动时允许小幅预响应；另一个轴已有动画不会阻止该轴独立启动。
-- 点击或拖动滚动条时取消该节点的滚轮动画，滑块继续与指针保持一比一映射。
-- 鼠标捕获期间立即绘制拖拽产生的脏帧；动画重绘消息也立即进入绘制。
-- DXGI 使用同步间隔 1 呈现，让动画帧跟随显示器刷新节奏。
+- 不再为鼠标滚轮维护目标位置、速度、摩擦、惯性或缓动状态。
+- 每个滚轮事件使用 `-wheelDelta / 120 * 48` 计算本次偏移，并在同一个事件中直接写入
+  `scrollX` 或 `scrollY`。
+- 按住 Shift 时把同一偏移映射到横向滚动；纵向和横向偏移都只在有效滚动范围内 clamp。
+- 滚轮事件不会请求后续动画帧；滚动条位置和 `Scroll` 事件中的偏移立即反映本次输入结果。
+- 滚动条点击和拖动继续直接更新偏移，不经过滚轮动画状态。
+- CSS opacity/transform transition、鼠标拖动的即时重绘和 DXGI 垂直同步仍保留，
+  与滚轮直接映射互不耦合。
 
 验证方式：
 
@@ -88,15 +76,39 @@ cmd.exe /c 'call "C:\Program Files\Microsoft Visual Studio\18\Community\Common7\
 cmd.exe /d /s /c 'call "C:\Program Files\Microsoft Visual Studio\18\Community\Common7\Tools\VsDevCmd.bat" -arch=x64 -host_arch=x64 >nul && cmake --build build\ninja-vcpkg && ctest --test-dir build\ninja-vcpkg --output-on-failure'
 ```
 
-可复用经验：平滑滚动不是单独修改 easing 就能解决。必须同时检查输入状态更新、动画帧续订、
-窗口消息优先级和交换链呈现节奏；任何一层仍是离散跳变，最终看到的滚动都会不连贯。
+滚动帧节奏监控：
+
+```powershell
+$env:SKIATEST_FRAME_PACING_CSV="$PWD\tmp\frame-pacing\scroll.csv"
+$env:SKIATEST_FRAME_PACING_FLUSH="1"
+.\build\ninja-vcpkg\SkiaDynamicDomDemo.exe
+Remove-Item Env:SKIATEST_FRAME_PACING_CSV
+Remove-Item Env:SKIATEST_FRAME_PACING_FLUSH
+```
+
+- `wheel_input` 和 `pointer_drag_input` 分别记录滚轮与按住鼠标拖动产生的输入。
+- `frame_presented` 记录单帧工作耗时、输入到呈现延迟、重绘消息排队时间和后端类型。
+- 只有上一帧明确请求了下一帧时，`continuous_interval=1` 的帧间隔才参与掉帧统计；
+  滚动到边界后没有视觉变化的输入空档不会被误报为掉帧。
+- `summary` / `scroll_summary` 中的 `late_frames`、`missed_frames`、
+  `worst_interval_ms` 和 `worst_input_latency_ms` 用于快速判断连续动画与滑块拖动是否卡顿。
+- 需要继续定位具体渲染阶段时，可同时设置 `SKIATEST_PERF_CSV`，关联
+  `runtime_render`、`ganesh_flush_submit` 和 `present` 等详细阶段。
+
+2026-07-10 的后续 120 Hz 滚动轨迹中，349 个连续帧的平均间隔为 8.093 ms，
+P95 为 8.509 ms，最差为 10.151 ms；没有超预算帧，也没有估算漏帧。
+该轨迹包含 16 次滚轮输入，输入间隔约为 172-313 ms，未包含滑块拖动。
+这组数据说明当时感知到的“段落感”不是掉帧，而是滚轮动画状态和输入节奏相互作用造成的错觉。
+最终删除滚轮动画状态，以确定、即时的直接映射换取稳定行为。
+
+可复用经验：输入设备手感无法仅靠一组通用的 easing 或摩擦参数覆盖。没有完整的平台级手势、
+合成线程和设备分类能力时，直接映射通常比自定义惯性模型更可预测。
 
 快速检查清单：
 
-- 第一帧只能移动部分距离，不能直接到最终偏移。
-- 动画未结束时，每帧都必须继续请求重绘。
-- 连续滚轮输入应累加目标并保留速度，不能在每次事件时重启动画。
-- 活动轴的连续输入不能同步修改当前位置，避免形成阶梯式顿落。
-- 拖动滑块时应取消惯性动画，滑块位置必须直接跟随指针。
-- 内容尺寸变化后，动画目标和当前偏移都必须重新限制在有效范围内。
-- Windows 呈现路径应按垂直同步提交连续动画帧。
+- `wheelDelta=-120` 应当在同一个事件中增加 48px 偏移，反向输入立即减去 48px。
+- 连续同向输入应逐次累加，并在内容边界处 clamp。
+- 滚轮输入不应创建动画状态，也不应请求后续动画重绘。
+- `Scroll` 回调应立即收到更新后的 `scrollX` / `scrollY`。
+- Shift+滚轮应直接更新横向偏移。
+- 拖动滑块时，滑块位置必须直接跟随指针。

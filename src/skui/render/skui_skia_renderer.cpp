@@ -161,6 +161,11 @@ float selectableLineTop(const SkRect& content, float lineHeight, size_t lineCoun
     return content.top() + static_cast<float>(lineIndex) * lineHeight;
 }
 
+bool clipsTextOverflow(const Node& node) {
+    return node.style.overflowX != Overflow::Visible ||
+           node.style.overflowY != Overflow::Visible;
+}
+
 SkRect lineSelectionRect(float x, float y, float width, float height) {
     const float left = std::floor(x);
     const float top = std::round(y);
@@ -1307,8 +1312,11 @@ void SkiaRenderer::drawSelectableSelection(SkCanvas& canvas, const Node& node) {
     const SkRect content = contentRectForText(node);
     const std::vector<TextLine>& lines = textLines(node, value);
     const float lineHeight = lineHeightForNode(node);
-    canvas.save();
-    canvas.clipRect(node.layout.sk(), SkClipOp::kIntersect, true);
+    const bool clipsOverflow = clipsTextOverflow(node);
+    if (clipsOverflow) {
+        canvas.save();
+        canvas.clipRect(node.layout.sk(), SkClipOp::kIntersect, true);
+    }
     SkPathBuilder selectionPath;
     for (size_t lineIndex = 0; lineIndex < lines.size(); ++lineIndex) {
         const TextLine line = lines[lineIndex];
@@ -1351,7 +1359,9 @@ void SkiaRenderer::drawSelectableSelection(SkCanvas& canvas, const Node& node) {
     if (!selectionPath.isEmpty()) {
         canvas.drawPath(selectionPath.detach(), fill(SkColorSetARGB(96, 36, 232, 219)));
     }
-    canvas.restore();
+    if (clipsOverflow) {
+        canvas.restore();
+    }
 }
 
 void SkiaRenderer::drawText(SkCanvas& canvas, const Node& node) {
@@ -1426,8 +1436,11 @@ void SkiaRenderer::drawText(SkCanvas& canvas, const Node& node) {
     if (node.tag == "selectable") {
         const float lineHeight = lineHeightForNode(node);
         const std::vector<TextLine>& lines = textLines(node, *value);
-        canvas.save();
-        canvas.clipRect(node.layout.sk(), SkClipOp::kIntersect, true);
+        const bool clipsOverflow = clipsTextOverflow(node);
+        if (clipsOverflow) {
+            canvas.save();
+            canvas.clipRect(node.layout.sk(), SkClipOp::kIntersect, true);
+        }
         for (size_t i = 0; i < lines.size(); ++i) {
             const TextLine line = lines[i];
             if (line.end <= line.start) {
@@ -1473,7 +1486,9 @@ void SkiaRenderer::drawText(SkCanvas& canvas, const Node& node) {
                 canvas.drawTextBlob(plainEntry.blob, segmentX, baseline, fill(textColor));
             }
         }
-        canvas.restore();
+        if (clipsOverflow) {
+            canvas.restore();
+        }
         return;
     }
 

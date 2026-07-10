@@ -66,6 +66,7 @@ endif()
 
 if(SKIAUI_BUILD_WIN32_DX12)
     add_library(SkuiWin32Dx12 STATIC
+        src/skui/platform/frame_pacing_monitor.cpp
         src/skui/platform/win32_dx12_app.cpp
         src/d3d_context.cpp
         src/d3d_presenter.cpp

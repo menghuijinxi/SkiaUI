@@ -1,5 +1,6 @@
 #include "skui_win32_app.h"
 
+#include "frame_pacing_monitor.h"
 #include "skui_win32_event_adapter.h"
 
 #include "d3d_presenter.h"
@@ -134,6 +135,7 @@ public:
             return 1;
         }
         hwnd_ = hwnd;
+        framePacing_.initialize(hwnd);
 
         BOOL dark = TRUE;
         DwmSetWindowAttribute(hwnd, 20, &dark, sizeof(dark));
@@ -145,6 +147,7 @@ public:
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
+        framePacing_.finalize(presentedWidth_, presentedHeight_);
         hwnd_ = nullptr;
         return static_cast<int>(msg.wParam);
     }
@@ -153,6 +156,7 @@ private:
     WindowOptions options_;
     HWND hwnd_ = nullptr;
     std::atomic_bool redrawMessagePending_{false};
+    FramePacingMonitor framePacing_;
     Runtime runtime_;
     Win32EventAdapter eventAdapter_;
     D3DPresenter d3d_;
@@ -192,7 +196,10 @@ private:
                 return;
             }
             bool expected = false;
-            if (redrawMessagePending_.compare_exchange_strong(expected, true)) {
+            const bool posted =
+                redrawMessagePending_.compare_exchange_strong(expected, true);
+            framePacing_.noteRedrawRequest(posted);
+            if (posted) {
                 PostMessageW(hwnd, kRequestRedrawMessage, 0, 0);
             }
         };
@@ -260,6 +267,12 @@ private:
             return DefWindowProcW(hwnd, message, wParam, lParam);
         }
 
+        if (message == WM_MOUSEWHEEL || message == WM_MOUSEHWHEEL) {
+            app->framePacing_.noteWheelInput();
+        } else if (message == WM_MOUSEMOVE && (wParam & MK_LBUTTON) != 0) {
+            app->framePacing_.notePointerDragInput();
+        }
+
         if (const std::optional<LRESULT> result =
                 app->eventAdapter_.handleMessage(hwnd, message, wParam, lParam)) {
             if (message == WM_MOUSEMOVE &&
@@ -272,6 +285,7 @@ private:
 
         switch (message) {
         case kRequestRedrawMessage:
+            app->framePacing_.noteRedrawDispatch();
             app->redrawMessagePending_.store(false);
             app->markFrameDirty();
             app->requestRepaint(hwnd, true);
@@ -430,6 +444,7 @@ private:
             return;
         }
         paintActive_ = true;
+        const auto frameStart = perf::Trace::now();
 
         PAINTSTRUCT ps{};
         HDC hdc = BeginPaint(hwnd, &ps);
@@ -456,6 +471,11 @@ private:
             renderCpuFallback(hdc, ps, width, height);
         }
 
+        framePacing_.noteFramePresented(
+            width,
+            height,
+            perf::Trace::elapsedMs(frameStart),
+            renderedD3D ? "d3d" : "gdi");
         EndPaint(hwnd, &ps);
         paintActive_ = false;
     }

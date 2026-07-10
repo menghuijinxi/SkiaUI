@@ -144,8 +144,7 @@ void waitForDirty(skui::Runtime& runtime) {
     }
 }
 
-bool finishScrollAnimation(skui::Runtime& runtime) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(220));
+bool renderAfterScroll(skui::Runtime& runtime) {
     uint32_t unused = 0;
     return renderPixel(runtime, 0, 0, unused);
 }
@@ -1267,6 +1266,66 @@ int main() {
     sendKey(selectableRuntime, 'C', false, true);
     ok = expect(selectableClipboard == "新", "selectable hit testing should account for text padding") && ok;
 
+    constexpr std::string_view selectableOverflowHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      position: relative;
+      width: 180px;
+      height: 80px;
+      background-color: #000000;
+    }
+    selectable {
+      position: absolute;
+      top: 5px;
+      width: 70px;
+      height: 22px;
+      color: #ffffff;
+      font-size: 14px;
+    }
+    .visible {
+      left: 10px;
+    }
+    .hidden {
+      left: 100px;
+      overflow: hidden;
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <selectable class="visible">alpha beta gamma</selectable>
+    <selectable class="hidden">alpha beta gamma</selectable>
+  </div>
+</body>
+</html>
+)html";
+
+    skui::Runtime selectableOverflowRuntime(options);
+    selectableOverflowRuntime.resize(kWidth, kHeight, 1.0f);
+    if (!selectableOverflowRuntime.loadDocumentFromString(
+            selectableOverflowHtml,
+            "")) {
+        std::cerr << "selectable overflow load failed: "
+                  << selectableOverflowRuntime.lastError() << "\n";
+        return 1;
+    }
+    std::vector<uint32_t> selectableOverflowPixels;
+    ok = renderPixels(selectableOverflowRuntime, selectableOverflowPixels) && ok;
+    const int visibleOverflowPixels =
+        countBrightPixels(selectableOverflowPixels, 10, 32, 85, 55);
+    const int hiddenOverflowPixels =
+        countBrightPixels(selectableOverflowPixels, 100, 32, 175, 55);
+    ok = expect(visibleOverflowPixels > 5,
+                "selectable text should paint wrapped lines outside its box "
+                "when overflow is visible") &&
+         ok;
+    ok = expect(hiddenOverflowPixels == 0,
+                "selectable text should clip wrapped lines when overflow is hidden") &&
+         ok;
+
     constexpr std::string_view dynamicSelectableHtml = R"html(
 <!doctype html>
 <html>
@@ -1486,7 +1545,7 @@ int main() {
     ok = expect(scrolledSelectableRuntime.setValueById("scrolled-copy", "red\ngreen\nblue"),
                 "setValueById should update scrolled selectable multiline text") && ok;
     sendWheel(scrolledSelectableRuntime, 30.0f, 30.0f, -120.0f);
-    ok = finishScrollAnimation(scrolledSelectableRuntime) && ok;
+    ok = renderAfterScroll(scrolledSelectableRuntime) && ok;
     sendMouse(scrolledSelectableRuntime, skui::EventType::MouseDown, 10.0f, 40.0f);
     sendMouse(scrolledSelectableRuntime, skui::EventType::MouseMove, 130.0f, 78.0f);
     sendMouse(scrolledSelectableRuntime, skui::EventType::MouseUp, 130.0f, 78.0f);
@@ -3331,10 +3390,10 @@ int main() {
 </html>
 )html";
 
-    std::atomic_int scrollAnimationRedraws{0};
+    std::atomic_int scrollRedrawRequests{0};
     skui::RuntimeOptions scrollOptions = options;
     scrollOptions.requestRedraw = [&] {
-        scrollAnimationRedraws.fetch_add(1);
+        scrollRedrawRequests.fetch_add(1);
     };
     skui::Runtime scrollRuntime(scrollOptions);
     scrollRuntime.resize(kWidth, kHeight, 1.0f);
@@ -3358,17 +3417,17 @@ int main() {
     ok = renderPixel(scrollRuntime, 100, 45, horizontalScrollbar) && ok;
     sendWheel(scrollRuntime, 20.0f, 20.0f, -240.0f);
     ok = renderPixel(scrollRuntime, 20, 20, verticalWheelFirstFrame) && ok;
-    ok = expect(verticalWheelFirstFrame == verticalInitial,
-                "mouse wheel should begin with a partial frame instead of jumping") &&
+    ok = expect(verticalWheelFirstFrame == solidColor(0xAB, 0xCD, 0xEF),
+                "mouse wheel should immediately map its delta to scroll offset") &&
          ok;
-    ok = expect(scrollAnimationRedraws.load() > 0,
-                "smooth wheel scrolling should request follow-up animation frames") &&
+    ok = expect(scrollRedrawRequests.load() == 0,
+                "direct wheel scrolling should not request animation frames") &&
          ok;
-    ok = finishScrollAnimation(scrollRuntime) && ok;
+    ok = renderAfterScroll(scrollRuntime) && ok;
     ok = renderPixel(scrollRuntime, 20, 20, verticalScrolled) && ok;
     ok = renderPixel(scrollRuntime, 90, 20, horizontalInitial) && ok;
     sendWheel(scrollRuntime, 90.0f, 20.0f, -240.0f, true);
-    ok = finishScrollAnimation(scrollRuntime) && ok;
+    ok = renderAfterScroll(scrollRuntime) && ok;
     ok = renderPixel(scrollRuntime, 90, 20, horizontalScrolled) && ok;
     sendMouse(scrollRuntime, skui::EventType::MouseDown, 55.0f, 45.0f);
     sendMouse(scrollRuntime, skui::EventType::MouseUp, 55.0f, 45.0f);
@@ -3404,17 +3463,48 @@ int main() {
          ok;
     if (continuousScrollOffsets.size() == 3) {
         ok = expect(
-                 std::abs(continuousScrollOffsets[1] -
-                          continuousScrollOffsets[2]) <= 0.001f,
-                 "continuous wheel input should retarget without synchronous steps") &&
+                 std::abs(continuousScrollOffsets[0] - 12.0f) <= 0.001f &&
+                     std::abs(continuousScrollOffsets[1] - 24.0f) <= 0.001f &&
+                     std::abs(continuousScrollOffsets[2] - 36.0f) <= 0.001f,
+                 "each wheel input should immediately add its mapped offset") &&
              ok;
     }
-    ok = finishScrollAnimation(continuousScrollRuntime) && ok;
+    ok = renderAfterScroll(continuousScrollRuntime) && ok;
     uint32_t continuousScrollSettled = 0;
     ok = renderPixel(continuousScrollRuntime, 20, 35, continuousScrollSettled) && ok;
     ok = expect(continuousScrollSettled == solidColor(0xAB, 0xCD, 0xEF),
                 "continuous wheel targets should accumulate to the final offset") &&
          ok;
+
+    std::vector<float> directReverseOffsets;
+    skui::RuntimeOptions directReverseOptions = options;
+    directReverseOptions.onElementEvent = [&](const skui::ElementEvent& event) {
+        if (event.type == skui::ElementEventType::Scroll) {
+            directReverseOffsets.push_back(event.scrollY);
+        }
+    };
+    skui::Runtime directReverseRuntime(directReverseOptions);
+    directReverseRuntime.resize(kWidth, kHeight, 1.0f);
+    if (!directReverseRuntime.loadDocumentFromString(scrollHtml, "")) {
+        std::cerr << "direct reverse scroll load failed: "
+                  << directReverseRuntime.lastError() << "\n";
+        return 1;
+    }
+    sendWheel(directReverseRuntime, 20.0f, 20.0f, -120.0f);
+    sendWheel(directReverseRuntime, 20.0f, 20.0f, -120.0f);
+    sendWheel(directReverseRuntime, 20.0f, 20.0f, 120.0f);
+    ok = expect(directReverseOffsets.size() == 3,
+                "direct reverse scroll should emit each accepted wheel event") &&
+         ok;
+    if (directReverseOffsets.size() == 3) {
+        ok = expect(
+                 std::abs(directReverseOffsets[0] - 48.0f) <= 0.001f &&
+                     std::abs(directReverseOffsets[1] - 60.0f) <= 0.001f &&
+                     std::abs(directReverseOffsets[2] - 12.0f) <= 0.001f,
+                 "reverse wheel input should immediately subtract its mapped "
+                 "offset after boundary clamping") &&
+             ok;
+    }
 
     constexpr std::string_view dynamicListScrollHtml = R"html(
 <!doctype html>
@@ -3488,7 +3578,7 @@ int main() {
     uint32_t dynamicListRemoved = 0;
     ok = renderPixel(dynamicListScrollRuntime, 20, 20, dynamicListInitial) && ok;
     sendWheel(dynamicListScrollRuntime, 20.0f, 20.0f, -240.0f);
-    ok = finishScrollAnimation(dynamicListScrollRuntime) && ok;
+    ok = renderAfterScroll(dynamicListScrollRuntime) && ok;
     ok = renderPixel(dynamicListScrollRuntime, 20, 20, dynamicListScrolled) && ok;
     ok = expect(
              dynamicListScrollRuntime.appendHtmlById(
@@ -3497,7 +3587,7 @@ int main() {
              "appendHtmlById should grow an absolutely positioned scroll list") &&
          ok;
     sendWheel(dynamicListScrollRuntime, 20.0f, 20.0f, -240.0f);
-    ok = finishScrollAnimation(dynamicListScrollRuntime) && ok;
+    ok = renderAfterScroll(dynamicListScrollRuntime) && ok;
     ok = renderPixel(dynamicListScrollRuntime, 20, 20, dynamicListAppended) && ok;
     ok = expect(dynamicListScrollRuntime.setVisibleById("second", false),
                 "setVisibleById should shrink an absolutely positioned scroll list") &&
