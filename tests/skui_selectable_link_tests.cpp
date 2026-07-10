@@ -150,6 +150,13 @@ int main() {
         return 1;
     }
 
+    sendMouse(mixedLinkRuntime, skui::EventType::MouseMove, 12.0f, 20.0f);
+    ok = expect(mixedLinkRuntime.cursor() == skui::Cursor::Text,
+                "ordinary selectable text should use the text cursor") && ok;
+    sendMouse(mixedLinkRuntime, skui::EventType::MouseMove, 70.0f, 20.0f);
+    ok = expect(mixedLinkRuntime.cursor() == skui::Cursor::Pointer,
+                "inline link ranges should use the pointer cursor") && ok;
+
     sendMouse(mixedLinkRuntime, skui::EventType::MouseDown, 12.0f, 20.0f);
     sendMouse(mixedLinkRuntime, skui::EventType::MouseMove, 175.0f, 145.0f);
     sendMouse(mixedLinkRuntime, skui::EventType::MouseUp, 175.0f, 145.0f);
@@ -166,6 +173,8 @@ int main() {
     sendMouse(mixedLinkRuntime, skui::EventType::MouseUp, 70.0f, 20.0f);
     ok = expect(action == "open-url:https://igoutu.cn/icon/lchz7JPUz9qU/%E8%AE%BE%E7%BD%AE",
                 "clicking a mixed inline link should emit its action") && ok;
+    ok = expect(mixedLinkRuntime.cursor() == skui::Cursor::Pointer,
+                "inline link cursor should remain a pointer after mouse up") && ok;
 
     return ok ? 0 : 1;
 }

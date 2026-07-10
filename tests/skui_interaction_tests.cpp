@@ -933,6 +933,67 @@ int main() {
     ok = expect(countBrightPixels(textOverflowPixels, 20, 12, 120, 30) > 20,
                 "ordinary text should not be clipped by its own layout box") && ok;
 
+    constexpr std::string_view paddingHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      position: relative;
+      width: 140px;
+      height: 90px;
+      background-color: #000000;
+    }
+    .label {
+      position: absolute;
+      left: 10px;
+      top: 10px;
+      padding: 10px;
+      background-color: #ff0000;
+      color: #ffffff;
+      font-size: 10px;
+    }
+    .percent-label {
+      position: absolute;
+      left: 60px;
+      top: 10px;
+      width: 60px;
+      height: 40px;
+      padding-left: 10%;
+      background-color: #008000;
+      color: #ffffff;
+      font-size: 20px;
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <label class="label">X</label>
+    <label class="percent-label">XX</label>
+  </div>
+</body>
+</html>
+)html";
+
+    skui::Runtime paddingRuntime(options);
+    paddingRuntime.resize(kWidth, kHeight, 1.0f);
+    if (!paddingRuntime.loadDocumentFromString(paddingHtml, "")) {
+        std::cerr << "padding load failed: " << paddingRuntime.lastError() << "\n";
+        return 1;
+    }
+    uint32_t paddingRight = 0;
+    uint32_t paddingBottom = 0;
+    ok = renderPixel(paddingRuntime, 30, 15, paddingRight) && ok;
+    ok = renderPixel(paddingRuntime, 15, 35, paddingBottom) && ok;
+    ok = expect(paddingRight == solidColor(0xFF, 0x00, 0x00),
+                "auto-sized text label should include horizontal padding in its layout box") && ok;
+    ok = expect(paddingBottom == solidColor(0xFF, 0x00, 0x00),
+                "auto-sized text label should include vertical padding in its layout box") && ok;
+    std::vector<uint32_t> paddingPixels;
+    ok = renderPixels(paddingRuntime, paddingPixels) && ok;
+    ok = expect(countBrightPixels(paddingPixels, 60, 10, 72, 50) == 0,
+                "percentage padding should offset text inside the label content box") && ok;
+
     constexpr std::string_view inputHtml = R"html(
 <!doctype html>
 <html>
@@ -1489,6 +1550,136 @@ int main() {
     ok = expect(squareTopRight == solidColor(0xAB, 0xCD, 0xEF), "border-radius shorthand should keep the top-right corner square") && ok;
     ok = expect(squareBottomLeft == solidColor(0xAB, 0xCD, 0xEF), "border-radius shorthand should keep the bottom-left corner square") && ok;
     ok = expect(squareBottomRight == solidColor(0xAB, 0xCD, 0xEF), "border-radius shorthand should keep the bottom-right corner square") && ok;
+
+    constexpr std::string_view highDpiRoundedBoxHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      position: relative;
+      width: 400px;
+      height: 300px;
+      background-color: #000000;
+    }
+    .large-rounded-box {
+      position: absolute;
+      left: 20px;
+      top: 20px;
+      width: 320px;
+      height: 220px;
+      background-color: #ffffff;
+      border-radius: 40px;
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <div class="large-rounded-box"></div>
+  </div>
+</body>
+</html>
+)html";
+    skui::Runtime highDpiRoundedBoxRuntime(options);
+    if (!highDpiRoundedBoxRuntime.loadDocumentFromString(highDpiRoundedBoxHtml, "")) {
+        std::cerr << "high DPI rounded box load failed: "
+                  << highDpiRoundedBoxRuntime.lastError() << "\n";
+        return 1;
+    }
+
+    constexpr int highDpiWidth = 800;
+    constexpr int highDpiHeight = 600;
+    std::vector<uint32_t> highDpiRoundedBoxPixels(
+        static_cast<size_t>(highDpiWidth) * highDpiHeight,
+        0);
+    ok = expect(highDpiRoundedBoxRuntime.renderToBgraPixels(
+                    highDpiRoundedBoxPixels.data(),
+                    highDpiWidth,
+                    highDpiHeight,
+                    static_cast<size_t>(highDpiWidth) * sizeof(uint32_t),
+                    2.0f),
+                "large rounded box should render at high DPI") && ok;
+
+    int smoothEdgeRows = 0;
+    for (int y = 42; y < 119; ++y) {
+        int firstEdgeX = -1;
+        for (int x = 40; x < 120; ++x) {
+            if (pixelAt(highDpiRoundedBoxPixels, highDpiWidth, x, y) !=
+                solidColor(0x00, 0x00, 0x00)) {
+                firstEdgeX = x;
+                break;
+            }
+        }
+        if (firstEdgeX >= 0 && firstEdgeX + 1 < 120 &&
+            pixelAt(highDpiRoundedBoxPixels, highDpiWidth, firstEdgeX, y) !=
+                pixelAt(highDpiRoundedBoxPixels, highDpiWidth, firstEdgeX + 1, y)) {
+            ++smoothEdgeRows;
+        }
+    }
+    ok = expect(smoothEdgeRows > 8,
+                "large rounded boxes should retain device-resolution antialiasing at high DPI") && ok;
+
+    constexpr std::string_view highDpiGradientHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      position: relative;
+      width: 160px;
+      height: 100px;
+      background-color: #000000;
+    }
+    .gradient-box {
+      position: absolute;
+      left: 20px;
+      top: 20px;
+      width: 100px;
+      height: 40px;
+      background: linear-gradient(to right, #000000, #ffffff);
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <div class="gradient-box"></div>
+  </div>
+</body>
+</html>
+)html";
+    skui::Runtime highDpiGradientRuntime(options);
+    if (!highDpiGradientRuntime.loadDocumentFromString(highDpiGradientHtml, "")) {
+        std::cerr << "high DPI gradient load failed: "
+                  << highDpiGradientRuntime.lastError() << "\n";
+        return 1;
+    }
+
+    constexpr int highDpiGradientWidth = 320;
+    constexpr int highDpiGradientHeight = 200;
+    std::vector<uint32_t> highDpiGradientPixels(
+        static_cast<size_t>(highDpiGradientWidth) * highDpiGradientHeight,
+        0);
+    ok = expect(highDpiGradientRuntime.renderToBgraPixels(
+                    highDpiGradientPixels.data(),
+                    highDpiGradientWidth,
+                    highDpiGradientHeight,
+                    static_cast<size_t>(highDpiGradientWidth) * sizeof(uint32_t),
+                    2.0f),
+                "gradient box should render at high DPI") && ok;
+
+    int repeatedDevicePixelPairs = 0;
+    constexpr int gradientLeft = 40;
+    constexpr int gradientTop = 40;
+    constexpr int gradientLogicalWidth = 100;
+    for (int logicalX = 4; logicalX < gradientLogicalWidth - 4; ++logicalX) {
+        const int deviceX = gradientLeft + logicalX * 2;
+        if (pixelAt(highDpiGradientPixels, highDpiGradientWidth, deviceX, gradientTop + 20) ==
+            pixelAt(highDpiGradientPixels, highDpiGradientWidth, deviceX + 1, gradientTop + 20)) {
+            ++repeatedDevicePixelPairs;
+        }
+    }
+    ok = expect(repeatedDevicePixelPairs < 20,
+                "gradients should be rasterized at device resolution instead of repeating cached pixels") && ok;
 
     constexpr std::string_view dynamicDomHtml = R"html(
 <!doctype html>
@@ -3073,6 +3264,21 @@ int main() {
     ok = expect(horizontalInitial == solidColor(0x11, 0x11, 0x11), "overflow-x container should clip horizontal children before scrolling") && ok;
     ok = expect(horizontalScrolled == solidColor(0x77, 0x88, 0x99), "Shift+mouse wheel should scroll horizontal overflow content") && ok;
     ok = expect(verticalTrackScrolled == solidColor(0xAB, 0xCD, 0xEF), "clicking vertical scrollbar track should update scroll position") && ok;
+
+    skui::Runtime scrollbarDragRuntime(options);
+    scrollbarDragRuntime.resize(kWidth, kHeight, 1.0f);
+    if (!scrollbarDragRuntime.loadDocumentFromString(scrollHtml, "")) {
+        std::cerr << "scrollbar drag load failed: " << scrollbarDragRuntime.lastError() << "\n";
+        return 1;
+    }
+    sendMouse(scrollbarDragRuntime, skui::EventType::MouseDown, 55.0f, 20.0f);
+    sendMouse(scrollbarDragRuntime, skui::EventType::MouseMove, 55.0f, 30.0f);
+    sendMouse(scrollbarDragRuntime, skui::EventType::MouseUp, 55.0f, 30.0f);
+    sendMouse(scrollbarDragRuntime, skui::EventType::MouseMove, 55.0f, 14.0f);
+    uint32_t scrollbarAfterRelease = 0;
+    ok = renderPixel(scrollbarDragRuntime, 20, 20, scrollbarAfterRelease) && ok;
+    ok = expect(scrollbarAfterRelease == solidColor(0xAB, 0xCD, 0xEF),
+                "scrollbar thumb should stop following the pointer after mouse up") && ok;
 
     constexpr std::string_view stableScrollbarHtml = R"html(
 <!doctype html>

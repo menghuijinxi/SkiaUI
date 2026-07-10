@@ -41,6 +41,42 @@ COLORREF colorRefFromSkColor(SkColor color) {
     return RGB(SkColorGetR(color), SkColorGetG(color), SkColorGetB(color));
 }
 
+std::wstring utf8ToWide(std::string_view text) {
+    if (text.empty()) {
+        return {};
+    }
+
+    const int requiredLength = MultiByteToWideChar(CP_UTF8,
+                                                    MB_ERR_INVALID_CHARS,
+                                                    text.data(),
+                                                    static_cast<int>(text.size()),
+                                                    nullptr,
+                                                    0);
+    if (requiredLength <= 0) {
+        return {};
+    }
+
+    std::wstring wideText(static_cast<std::size_t>(requiredLength), L'\0');
+    const int convertedLength = MultiByteToWideChar(CP_UTF8,
+                                                     MB_ERR_INVALID_CHARS,
+                                                     text.data(),
+                                                     static_cast<int>(text.size()),
+                                                     wideText.data(),
+                                                     requiredLength);
+    if (convertedLength != requiredLength) {
+        return {};
+    }
+    return wideText;
+}
+
+void openUrl(std::string_view url) {
+    const std::wstring wideUrl = utf8ToWide(url);
+    if (wideUrl.empty()) {
+        return;
+    }
+    ShellExecuteW(nullptr, L"open", wideUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+}
+
 std::string defaultDocumentPath() {
     const std::filesystem::path working =
         std::filesystem::current_path() / "assets" / "skui_dynamic_dom_demo" / "dynamic_dom.html";
@@ -265,7 +301,10 @@ void installInteractions(skui::Runtime& runtime, DemoState& state) {
             return;
         }
 
-        if (event.action == "toggle-notice") {
+        constexpr std::string_view kOpenUrlPrefix = "open-url:";
+        if (event.action.starts_with(kOpenUrlPrefix)) {
+            openUrl(std::string_view(event.action).substr(kOpenUrlPrefix.size()));
+        } else if (event.action == "toggle-notice") {
             toggleNotice(runtime, state);
         } else if (event.action == "toggle-display") {
             toggleDisplayHidden(runtime, state);

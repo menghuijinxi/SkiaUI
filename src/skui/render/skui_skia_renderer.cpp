@@ -14,7 +14,6 @@
 #include "include/core/SkSamplingOptions.h"
 #include "include/core/SkShader.h"
 #include "include/core/SkStream.h"
-#include "include/core/SkSurface.h"
 #include "include/codec/SkCodec.h"
 #include "include/effects/SkGradient.h"
 #include "include/ports/SkTypeface_win.h"
@@ -259,18 +258,11 @@ TextLineRange visibleTextLineRange(const SkRect& content,
     return {first, last};
 }
 
-float edgeOrZero(const std::optional<Length>& value) {
-    if (!value || value->unit != LengthUnit::Px) {
-        return 0.0f;
-    }
-    return value->value;
-}
-
 SkRect contentRectForText(const Node& node) {
-    const float left = edgeOrZero(node.style.padding.left);
-    const float top = edgeOrZero(node.style.padding.top);
-    float right = edgeOrZero(node.style.padding.right);
-    float bottom = edgeOrZero(node.style.padding.bottom);
+    const float left = node.resolvedPadding.left;
+    const float top = node.resolvedPadding.top;
+    float right = node.resolvedPadding.right;
+    float bottom = node.resolvedPadding.bottom;
     if (isTextareaNode(node)) {
         if (shouldShowScrollbarY(node)) {
             right += kSkuiScrollbarGutter;
@@ -283,32 +275,6 @@ SkRect contentRectForText(const Node& node) {
                             node.layout.y + top,
                             std::max(node.layout.x + left, node.layout.x + node.layout.w - right),
                             std::max(node.layout.y + top, node.layout.y + node.layout.h - bottom));
-}
-
-bool sameRect(const Rect& a, const Rect& b) {
-    return a.x == b.x && a.y == b.y && a.w == b.w && a.h == b.h;
-}
-
-bool sameCornerRadii(const CornerRadii& a, const CornerRadii& b) {
-    return a.topLeft == b.topLeft &&
-           a.topRight == b.topRight &&
-           a.bottomRight == b.bottomRight &&
-           a.bottomLeft == b.bottomLeft;
-}
-
-bool sameGradient(const Gradient& a, const Gradient& b) {
-    return a.kind == b.kind && a.colors == b.colors && a.positions == b.positions;
-}
-
-bool shouldCacheBox(const Node& node, const Rect& rect) {
-    constexpr float kMinCachedArea = 64000.0f;
-    constexpr float kMaxCachedSide = 4096.0f;
-    if (rect.w <= 0.0f || rect.h <= 0.0f || rect.w > kMaxCachedSide || rect.h > kMaxCachedSide) {
-        return false;
-    }
-
-    const bool hasGradient = node.style.backgroundGradient.kind != GradientKind::None;
-    return hasGradient || rect.w * rect.h >= kMinCachedArea;
 }
 
 size_t nextUtf8Boundary(std::string_view value, size_t index) {
@@ -412,7 +378,6 @@ void SkiaRenderer::clearCaches() {
 
 void SkiaRenderer::clearNodeCaches() {
     textLineCache_.clear();
-    boxCache_.clear();
 }
 
 void SkiaRenderer::shutdownCaches() {
@@ -421,7 +386,6 @@ void SkiaRenderer::shutdownCaches() {
     svgDomCache_.clear();
     textCache_.clear();
     textLineCache_.clear();
-    boxCache_.clear();
     displayedBitmapImages_.clear();
     bitmapState_.reset();
 }
@@ -667,10 +631,6 @@ void SkiaRenderer::drawBox(SkCanvas& canvas, const Node& node) {
         return;
     }
 
-    if (shouldCacheBox(node, r) && drawCachedBox(canvas, node, r, borderColor)) {
-        return;
-    }
-
     drawBoxDirect(canvas, node, r);
 }
 
@@ -716,55 +676,6 @@ void SkiaRenderer::drawBoxDirect(SkCanvas& canvas, const Node& node, const Rect&
             }
         }
     }
-}
-
-bool SkiaRenderer::drawCachedBox(SkCanvas& canvas,
-                                 const Node& node,
-                                 const Rect& rect,
-                                 SkColor borderColor) {
-    const int imageWidth = std::max(1, static_cast<int>(std::ceil(rect.w)));
-    const int imageHeight = std::max(1, static_cast<int>(std::ceil(rect.h)));
-    BoxCacheEntry& entry = boxCache_[&node];
-    if (entry.image &&
-        entry.imageWidth == imageWidth &&
-        entry.imageHeight == imageHeight &&
-        sameRect(entry.layout, rect) &&
-        entry.backgroundColor == node.style.backgroundColor &&
-        sameGradient(entry.backgroundGradient, node.style.backgroundGradient) &&
-        sameCornerRadii(entry.borderRadius, node.style.borderRadius) &&
-        entry.borderStyle == node.style.borderStyle &&
-        entry.borderWidth == node.style.borderWidth &&
-        entry.borderColor == borderColor) {
-        canvas.drawImageRect(entry.image, rect.sk(), SkSamplingOptions());
-        return true;
-    }
-
-    const SkImageInfo info = SkImageInfo::MakeN32Premul(imageWidth, imageHeight);
-    sk_sp<SkSurface> surface = SkSurfaces::Raster(info);
-    if (!surface) {
-        return false;
-    }
-
-    SkCanvas* layer = surface->getCanvas();
-    layer->clear(SK_ColorTRANSPARENT);
-    drawBoxDirect(*layer, node, {0.0f, 0.0f, rect.w, rect.h});
-
-    entry.layout = rect;
-    entry.imageWidth = imageWidth;
-    entry.imageHeight = imageHeight;
-    entry.backgroundColor = node.style.backgroundColor;
-    entry.backgroundGradient = node.style.backgroundGradient;
-    entry.borderRadius = node.style.borderRadius;
-    entry.borderStyle = node.style.borderStyle;
-    entry.borderWidth = node.style.borderWidth;
-    entry.borderColor = borderColor;
-    entry.image = surface->makeImageSnapshot();
-    if (!entry.image) {
-        return false;
-    }
-
-    canvas.drawImageRect(entry.image, rect.sk(), SkSamplingOptions());
-    return true;
 }
 
 void SkiaRenderer::drawProgress(SkCanvas& canvas, const Node& node) {

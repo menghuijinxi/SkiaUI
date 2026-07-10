@@ -238,19 +238,27 @@ const Node::TextLink* selectableLinkAtIndex(const Node& node, size_t index) {
     return nullptr;
 }
 
-Cursor cursorForNode(Node* leaf) {
-    if (!leaf) {
-        return Cursor::Default;
-    }
+std::optional<Cursor> explicitCursorForNode(Node* leaf) {
     for (Node* current = leaf; current; current = current->parent) {
         if (current->style.cursor != Cursor::Auto) {
             return current->style.cursor;
         }
     }
+    return std::nullopt;
+}
+
+Cursor defaultCursorForNode(Node* leaf) {
     if (inputTarget(leaf) || selectableTextTarget(leaf)) {
         return Cursor::Text;
     }
     return Cursor::Default;
+}
+
+Cursor cursorForNode(Node* leaf) {
+    if (const std::optional<Cursor> cursor = explicitCursorForNode(leaf)) {
+        return *cursor;
+    }
+    return defaultCursorForNode(leaf);
 }
 
 bool canScrollX(const Node& node) {
@@ -530,13 +538,6 @@ void buildEditableLines(std::string_view value, std::vector<TextLine>& lines) {
 
 float editableLineHeight(const Node& node) {
     return std::max(12.0f, node.style.fontSize * 1.38f);
-}
-
-float lengthPxOrZero(const std::optional<Length>& value) {
-    if (!value || value->unit != LengthUnit::Px) {
-        return 0.0f;
-    }
-    return value->value;
 }
 
 size_t currentLineStart(const std::string& value, size_t cursor) {
@@ -1580,8 +1581,8 @@ public:
             return 0;
         }
         const float lineHeight = editableLineHeight(input);
-        const float contentX = visualX(input) + lengthPxOrZero(input.style.padding.left);
-        const float contentY = visualY(input) + lengthPxOrZero(input.style.padding.top);
+        const float contentX = visualX(input) + input.resolvedPadding.left;
+        const float contentY = visualY(input) + input.resolvedPadding.top;
         const float relativeY = std::max(0.0f, y - contentY + input.scrollY);
         const size_t lineIndex = std::min(lines.size() - 1,
                                           static_cast<size_t>(relativeY / std::max(1.0f, lineHeight)));
@@ -1825,6 +1826,18 @@ bool Runtime::handleEvent(const Event& event) {
     std::optional<ScrollbarHit> scrollbarHit = pointerEvent && event.type != EventType::MouseLeave
         ? scrollbarHitTest(*impl_->document.root, x, y)
         : std::nullopt;
+    const auto cursorAtPoint = [&](Node* leaf) {
+        if (const std::optional<Cursor> cursor = explicitCursorForNode(leaf)) {
+            return *cursor;
+        }
+        if (Node* selectable = selectableTextTarget(leaf)) {
+            const size_t index = impl_->selectableIndexAtPoint(*selectable, x, y);
+            if (selectableLinkAtIndex(*selectable, index)) {
+                return Cursor::Pointer;
+            }
+        }
+        return defaultCursorForNode(leaf);
+    };
     if (pointerEvent) {
         if (event.type == EventType::MouseLeave) {
             impl_->currentCursor = Cursor::Default;
@@ -1833,7 +1846,7 @@ bool Runtime::handleEvent(const Event& event) {
         } else if (scrollbarHit) {
             impl_->currentCursor = scrollbarHit->axis == ScrollbarAxis::Horizontal ? Cursor::EWResize : Cursor::NSResize;
         } else {
-            impl_->currentCursor = cursorForNode(hit);
+            impl_->currentCursor = cursorAtPoint(hit);
         }
     }
     bool consumed = false;
@@ -2048,19 +2061,19 @@ bool Runtime::handleEvent(const Event& event) {
             }
         } else if (event.button == MouseButton::Left) {
             Node* selectable = selectableTextTarget(pressed);
-            if (!selectable ||
-                selectable != selectableTextTarget(hit) ||
-                !impl_->options.onElementEvent) {
-                consumed = isPointerConsumingTarget(pressed) || isPointerConsumingTarget(hit);
-                break;
-            }
-            const bool selectedText =
-                selectable->selectionStart != selectable->selectionEnd;
-            const size_t index = impl_->selectableIndexAtPoint(*selectable, x, y);
-            if (!selectedText) {
-                if (const Node::TextLink* link = selectableLinkAtIndex(*selectable, index)) {
-                    impl_->options.onElementEvent(makeSelectableLinkEvent(*selectable, *link, event, x, y));
+            if (selectable &&
+                selectable == selectableTextTarget(hit) &&
+                impl_->options.onElementEvent) {
+                const bool selectedText =
+                    selectable->selectionStart != selectable->selectionEnd;
+                const size_t index = impl_->selectableIndexAtPoint(*selectable, x, y);
+                if (!selectedText) {
+                    if (const Node::TextLink* link = selectableLinkAtIndex(*selectable, index)) {
+                        impl_->options.onElementEvent(makeSelectableLinkEvent(*selectable, *link, event, x, y));
+                    }
                 }
+            } else {
+                consumed = isPointerConsumingTarget(pressed) || isPointerConsumingTarget(hit);
             }
         }
         consumed = consumed ||
@@ -2074,6 +2087,9 @@ bool Runtime::handleEvent(const Event& event) {
         impl_->scrollingAxis = ScrollbarAxis::None;
         impl_->scrollbarDragOffset = 0.0f;
         impl_->hoveredLeaf = hit;
+        impl_->currentCursor = scrollbarHit
+            ? (scrollbarHit->axis == ScrollbarAxis::Horizontal ? Cursor::EWResize : Cursor::NSResize)
+            : cursorAtPoint(hit);
         stateChanged = true;
         layoutNeeded = true;
         break;

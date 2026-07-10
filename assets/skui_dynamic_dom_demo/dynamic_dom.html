@@ -297,7 +297,7 @@
 <body>
   <div class="screen">
     <selectable class="title">Dynamic DOM Demo</selectable>
-    <selectable class="subtitle">Tests display none, visibility hidden, append, replace, delete, auto layout and scrollbars.</selectable>
+    <selectable class="subtitle">Tests inline links, display none, visibility hidden, append, replace, delete, auto layout and scrollbars.</selectable>
 
     <div class="toolbar">
       <selectable class="toolbar-title">Operations</selectable>
@@ -332,6 +332,10 @@
             <div id="message-multiline" class="message message-multiline">
               <selectable class="message-name">Multiline selectable sample</selectable>
               <selectable id="multiline-sample" class="message-text message-text-multiline">Runtime fills this block with multiline text.</selectable>
+            </div>
+            <div id="message-link" class="message">
+              <selectable class="message-name">Mixed inline link sample</selectable>
+              <selectable class="message-text" value="Before link https://example.com after link" data-links="12:31:open-url:https://example.com"></selectable>
             </div>
             <div id="message-1" class="message">
               <selectable class="message-name">Message 1</selectable>

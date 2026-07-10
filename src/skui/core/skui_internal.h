@@ -263,6 +263,13 @@ struct Node {
         size_t selectionEnd = 0;
     };
 
+    struct ResolvedEdges {
+        float left = 0.0f;
+        float top = 0.0f;
+        float right = 0.0f;
+        float bottom = 0.0f;
+    };
+
     struct TextLink {
         size_t start = 0;
         size_t end = 0;
@@ -292,6 +299,7 @@ struct Node {
     Style::Flags animatedStyleFlags;
     bool hasAnimatedStyle = false;
     Rect layout;
+    ResolvedEdges resolvedPadding;
     float scrollX = 0.0f;
     float scrollY = 0.0f;
     float scrollContentWidth = 0.0f;
@@ -423,19 +431,6 @@ private:
         std::vector<TextLine> lines;
     };
 
-    struct BoxCacheEntry {
-        Rect layout;
-        int imageWidth = 0;
-        int imageHeight = 0;
-        SkColor backgroundColor = SK_ColorTRANSPARENT;
-        Gradient backgroundGradient;
-        CornerRadii borderRadius;
-        BorderStyle borderStyle = BorderStyle::None;
-        float borderWidth = 0.0f;
-        SkColor borderColor = SK_ColorTRANSPARENT;
-        sk_sp<SkImage> image;
-    };
-
     struct SvgDomEntry {
         sk_sp<SkSVGDOM> dom;
     };
@@ -510,7 +505,6 @@ private:
     void drawNode(SkCanvas& canvas, const Document& document, const Node& node);
     void drawBox(SkCanvas& canvas, const Node& node);
     void drawBoxDirect(SkCanvas& canvas, const Node& node, const Rect& rect);
-    bool drawCachedBox(SkCanvas& canvas, const Node& node, const Rect& rect, SkColor borderColor);
     void drawProgress(SkCanvas& canvas, const Node& node);
     void drawImage(SkCanvas& canvas, const Document& document, const Node& node);
     void drawInlineSvg(SkCanvas& canvas, const Node& node);
@@ -553,7 +547,6 @@ private:
     std::unordered_map<std::string, SvgDomEntry> svgDomCache_;
     std::unordered_map<std::string, std::string> svgFileCache_;
     std::unordered_map<const Node*, TextLineCacheEntry> textLineCache_;
-    std::unordered_map<const Node*, BoxCacheEntry> boxCache_;
     std::unordered_map<const Node*, DisplayedBitmapImage> displayedBitmapImages_;
     std::shared_ptr<BitmapImageState> bitmapState_;
 };

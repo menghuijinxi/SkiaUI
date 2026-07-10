@@ -82,11 +82,8 @@ YGSize measureTextNode(YGNodeConstRef node,
     return {std::max(0.0f, measuredWidth), std::max(0.0f, measuredHeight)};
 }
 
-float lengthPxOrZero(const std::optional<Length>& value) {
-    if (!value || value->unit != LengthUnit::Px) {
-        return 0.0f;
-    }
-    return value->value;
+float resolvedEdgeOrZero(float value) {
+    return std::isfinite(value) ? value : 0.0f;
 }
 
 size_t textLineCount(std::string_view value) {
@@ -102,10 +99,10 @@ size_t textLineCount(std::string_view value) {
 TextareaScrollMetrics textareaScrollMetrics(const Node& node) {
     const std::string& value = !node.value.empty() ? node.value : node.placeholder;
     const float lineHeight = std::max(12.0f, node.style.fontSize * 1.38f);
-    const float paddingTop = lengthPxOrZero(node.style.padding.top);
-    const float paddingBottom = lengthPxOrZero(node.style.padding.bottom);
-    const float paddingLeft = lengthPxOrZero(node.style.padding.left);
-    const float paddingRight = lengthPxOrZero(node.style.padding.right);
+    const float paddingTop = node.resolvedPadding.top;
+    const float paddingBottom = node.resolvedPadding.bottom;
+    const float paddingLeft = node.resolvedPadding.left;
+    const float paddingRight = node.resolvedPadding.right;
 
     float currentLineWidth = 0.0f;
     float maxLineWidth = 0.0f;
@@ -321,6 +318,12 @@ void LayoutEngine::readYoga(Node& node, YGNodeRef yogaNode, float offsetX, float
         offsetY + YGNodeLayoutGetTop(yogaNode),
         YGNodeLayoutGetWidth(yogaNode),
         YGNodeLayoutGetHeight(yogaNode),
+    };
+    node.resolvedPadding = {
+        resolvedEdgeOrZero(YGNodeLayoutGetPadding(yogaNode, YGEdgeLeft)),
+        resolvedEdgeOrZero(YGNodeLayoutGetPadding(yogaNode, YGEdgeTop)),
+        resolvedEdgeOrZero(YGNodeLayoutGetPadding(yogaNode, YGEdgeRight)),
+        resolvedEdgeOrZero(YGNodeLayoutGetPadding(yogaNode, YGEdgeBottom)),
     };
 
     uint32_t yogaIndex = 0;
