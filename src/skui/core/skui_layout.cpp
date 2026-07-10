@@ -449,7 +449,16 @@ void LayoutEngine::buildYoga(Node& node, YGNodeRef yogaNode) {
     }
     YGNodeStyleSetFlexGrow(yogaNode, s.flexGrow);
     YGNodeStyleSetFlexShrink(yogaNode, s.flexShrink);
-    YGNodeStyleSetBoxSizing(yogaNode, s.boxSizing);
+    const bool hasSpecifiedBoxDimension =
+        s.width.has_value() ||
+        s.height.has_value() ||
+        s.minWidth.has_value() ||
+        s.minHeight.has_value() ||
+        s.maxWidth.has_value() ||
+        s.maxHeight.has_value();
+    if (s.flags.boxSizing || hasSpecifiedBoxDimension) {
+        YGNodeStyleSetBoxSizing(yogaNode, s.boxSizing);
+    }
     YGNodeStyleSetPositionType(yogaNode,
                                (s.position == Position::Absolute ||
                                 s.position == Position::Sticky)

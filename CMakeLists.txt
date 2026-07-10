@@ -6,6 +6,16 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# VS 2026 bundled CMake can decode the localized MSVC /showIncludes
+# prefix twice. Ninja then cannot record header dependencies, allowing stale
+# object files to survive incremental builds.
+if(MSVC
+    AND CMAKE_GENERATOR MATCHES "Ninja"
+    AND CMAKE_CXX_CL_SHOWINCLUDES_PREFIX STREQUAL "娉ㄦ剰: 鍖呭惈鏂囦欢:  ")
+    set(CMAKE_CXX_CL_SHOWINCLUDES_PREFIX "注意: 包含文件:  ")
+    set(CMAKE_CL_SHOWINCLUDES_PREFIX "${CMAKE_CXX_CL_SHOWINCLUDES_PREFIX}")
+endif()
+
 include(CTest)
 include(CMakePackageConfigHelpers)
 
