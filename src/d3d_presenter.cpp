@@ -500,7 +500,7 @@ struct D3DRenderer::Impl {
         }
 
         DXGI_PRESENT_PARAMETERS params{};
-        const bool ok = SUCCEEDED(swapChain->Present1(0, 0, &params));
+        const bool ok = SUCCEEDED(swapChain->Present1(1, 0, &params));
         perf::Trace::write("d3d", ok ? "present" : "present_fail", swapWidth, swapHeight, perf::Trace::elapsedMs(traceStart));
         return ok;
     }

@@ -262,6 +262,11 @@ private:
 
         if (const std::optional<LRESULT> result =
                 app->eventAdapter_.handleMessage(hwnd, message, wParam, lParam)) {
+            if (message == WM_MOUSEMOVE &&
+                GetCapture() == hwnd &&
+                app->frameDirty_) {
+                app->requestRepaint(hwnd, true);
+            }
             return *result;
         }
 
@@ -269,7 +274,7 @@ private:
         case kRequestRedrawMessage:
             app->redrawMessagePending_.store(false);
             app->markFrameDirty();
-            app->requestRepaint(hwnd, false);
+            app->requestRepaint(hwnd, true);
             return 0;
         case WM_WINDOWPOSCHANGING: {
             auto* pos = reinterpret_cast<WINDOWPOS*>(lParam);

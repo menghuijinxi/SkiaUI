@@ -144,6 +144,12 @@ void waitForDirty(skui::Runtime& runtime) {
     }
 }
 
+bool finishScrollAnimation(skui::Runtime& runtime) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(220));
+    uint32_t unused = 0;
+    return renderPixel(runtime, 0, 0, unused);
+}
+
 bool isBrightPixel(uint32_t color) {
     return ((color >> 16u) & 0xffu) > 180u &&
            ((color >> 8u) & 0xffu) > 180u &&
@@ -1480,6 +1486,7 @@ int main() {
     ok = expect(scrolledSelectableRuntime.setValueById("scrolled-copy", "red\ngreen\nblue"),
                 "setValueById should update scrolled selectable multiline text") && ok;
     sendWheel(scrolledSelectableRuntime, 30.0f, 30.0f, -120.0f);
+    ok = finishScrollAnimation(scrolledSelectableRuntime) && ok;
     sendMouse(scrolledSelectableRuntime, skui::EventType::MouseDown, 10.0f, 40.0f);
     sendMouse(scrolledSelectableRuntime, skui::EventType::MouseMove, 130.0f, 78.0f);
     sendMouse(scrolledSelectableRuntime, skui::EventType::MouseUp, 130.0f, 78.0f);
@@ -3324,7 +3331,12 @@ int main() {
 </html>
 )html";
 
-    skui::Runtime scrollRuntime(options);
+    std::atomic_int scrollAnimationRedraws{0};
+    skui::RuntimeOptions scrollOptions = options;
+    scrollOptions.requestRedraw = [&] {
+        scrollAnimationRedraws.fetch_add(1);
+    };
+    skui::Runtime scrollRuntime(scrollOptions);
     scrollRuntime.resize(kWidth, kHeight, 1.0f);
     if (!scrollRuntime.loadDocumentFromString(scrollHtml, "")) {
         std::cerr << "scroll load failed: " << scrollRuntime.lastError() << "\n";
@@ -3333,6 +3345,7 @@ int main() {
 
     uint32_t verticalInitial = 0;
     uint32_t verticalClipped = 0;
+    uint32_t verticalWheelFirstFrame = 0;
     uint32_t verticalScrolled = 0;
     uint32_t horizontalInitial = 0;
     uint32_t horizontalScrolled = 0;
@@ -3344,9 +3357,18 @@ int main() {
     ok = renderPixel(scrollRuntime, 55, 25, verticalScrollbar) && ok;
     ok = renderPixel(scrollRuntime, 100, 45, horizontalScrollbar) && ok;
     sendWheel(scrollRuntime, 20.0f, 20.0f, -240.0f);
+    ok = renderPixel(scrollRuntime, 20, 20, verticalWheelFirstFrame) && ok;
+    ok = expect(verticalWheelFirstFrame == verticalInitial,
+                "mouse wheel should begin with a partial frame instead of jumping") &&
+         ok;
+    ok = expect(scrollAnimationRedraws.load() > 0,
+                "smooth wheel scrolling should request follow-up animation frames") &&
+         ok;
+    ok = finishScrollAnimation(scrollRuntime) && ok;
     ok = renderPixel(scrollRuntime, 20, 20, verticalScrolled) && ok;
     ok = renderPixel(scrollRuntime, 90, 20, horizontalInitial) && ok;
     sendWheel(scrollRuntime, 90.0f, 20.0f, -240.0f, true);
+    ok = finishScrollAnimation(scrollRuntime) && ok;
     ok = renderPixel(scrollRuntime, 90, 20, horizontalScrolled) && ok;
     sendMouse(scrollRuntime, skui::EventType::MouseDown, 55.0f, 45.0f);
     sendMouse(scrollRuntime, skui::EventType::MouseUp, 55.0f, 45.0f);
@@ -3432,6 +3454,7 @@ int main() {
     uint32_t dynamicListRemoved = 0;
     ok = renderPixel(dynamicListScrollRuntime, 20, 20, dynamicListInitial) && ok;
     sendWheel(dynamicListScrollRuntime, 20.0f, 20.0f, -240.0f);
+    ok = finishScrollAnimation(dynamicListScrollRuntime) && ok;
     ok = renderPixel(dynamicListScrollRuntime, 20, 20, dynamicListScrolled) && ok;
     ok = expect(
              dynamicListScrollRuntime.appendHtmlById(
@@ -3440,6 +3463,7 @@ int main() {
              "appendHtmlById should grow an absolutely positioned scroll list") &&
          ok;
     sendWheel(dynamicListScrollRuntime, 20.0f, 20.0f, -240.0f);
+    ok = finishScrollAnimation(dynamicListScrollRuntime) && ok;
     ok = renderPixel(dynamicListScrollRuntime, 20, 20, dynamicListAppended) && ok;
     ok = expect(dynamicListScrollRuntime.setVisibleById("second", false),
                 "setVisibleById should shrink an absolutely positioned scroll list") &&

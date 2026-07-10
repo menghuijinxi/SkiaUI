@@ -419,33 +419,6 @@ bool updateScrollFromScrollbar(Node& node, ScrollbarAxis axis, float pointer, fl
     return changed;
 }
 
-bool scrollNode(Node& node, float dx, float dy, Node** scrolled = nullptr) {
-    bool changed = false;
-    if (dx != 0.0f && canScrollX(node)) {
-        const float next = clampf(node.scrollX + dx, 0.0f, scrollMaxX(node));
-        changed = next != node.scrollX || changed;
-        node.scrollX = next;
-    }
-    if (dy != 0.0f && canScrollY(node)) {
-        const float next = clampf(node.scrollY + dy, 0.0f, scrollMaxY(node));
-        changed = next != node.scrollY || changed;
-        node.scrollY = next;
-    }
-    if (changed && scrolled) {
-        *scrolled = &node;
-    }
-    return changed;
-}
-
-bool scrollNearest(Node* leaf, float dx, float dy, Node** scrolled = nullptr) {
-    for (Node* current = leaf; current; current = current->parent) {
-        if (scrollNode(*current, dx, dy, scrolled)) {
-            return true;
-        }
-    }
-    return false;
-}
-
 ElementEvent makeElementEvent(ElementEventType type, const Node& node, const Event& source, float x, float y) {
     ElementEvent event;
     event.type = type;
@@ -994,6 +967,9 @@ std::optional<TransitionDefinition> transitionFor(const Style& style, Transition
 
 using AnimationClock = std::chrono::steady_clock;
 
+constexpr float kSmoothScrollDurationSeconds = 0.18f;
+constexpr float kSmoothScrollInitialFraction = 0.12f;
+
 struct ActiveAnimation {
     Node* node = nullptr;
     TransitionProperty property = TransitionProperty::Opacity;
@@ -1005,6 +981,15 @@ struct ActiveAnimation {
     float durationSeconds = 0.0f;
     float delaySeconds = 0.0f;
     Easing easing = Easing::Ease;
+};
+
+struct ActiveScrollAnimation {
+    Node* node = nullptr;
+    float fromX = 0.0f;
+    float fromY = 0.0f;
+    float targetX = 0.0f;
+    float targetY = 0.0f;
+    AnimationClock::time_point start;
 };
 
 struct StyleSnapshot {
@@ -1145,6 +1130,44 @@ void clearAnimationsForMissingNodes(std::vector<ActiveAnimation>& animations, co
                                         return !animation.node || !containsNode(*document.root, animation.node);
                                     }),
                      animations.end());
+}
+
+void clearScrollAnimationsForNode(std::vector<ActiveScrollAnimation>& animations,
+                                  Node* node) {
+    if (!node) {
+        return;
+    }
+    animations.erase(
+        std::remove_if(animations.begin(),
+                       animations.end(),
+                       [node](const ActiveScrollAnimation& animation) {
+                           for (Node* current = animation.node; current;
+                                current = current->parent) {
+                               if (current == node) {
+                                   return true;
+                               }
+                           }
+                           return false;
+                       }),
+        animations.end());
+}
+
+void clearScrollAnimationsForMissingNodes(
+    std::vector<ActiveScrollAnimation>& animations,
+    const Document& document) {
+    if (!document.root) {
+        animations.clear();
+        return;
+    }
+
+    animations.erase(
+        std::remove_if(animations.begin(),
+                       animations.end(),
+                       [&document](const ActiveScrollAnimation& animation) {
+                           return !animation.node ||
+                                  !containsNode(*document.root, animation.node);
+                       }),
+        animations.end());
 }
 
 std::string multilineText(std::string text) {
@@ -1449,48 +1472,168 @@ public:
         writeAnimatedTransform(node, animation.fromTransform);
     }
 
-    bool advanceAnimations() {
-        if (activeAnimations.empty() || !document.root) {
+    ActiveScrollAnimation* scrollAnimationFor(Node& node) {
+        const auto it = std::find_if(
+            activeScrollAnimations.begin(),
+            activeScrollAnimations.end(),
+            [&node](const ActiveScrollAnimation& animation) {
+                return animation.node == &node;
+            });
+        return it == activeScrollAnimations.end() ? nullptr : &*it;
+    }
+
+    void cancelSmoothScroll(Node& node) {
+        activeScrollAnimations.erase(
+            std::remove_if(
+                activeScrollAnimations.begin(),
+                activeScrollAnimations.end(),
+                [&node](const ActiveScrollAnimation& animation) {
+                    return animation.node == &node;
+                }),
+            activeScrollAnimations.end());
+    }
+
+    bool scheduleSmoothScroll(Node& node,
+                              float dx,
+                              float dy,
+                              Node** scrolled = nullptr) {
+        ActiveScrollAnimation* currentAnimation = scrollAnimationFor(node);
+        const float baseX = currentAnimation ? currentAnimation->targetX : node.scrollX;
+        const float baseY = currentAnimation ? currentAnimation->targetY : node.scrollY;
+        float targetX = baseX;
+        float targetY = baseY;
+        if (dx != 0.0f && canScrollX(node)) {
+            targetX = clampf(baseX + dx, 0.0f, scrollMaxX(node));
+        }
+        if (dy != 0.0f && canScrollY(node)) {
+            targetY = clampf(baseY + dy, 0.0f, scrollMaxY(node));
+        }
+        if (nearlyEqual(targetX, baseX) && nearlyEqual(targetY, baseY)) {
             return false;
         }
 
-        const float viewportWidth = logicalWidth();
-        const float viewportHeight = logicalHeight();
-        recomputeStyles(document, options, viewportWidth, viewportHeight);
-        clearAnimatedStyleTree(*document.root);
-        clearAnimationsForMissingNodes(activeAnimations, document);
+        node.scrollX = clampf(mix(node.scrollX, targetX, kSmoothScrollInitialFraction),
+                              0.0f,
+                              scrollMaxX(node));
+        node.scrollY = clampf(mix(node.scrollY, targetY, kSmoothScrollInitialFraction),
+                              0.0f,
+                              scrollMaxY(node));
+
+        ActiveScrollAnimation animation;
+        animation.node = &node;
+        animation.fromX = node.scrollX;
+        animation.fromY = node.scrollY;
+        animation.targetX = targetX;
+        animation.targetY = targetY;
+        animation.start = AnimationClock::now();
+        if (currentAnimation) {
+            *currentAnimation = animation;
+        } else {
+            activeScrollAnimations.push_back(animation);
+        }
+
+        if (scrolled) {
+            *scrolled = &node;
+        }
+        dirty = true;
+        requestAnimationFrame();
+        return true;
+    }
+
+    bool scheduleSmoothScrollNearest(Node* leaf,
+                                     float dx,
+                                     float dy,
+                                     Node** scrolled = nullptr) {
+        for (Node* current = leaf; current; current = current->parent) {
+            if (scheduleSmoothScroll(*current, dx, dy, scrolled)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    bool advanceAnimations() {
+        if ((activeAnimations.empty() && activeScrollAnimations.empty()) ||
+            !document.root) {
+            return false;
+        }
 
         bool changed = false;
         const auto now = AnimationClock::now();
-        for (ActiveAnimation& animation : activeAnimations) {
-            const float elapsed = elapsedSeconds(animation.start, now) - animation.delaySeconds;
-            const float progress = animation.durationSeconds <= 0.0f
-                                       ? 1.0f
-                                       : clampf(elapsed / animation.durationSeconds, 0.0f, 1.0f);
-            const float eased = easingValue(animation.easing, progress);
-            if (animation.property == TransitionProperty::Opacity) {
-                writeAnimatedOpacity(*animation.node,
-                                     mix(animation.fromOpacity, animation.toOpacity, eased));
-            } else if (animation.property == TransitionProperty::Transform) {
-                writeAnimatedTransform(*animation.node,
-                                       mixTransform(animation.fromTransform,
-                                                    animation.toTransform,
-                                                    eased));
-            }
-            changed = true;
-        }
+        if (!activeAnimations.empty()) {
+            const float viewportWidth = logicalWidth();
+            const float viewportHeight = logicalHeight();
+            recomputeStyles(document, options, viewportWidth, viewportHeight);
+            clearAnimatedStyleTree(*document.root);
+            clearAnimationsForMissingNodes(activeAnimations, document);
 
-        activeAnimations.erase(std::remove_if(activeAnimations.begin(),
-                                              activeAnimations.end(),
-                                              [now](const ActiveAnimation& animation) {
-                                                  return elapsedSeconds(animation.start, now) >=
-                                                         animation.delaySeconds + animation.durationSeconds;
-                                              }),
-                               activeAnimations.end());
-        if (document.root) {
+            for (ActiveAnimation& animation : activeAnimations) {
+                const float elapsed =
+                    elapsedSeconds(animation.start, now) - animation.delaySeconds;
+                const float progress =
+                    animation.durationSeconds <= 0.0f
+                        ? 1.0f
+                        : clampf(elapsed / animation.durationSeconds, 0.0f, 1.0f);
+                const float eased = easingValue(animation.easing, progress);
+                if (animation.property == TransitionProperty::Opacity) {
+                    writeAnimatedOpacity(
+                        *animation.node,
+                        mix(animation.fromOpacity, animation.toOpacity, eased));
+                } else if (animation.property == TransitionProperty::Transform) {
+                    writeAnimatedTransform(
+                        *animation.node,
+                        mixTransform(animation.fromTransform,
+                                     animation.toTransform,
+                                     eased));
+                }
+                changed = true;
+            }
+
+            activeAnimations.erase(
+                std::remove_if(
+                    activeAnimations.begin(),
+                    activeAnimations.end(),
+                    [now](const ActiveAnimation& animation) {
+                        return elapsedSeconds(animation.start, now) >=
+                               animation.delaySeconds + animation.durationSeconds;
+                    }),
+                activeAnimations.end());
             applyAnimatedStyles(*document.root);
         }
-        if (!activeAnimations.empty()) {
+
+        clearScrollAnimationsForMissingNodes(activeScrollAnimations, document);
+        for (ActiveScrollAnimation& animation : activeScrollAnimations) {
+            const float progress = clampf(
+                elapsedSeconds(animation.start, now) /
+                    kSmoothScrollDurationSeconds,
+                0.0f,
+                1.0f);
+            const float eased = 1.0f - std::pow(1.0f - progress, 3.0f);
+            const float maxX = scrollMaxX(*animation.node);
+            const float maxY = scrollMaxY(*animation.node);
+            animation.targetX = clampf(animation.targetX, 0.0f, maxX);
+            animation.targetY = clampf(animation.targetY, 0.0f, maxY);
+            const float nextX =
+                clampf(mix(animation.fromX, animation.targetX, eased), 0.0f, maxX);
+            const float nextY =
+                clampf(mix(animation.fromY, animation.targetY, eased), 0.0f, maxY);
+            changed = !nearlyEqual(nextX, animation.node->scrollX) ||
+                      !nearlyEqual(nextY, animation.node->scrollY) ||
+                      changed;
+            animation.node->scrollX = nextX;
+            animation.node->scrollY = nextY;
+        }
+        activeScrollAnimations.erase(
+            std::remove_if(
+                activeScrollAnimations.begin(),
+                activeScrollAnimations.end(),
+                [now](const ActiveScrollAnimation& animation) {
+                    return elapsedSeconds(animation.start, now) >=
+                           kSmoothScrollDurationSeconds;
+                }),
+            activeScrollAnimations.end());
+
+        if (!activeAnimations.empty() || !activeScrollAnimations.empty()) {
             requestAnimationFrame();
         }
         dirty = changed || dirty;
@@ -1498,7 +1641,8 @@ public:
     }
 
     void requestAnimationFrame() const {
-        if (!activeAnimations.empty() && options.requestRedraw) {
+        if ((!activeAnimations.empty() || !activeScrollAnimations.empty()) &&
+            options.requestRedraw) {
             options.requestRedraw();
         }
     }
@@ -1633,6 +1777,8 @@ public:
 
     void clearReferencesTo(const Node& subtree) {
         clearAnimationsForNode(activeAnimations, const_cast<Node*>(&subtree));
+        clearScrollAnimationsForNode(activeScrollAnimations,
+                                     const_cast<Node*>(&subtree));
         if (containsNode(subtree, focusedNode)) {
             setFocusedNode(nullptr);
         }
@@ -1707,6 +1853,7 @@ public:
     Cursor currentCursor = Cursor::Default;
     std::unordered_map<const Node*, EditableLineCacheEntry> editableLineCache;
     std::vector<ActiveAnimation> activeAnimations;
+    std::vector<ActiveScrollAnimation> activeScrollAnimations;
     std::string lastError;
 };
 
@@ -1729,6 +1876,7 @@ bool Runtime::loadDocument(const std::string& path) {
     impl_->renderer.clearCaches();
     impl_->editableLineCache.clear();
     impl_->activeAnimations.clear();
+    impl_->activeScrollAnimations.clear();
     if (impl_->document.root) {
         rebindParents(*impl_->document.root, nullptr);
     }
@@ -1762,6 +1910,7 @@ bool Runtime::loadDocumentFromString(std::string_view html, std::string_view bas
     impl_->renderer.clearCaches();
     impl_->editableLineCache.clear();
     impl_->activeAnimations.clear();
+    impl_->activeScrollAnimations.clear();
     if (impl_->document.root) {
         rebindParents(*impl_->document.root, nullptr);
     }
@@ -1905,6 +2054,7 @@ bool Runtime::handleEvent(const Event& event) {
         impl_->pressedLeaf = hit;
         impl_->hoveredLeaf = hit;
         if (scrollbarHit) {
+            impl_->cancelSmoothScroll(*scrollbarHit->node);
             impl_->scrollingNode = scrollbarHit->node;
             impl_->scrollingAxis = scrollbarHit->axis;
             impl_->scrollbarDragOffset = scrollbarHit->dragOffset;
@@ -2098,7 +2248,8 @@ bool Runtime::handleEvent(const Event& event) {
         const float step = event.wheelDelta == 0.0f ? 0.0f : -event.wheelDelta / 120.0f * 48.0f;
         const float dx = event.shiftKey ? step : 0.0f;
         const float dy = event.shiftKey ? 0.0f : step;
-        scrollChanged = scrollNearest(hit, dx, dy, &scrolledNode);
+        scrollChanged =
+            impl_->scheduleSmoothScrollNearest(hit, dx, dy, &scrolledNode);
         consumed = scrollChanged;
         break;
     }
