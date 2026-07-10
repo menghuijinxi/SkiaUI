@@ -1081,6 +1081,10 @@ void mergeStyle(Style& target, const Style& source) {
         target.flexShrink = source.flexShrink;
         target.flags.flexShrink = true;
     }
+    if (f.boxSizing) {
+        target.boxSizing = source.boxSizing;
+        target.flags.boxSizing = true;
+    }
     if (f.width) {
         target.width = source.width;
         target.flags.width = true;
@@ -1769,6 +1773,14 @@ void applyDeclaration(Style& style, std::string_view rawName, std::string_view r
         setEdgeByName(style.padding, style.flags, &Style::Flags::paddingRight, &EdgeValues::right, *length);
     } else if (name == "padding-bottom" && length) {
         setEdgeByName(style.padding, style.flags, &Style::Flags::paddingBottom, &EdgeValues::bottom, *length);
+    } else if (name == "box-sizing") {
+        const std::string sizing = lower(value);
+        if (sizing == "content-box" || sizing == "border-box") {
+            style.boxSizing = sizing == "border-box"
+                ? YGBoxSizingBorderBox
+                : YGBoxSizingContentBox;
+            style.flags.boxSizing = true;
+        }
     } else if (name == "left" && length) {
         setEdgeByName(style.inset, style.flags, &Style::Flags::insetLeft, &EdgeValues::left, *length);
     } else if (name == "top" && length) {

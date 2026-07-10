@@ -239,6 +239,7 @@ struct Style {
         bool alignSelf = false;
         bool flexGrow = false;
         bool flexShrink = false;
+        bool boxSizing = false;
         bool width = false;
         bool height = false;
         bool minWidth = false;
@@ -295,6 +296,7 @@ struct Style {
     YGAlign alignSelf = YGAlignAuto;
     float flexGrow = 0.0f;
     float flexShrink = 1.0f;
+    YGBoxSizing boxSizing = YGBoxSizingContentBox;
     std::optional<Length> width;
     std::optional<Length> height;
     std::optional<Length> minWidth;

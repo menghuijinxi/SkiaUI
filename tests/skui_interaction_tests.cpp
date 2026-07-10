@@ -1126,6 +1126,311 @@ int main() {
     ok = expect(countBrightPixels(paddingPixels, 60, 10, 72, 50) == 0,
                 "percentage padding should offset text inside the label content box") && ok;
 
+    constexpr std::string_view autoHeightSelectableHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      position: relative;
+      width: 140px;
+      height: 100px;
+      background-color: #000000;
+    }
+    .card {
+      position: absolute;
+      left: 5px;
+      top: 5px;
+      width: 70px;
+      padding: 5px;
+      background-color: #ff0000;
+    }
+    selectable {
+      font-size: 14px;
+      color: #ffffff;
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <div class="card">
+      <selectable>alpha beta gamma delta</selectable>
+    </div>
+  </div>
+</body>
+</html>
+)html";
+
+    skui::Runtime autoHeightSelectableRuntime(options);
+    autoHeightSelectableRuntime.resize(kWidth, kHeight, 1.0f);
+    if (!autoHeightSelectableRuntime.loadDocumentFromString(
+            autoHeightSelectableHtml,
+            "")) {
+        std::cerr << "auto-height selectable load failed: "
+                  << autoHeightSelectableRuntime.lastError() << "\n";
+        return 1;
+    }
+    uint32_t wrappedCardBottom = 0;
+    ok = renderPixel(
+             autoHeightSelectableRuntime,
+             7,
+             70,
+             wrappedCardBottom) &&
+         ok;
+    ok = expect(
+             wrappedCardBottom == solidColor(0xFF, 0x00, 0x00),
+             "wrapped selectable text should expand its auto-height parent") &&
+         ok;
+
+    constexpr std::string_view browserBoxSizingHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      position: relative;
+      width: 340px;
+      height: 220px;
+      background-color: #000000;
+    }
+    .content-box {
+      position: absolute;
+      left: 5px;
+      top: 5px;
+      width: 260px;
+      height: 20px;
+      padding: 10px 18px;
+      border: 1px solid #ff0000;
+      background-color: #ff0000;
+    }
+    .measure-card {
+      position: absolute;
+      left: 5px;
+      top: 60px;
+      width: 260px;
+      padding: 15px 18px 16px;
+      border: 1px solid #224466;
+      background-color: #224466;
+    }
+    .title {
+      display: block;
+      position: relative;
+      margin-bottom: 5px;
+      font-size: 16px;
+      font-weight: bold;
+    }
+    .body {
+      display: block;
+      position: relative;
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <div class="content-box"></div>
+    <div class="measure-card">
+      <selectable class="title">Animated card</selectable>
+      <selectable class="body">Runtime style changes drive transform and opacity transitions.</selectable>
+    </div>
+  </div>
+</body>
+</html>
+)html";
+
+    skui::Runtime browserBoxSizingRuntime(options);
+    constexpr int browserBoxWidth = 340;
+    constexpr int browserBoxHeight = 220;
+    browserBoxSizingRuntime.resize(
+        browserBoxWidth,
+        browserBoxHeight,
+        1.0f);
+    if (!browserBoxSizingRuntime.loadDocumentFromString(
+            browserBoxSizingHtml,
+            "")) {
+        std::cerr << "browser box sizing load failed: "
+                  << browserBoxSizingRuntime.lastError() << "\n";
+        return 1;
+    }
+    uint32_t contentBoxRight = 0;
+    uint32_t measuredCardInside = 0;
+    uint32_t measuredCardOutside = 0;
+    ok = renderPixelAt(
+             browserBoxSizingRuntime,
+             browserBoxWidth,
+             browserBoxHeight,
+             300,
+             20,
+             contentBoxRight) &&
+         ok;
+    ok = renderPixelAt(
+             browserBoxSizingRuntime,
+             browserBoxWidth,
+             browserBoxHeight,
+             20,
+             145,
+             measuredCardInside) &&
+         ok;
+    ok = renderPixelAt(
+             browserBoxSizingRuntime,
+             browserBoxWidth,
+             browserBoxHeight,
+             20,
+             162,
+             measuredCardOutside) &&
+         ok;
+    ok = expect(
+             contentBoxRight == solidColor(0xFF, 0x00, 0x00),
+             "default content-box width should exclude padding and border") &&
+         ok;
+    ok = expect(
+             measuredCardInside == solidColor(0x22, 0x44, 0x66),
+             "content-box text width should keep the card body visible") &&
+         ok;
+    ok = expect(
+             measuredCardOutside == solidColor(0x00, 0x00, 0x00),
+             "browser content-box sizing should avoid a spurious third line") &&
+         ok;
+
+    constexpr std::string_view balancedCardsHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      position: relative;
+      width: 700px;
+      height: 160px;
+      background-color: #000000;
+    }
+    .row {
+      position: absolute;
+      left: 5px;
+      top: 5px;
+      width: 650px;
+      display: flex;
+      flex-direction: row;
+      align-items: flex-start;
+    }
+    .notice-card {
+      position: relative;
+      flex-grow: 1;
+      margin-right: 24px;
+      padding: 15px 18px 16px;
+      border: 1px solid #228844;
+      background-color: #228844;
+    }
+    .motion-card {
+      position: relative;
+      width: 260px;
+      flex-shrink: 0;
+      padding: 15px 18px 16px;
+      border: 1px solid #224488;
+      background-color: #224488;
+    }
+    .title {
+      display: block;
+      position: relative;
+      margin-bottom: 5px;
+      font-size: 16px;
+      font-weight: bold;
+    }
+    .notice-text {
+      display: block;
+      position: relative;
+      font-size: 14px;
+    }
+    .motion-text {
+      display: block;
+      position: relative;
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <div class="row">
+      <div class="notice-card">
+        <selectable class="title">Visible card</selectable>
+        <selectable class="notice-text">This block uses display none, so hidden state removes it from layout and hit testing.</selectable>
+      </div>
+      <div class="motion-card">
+        <selectable class="title">Animated card</selectable>
+        <selectable class="motion-text">Runtime style changes drive transform and opacity transitions.</selectable>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
+)html";
+
+    skui::Runtime balancedCardsRuntime(options);
+    constexpr int balancedCardsWidth = 700;
+    constexpr int balancedCardsHeight = 160;
+    balancedCardsRuntime.resize(
+        balancedCardsWidth,
+        balancedCardsHeight,
+        1.0f);
+    if (!balancedCardsRuntime.loadDocumentFromString(
+            balancedCardsHtml,
+            "")) {
+        std::cerr << "balanced cards load failed: "
+                  << balancedCardsRuntime.lastError() << "\n";
+        return 1;
+    }
+    uint32_t noticeCardInside = 0;
+    uint32_t noticeCardOutside = 0;
+    uint32_t motionCardInside = 0;
+    uint32_t motionCardOutside = 0;
+    ok = renderPixelAt(
+             balancedCardsRuntime,
+             balancedCardsWidth,
+             balancedCardsHeight,
+             20,
+             90,
+             noticeCardInside) &&
+         ok;
+    ok = renderPixelAt(
+             balancedCardsRuntime,
+             balancedCardsWidth,
+             balancedCardsHeight,
+             20,
+             115,
+             noticeCardOutside) &&
+         ok;
+    ok = renderPixelAt(
+             balancedCardsRuntime,
+             balancedCardsWidth,
+             balancedCardsHeight,
+             500,
+             90,
+             motionCardInside) &&
+         ok;
+    ok = renderPixelAt(
+             balancedCardsRuntime,
+             balancedCardsWidth,
+             balancedCardsHeight,
+             500,
+             115,
+             motionCardOutside) &&
+         ok;
+    ok = expect(
+             noticeCardInside == solidColor(0x22, 0x88, 0x44),
+             "flexible notice card should contain its two-line text") &&
+         ok;
+    ok = expect(
+             noticeCardOutside == solidColor(0x00, 0x00, 0x00),
+             "flexible notice card should not reserve a third text line") &&
+         ok;
+    ok = expect(
+             motionCardInside == solidColor(0x22, 0x44, 0x88),
+             "fixed motion card should contain its two-line text") &&
+         ok;
+    ok = expect(
+             motionCardOutside == solidColor(0x00, 0x00, 0x00),
+             "fixed motion card should keep browser-like auto height") &&
+         ok;
+
     constexpr std::string_view inputHtml = R"html(
 <!doctype html>
 <html>

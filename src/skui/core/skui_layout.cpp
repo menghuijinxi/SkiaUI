@@ -12,7 +12,69 @@ namespace {
 
 float estimateTextCharWidth(unsigned char ch, float fontSize) {
     if (ch < 0x80) {
-        return fontSize * (std::isspace(ch) ? 0.32f : 0.56f);
+        if (std::isspace(ch) != 0) {
+            return fontSize * 0.32f;
+        }
+        if (std::isdigit(ch) != 0) {
+            return fontSize * 0.56f;
+        }
+        if (std::islower(ch) != 0) {
+            switch (ch) {
+            case 'i':
+            case 'j':
+            case 'l':
+                return fontSize * 0.28f;
+            case 'f':
+            case 'r':
+            case 't':
+                return fontSize * 0.38f;
+            case 'm':
+            case 'w':
+                return fontSize * 0.78f;
+            default:
+                return fontSize * 0.52f;
+            }
+        }
+        if (std::isupper(ch) != 0) {
+            switch (ch) {
+            case 'I':
+                return fontSize * 0.30f;
+            case 'M':
+            case 'W':
+                return fontSize * 0.82f;
+            default:
+                return fontSize * 0.62f;
+            }
+        }
+        switch (ch) {
+        case '.':
+        case ',':
+        case ':':
+        case ';':
+        case '!':
+        case '|':
+        case '\'':
+        case '`':
+            return fontSize * 0.28f;
+        case '(':
+        case ')':
+        case '[':
+        case ']':
+        case '{':
+        case '}':
+            return fontSize * 0.36f;
+        case '-':
+        case '_':
+        case '/':
+        case '\\':
+            return fontSize * 0.42f;
+        case '?':
+            return fontSize * 0.52f;
+        case '@':
+            return fontSize * 0.90f;
+        default:
+            return fontSize * 0.52f;
+        }
     }
     if ((ch & 0xE0) == 0xC0) {
         return fontSize * 0.92f;
@@ -49,6 +111,110 @@ float estimateTextWidth(std::string_view value, float fontSize) {
     return width;
 }
 
+size_t nextUtf8Boundary(std::string_view value, size_t index) {
+    if (index >= value.size()) {
+        return value.size();
+    }
+    const unsigned char ch = static_cast<unsigned char>(value[index]);
+    return std::min(value.size(), index + utf8Advance(ch));
+}
+
+template <typename MeasureText>
+size_t findWrappedLineEnd(std::string_view value,
+                          size_t start,
+                          size_t hardEnd,
+                          float maxWidth,
+                          MeasureText measureText) {
+    if (maxWidth <= 0.0f || start >= hardEnd) {
+        return hardEnd;
+    }
+
+    std::vector<size_t> boundaries;
+    boundaries.reserve(hardEnd - start);
+    for (size_t index = start; index < hardEnd;) {
+        index = nextUtf8Boundary(value, index);
+        boundaries.push_back(index);
+    }
+
+    size_t low = 0;
+    size_t high = boundaries.size();
+    while (low < high) {
+        const size_t middle = low + (high - low) / 2;
+        const size_t candidateEnd = boundaries[middle];
+        const std::string_view candidate(
+            value.data() + start,
+            candidateEnd - start);
+        if (measureText(candidate) <= maxWidth) {
+            low = middle + 1;
+        } else {
+            high = middle;
+        }
+    }
+
+    if (low == 0) {
+        return boundaries.front();
+    }
+
+    const size_t lineEnd = boundaries[low - 1];
+    if (lineEnd == hardEnd) {
+        return lineEnd;
+    }
+
+    size_t lastBreak = std::string_view::npos;
+    for (size_t index = start; index < lineEnd;) {
+        const size_t next = nextUtf8Boundary(value, index);
+        const unsigned char ch = static_cast<unsigned char>(value[index]);
+        if (std::isspace(ch) != 0 ||
+            value[index] == '/' ||
+            value[index] == '-' ||
+            value[index] == '_' ||
+            value[index] == '?' ||
+            value[index] == '&' ||
+            value[index] == '=') {
+            lastBreak = next;
+        }
+        index = next;
+    }
+    return lastBreak != std::string_view::npos && lastBreak > start
+        ? lastBreak
+        : lineEnd;
+}
+
+template <typename MeasureText>
+size_t wrappedTextLineCount(std::string_view value,
+                            float maxWidth,
+                            MeasureText measureText) {
+    size_t lineCount = 0;
+    const auto countSegment = [&](size_t start, size_t hardEnd) {
+        size_t lineStart = start;
+        while (lineStart < hardEnd) {
+            const size_t lineEnd = findWrappedLineEnd(
+                value,
+                lineStart,
+                hardEnd,
+                maxWidth,
+                measureText);
+            ++lineCount;
+            lineStart = lineEnd;
+            while (lineStart < hardEnd &&
+                   std::isspace(
+                       static_cast<unsigned char>(value[lineStart])) != 0) {
+                ++lineStart;
+            }
+        }
+    };
+
+    size_t start = 0;
+    for (size_t index = 0; index < value.size(); ++index) {
+        if (value[index] == '\n') {
+            countSegment(start, index);
+            start = index + 1;
+        }
+    }
+    countSegment(start, value.size());
+    return std::max<size_t>(1, lineCount);
+}
+
 struct TextareaScrollMetrics {
     float width = 0.0f;
     float height = 0.0f;
@@ -67,12 +233,24 @@ YGSize measureTextNode(YGNodeConstRef node,
     const std::string& value = !uiNode->value.empty()
         ? uiNode->value
         : (!uiNode->text.empty() ? uiNode->text : uiNode->placeholder);
-    float measuredWidth = estimateTextWidth(value, uiNode->style.fontSize);
+    const auto measureText = [&](std::string_view text) {
+        return estimateTextWidth(text, uiNode->style.fontSize);
+    };
+    float measuredWidth = measureText(value);
     float measuredHeight = uiNode->style.fontSize * 1.35f;
     if (widthMode == YGMeasureModeExactly) {
         measuredWidth = width;
     } else if (widthMode == YGMeasureModeAtMost) {
         measuredWidth = std::min(measuredWidth, width);
+    }
+    if (uiNode->tag == "selectable") {
+        const size_t lineCount = wrappedTextLineCount(
+            value,
+            measuredWidth,
+            measureText);
+        measuredHeight =
+            static_cast<float>(lineCount) *
+            std::max(12.0f, uiNode->style.fontSize * 1.38f);
     }
     if (heightMode == YGMeasureModeExactly) {
         measuredHeight = height;
@@ -271,6 +449,7 @@ void LayoutEngine::buildYoga(Node& node, YGNodeRef yogaNode) {
     }
     YGNodeStyleSetFlexGrow(yogaNode, s.flexGrow);
     YGNodeStyleSetFlexShrink(yogaNode, s.flexShrink);
+    YGNodeStyleSetBoxSizing(yogaNode, s.boxSizing);
     YGNodeStyleSetPositionType(yogaNode,
                                (s.position == Position::Absolute ||
                                 s.position == Position::Sticky)
@@ -292,6 +471,11 @@ void LayoutEngine::buildYoga(Node& node, YGNodeRef yogaNode) {
     setEdge(yogaNode, YGNodeStyleSetPadding, YGNodeStyleSetPaddingPercent, nullptr, YGEdgeTop, s.padding.top);
     setEdge(yogaNode, YGNodeStyleSetPadding, YGNodeStyleSetPaddingPercent, nullptr, YGEdgeRight, s.padding.right);
     setEdge(yogaNode, YGNodeStyleSetPadding, YGNodeStyleSetPaddingPercent, nullptr, YGEdgeBottom, s.padding.bottom);
+    const float borderWidth =
+        s.borderStyle == BorderStyle::Solid
+            ? std::max(0.0f, s.borderWidth)
+            : 0.0f;
+    YGNodeStyleSetBorder(yogaNode, YGEdgeAll, borderWidth);
     setEdge(yogaNode, YGNodeStyleSetPosition, YGNodeStyleSetPositionPercent, YGNodeStyleSetPositionAuto, YGEdgeLeft, s.inset.left);
     setEdge(yogaNode, YGNodeStyleSetPosition, YGNodeStyleSetPositionPercent, YGNodeStyleSetPositionAuto, YGEdgeTop, s.inset.top);
     setEdge(yogaNode, YGNodeStyleSetPosition, YGNodeStyleSetPositionPercent, YGNodeStyleSetPositionAuto, YGEdgeRight, s.inset.right);

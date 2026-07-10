@@ -317,7 +317,11 @@ void installInteractions(skui::Runtime& runtime, DemoState& state) {
     });
 }
 
-int exportDocument(const wchar_t* outputPath, int width, int height, float dpiScale) {
+int exportDocument(const wchar_t* outputPath,
+                   int width,
+                   int height,
+                   float dpiScale,
+                   std::wstring_view exportState) {
     width = std::max(1, width);
     height = std::max(1, height);
     dpiScale = std::max(0.1f, dpiScale);
@@ -340,13 +344,15 @@ int exportDocument(const wchar_t* outputPath, int width, int height, float dpiSc
             result = 2;
         } else {
             runtime.resize(width, height, dpiScale);
-            addMessage(runtime, state);
-            toggleNotice(runtime, state);
-            toggleDisplayHidden(runtime, state);
-            toggleVisibilityHidden(runtime, state);
-            replaceFirstMessage(runtime, state);
-            toggleMotion(runtime, state);
-            toggleFade(runtime, state);
+            if (exportState != L"default") {
+                addMessage(runtime, state);
+                toggleNotice(runtime, state);
+                toggleDisplayHidden(runtime, state);
+                toggleVisibilityHidden(runtime, state);
+                replaceFirstMessage(runtime, state);
+                toggleMotion(runtime, state);
+                toggleFade(runtime, state);
+            }
 
             std::vector<uint32_t> pixels(static_cast<size_t>(width) * static_cast<size_t>(height),
                                          kClearColor);
@@ -379,7 +385,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCmd) {
         const int width = argc >= 4 ? parseIntArg(argv[3], 1180) : 1180;
         const int height = argc >= 5 ? parseIntArg(argv[4], 720) : 720;
         const float dpiScale = argc >= 6 ? parseFloatArg(argv[5], 1.0f) : 1.0f;
-        const int result = exportDocument(argv[2], width, height, dpiScale);
+        const std::wstring_view exportState =
+            argc >= 7 ? std::wstring_view(argv[6]) : L"interaction";
+        const int result =
+            exportDocument(argv[2], width, height, dpiScale, exportState);
         LocalFree(argv);
         return result;
     }
