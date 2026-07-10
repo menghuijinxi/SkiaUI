@@ -145,7 +145,9 @@ std::string buildImageDocument(const std::filesystem::path& folder) {
 
     std::ostringstream html;
     html << "<!doctype html><html><head><meta charset=\"utf-8\"><style>";
-    html << ".screen{flex-grow:1;position:relative;background:linear-gradient(to bottom,#07111c,#0b1724);"
+    html << "html{width:100%;height:100%;}body{width:100%;height:100%;margin:0;}";
+    html << ".screen{width:100%;height:100%;position:relative;"
+            "background:linear-gradient(to bottom,#07111c,#0b1724);"
             "color:rgba(238,246,252,0.94);font-size:16px;}";
     html << ".toolbar{position:absolute;left:24px;top:20px;right:24px;height:90px;"
             "background-color:rgba(14,28,43,0.86);border-color:rgba(128,164,192,0.45);"

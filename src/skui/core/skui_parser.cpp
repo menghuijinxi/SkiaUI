@@ -1895,20 +1895,17 @@ bool DocumentParser::loadString(std::string_view html,
         return false;
     }
 
-    auto root = std::make_unique<Node>();
-    root->tag = "root";
-
     std::vector<StyleRule> rules;
     if (lxb_html_head_element_t* head = lxb_html_document_head_element(htmlDocument.get())) {
         collectStyleSheets(lxb_dom_interface_node(head), rules);
     }
-    for (lxb_dom_node_t* child = lxb_dom_interface_node(body)->first_child; child; child = child->next) {
-        if (child->type == LXB_DOM_NODE_TYPE_ELEMENT) {
-            std::unique_ptr<Node> childNode = convertElement(lxb_dom_interface_element(child), root.get(), rules);
-            if (childNode) {
-                root->children.push_back(std::move(childNode));
-            }
-        }
+
+    lxb_dom_element_t* documentElement =
+        lxb_dom_document_element(lxb_dom_interface_document(htmlDocument.get()));
+    std::unique_ptr<Node> root = convertElement(documentElement, nullptr, rules);
+    if (!root || root->tag != "html") {
+        error = "HTML document element conversion failed";
+        return false;
     }
 
     outDocument.root = std::move(root);
@@ -1934,7 +1931,18 @@ bool DocumentParser::loadFragment(std::string_view html,
     if (!fragmentDocument.root) {
         return true;
     }
-    outNodes = std::move(fragmentDocument.root->children);
+    Node* body = nullptr;
+    for (const auto& child : fragmentDocument.root->children) {
+        if (child->tag == "body") {
+            body = child.get();
+            break;
+        }
+    }
+    if (!body) {
+        error = "HTML fragment did not contain body";
+        return false;
+    }
+    outNodes = std::move(body->children);
     for (auto& node : outNodes) {
         rebindParents(*node, nullptr);
     }

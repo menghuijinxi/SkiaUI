@@ -413,6 +413,82 @@ int main() {
                     "setScale should update logical width") && ok;
     }
     {
+        constexpr std::string_view browserRootHtml = R"html(
+<!doctype html>
+<html id="document-root">
+<head>
+  <style>
+    html {
+      background-color: #112233;
+    }
+    body {
+      background-color: #445566;
+      width: 40px;
+      height: 30px;
+    }
+  </style>
+</head>
+<body id="document-body"></body>
+</html>
+)html";
+
+        skui::Runtime browserRootRuntime(options);
+        browserRootRuntime.resize(120, 80, 1.0f);
+        if (!browserRootRuntime.loadDocumentFromString(browserRootHtml, "")) {
+            std::cerr << "browser root load failed: " << browserRootRuntime.lastError() << "\n";
+            return 1;
+        }
+        uint32_t bodyPixel = 0;
+        uint32_t htmlPixel = 0;
+        ok = renderPixel(browserRootRuntime, 10, 10, bodyPixel) && ok;
+        ok = renderPixel(browserRootRuntime, 80, 60, htmlPixel) && ok;
+        ok = expect(bodyPixel == solidColor(0x44, 0x55, 0x66),
+                    "body should remain a styleable document node") && ok;
+        ok = expect(htmlPixel == solidColor(0x11, 0x22, 0x33),
+                    "html should remain the viewport-sized document root") && ok;
+
+        constexpr std::string_view autoBodyHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    html {
+      background-color: #112233;
+    }
+    .screen {
+      flex-grow: 1;
+      position: relative;
+    }
+    .panel {
+      position: absolute;
+      left: 10px;
+      top: 10px;
+      right: 10px;
+      bottom: 10px;
+      background-color: #ff0000;
+    }
+  </style>
+</head>
+<body>
+  <div class="screen">
+    <div class="panel"></div>
+  </div>
+</body>
+</html>
+)html";
+
+        skui::Runtime autoBodyRuntime(options);
+        autoBodyRuntime.resize(120, 80, 1.0f);
+        if (!autoBodyRuntime.loadDocumentFromString(autoBodyHtml, "")) {
+            std::cerr << "auto body load failed: " << autoBodyRuntime.lastError() << "\n";
+            return 1;
+        }
+        uint32_t collapsedPanelPixel = 0;
+        ok = renderPixel(autoBodyRuntime, 20, 20, collapsedPanelPixel) && ok;
+        ok = expect(collapsedPanelPixel == solidColor(0x11, 0x22, 0x33),
+                    "auto-height body should not lend viewport height to flex-grow descendants") && ok;
+    }
+    {
         skui::Runtime runtime(options);
         runtime.resize(kWidth, kHeight, 1.0f);
 
@@ -654,6 +730,15 @@ int main() {
 <html>
 <head>
   <style>
+    html {
+      width: 100%;
+      height: 100%;
+    }
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+    }
     .base {
       position: absolute;
       left: 0px;
@@ -2416,8 +2501,18 @@ int main() {
 <html>
 <head>
   <style>
+    html {
+      width: 100%;
+      height: 100%;
+    }
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+    }
     .screen {
-      flex-grow: 1;
+      width: 100%;
+      height: 100%;
       position: relative;
       background-color: #07111c;
       color: #eef6fc;
