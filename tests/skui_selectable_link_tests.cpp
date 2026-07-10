@@ -61,7 +61,7 @@ int main() {
 </head>
 <body>
   <div class="root">
-    <selectable value="first&#10;open link&#10;last" data-links="6:15:open-url:https://example.com"></selectable>
+    <selectable>first<br><a href="https://example.com">open link</a><br>last</selectable>
   </div>
 </body>
 </html>
@@ -135,7 +135,11 @@ int main() {
 </head>
 <body>
   <div class="root">
-    <selectable value="prefix https://igoutu.cn/icon/lchz7JPUz9qU/%E8%AE%BE%E7%BD%AE suffix" data-links="7:61:open-url:https://igoutu.cn/icon/lchz7JPUz9qU/%E8%AE%BE%E7%BD%AE"></selectable>
+    <selectable>prefix
+      <a
+        href="https://igoutu.cn/icon/lchz7JPUz9qU/%E8%AE%BE%E7%BD%AE">)html"
+        R"html(https://igoutu.cn/icon/lchz7JPUz9qU/%E8%AE%BE%E7%BD%AE</a>
+      suffix</selectable>
   </div>
 </body>
 </html>

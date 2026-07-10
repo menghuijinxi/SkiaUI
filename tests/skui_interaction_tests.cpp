@@ -3360,6 +3360,111 @@ int main() {
     ok = expect(horizontalScrolled == solidColor(0x77, 0x88, 0x99), "Shift+mouse wheel should scroll horizontal overflow content") && ok;
     ok = expect(verticalTrackScrolled == solidColor(0xAB, 0xCD, 0xEF), "clicking vertical scrollbar track should update scroll position") && ok;
 
+    constexpr std::string_view dynamicListScrollHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      position: relative;
+      width: 140px;
+      height: 90px;
+      background-color: #000000;
+    }
+    .viewport {
+      position: absolute;
+      left: 10px;
+      top: 10px;
+      width: 60px;
+      height: 40px;
+      overflow-y: auto;
+      overflow-x: hidden;
+      background-color: #111111;
+    }
+    .message-list {
+      position: absolute;
+      left: 0px;
+      top: 0px;
+      right: 0px;
+      flex-direction: column;
+    }
+    .message {
+      position: relative;
+      height: 30px;
+      flex-shrink: 0;
+    }
+    .first {
+      background-color: #aa0000;
+    }
+    .second {
+      background-color: #0000aa;
+    }
+    .third {
+      background-color: #00aa00;
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <div class="viewport">
+      <div id="message-list" class="message-list">
+        <div class="message first"></div>
+        <div id="second" class="message second"></div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
+)html";
+
+    skui::Runtime dynamicListScrollRuntime(options);
+    dynamicListScrollRuntime.resize(kWidth, kHeight, 1.0f);
+    if (!dynamicListScrollRuntime.loadDocumentFromString(dynamicListScrollHtml, "")) {
+        std::cerr << "dynamic list scroll load failed: "
+                  << dynamicListScrollRuntime.lastError() << "\n";
+        return 1;
+    }
+
+    uint32_t dynamicListInitial = 0;
+    uint32_t dynamicListScrolled = 0;
+    uint32_t dynamicListAppended = 0;
+    uint32_t dynamicListHidden = 0;
+    uint32_t dynamicListRemoved = 0;
+    ok = renderPixel(dynamicListScrollRuntime, 20, 20, dynamicListInitial) && ok;
+    sendWheel(dynamicListScrollRuntime, 20.0f, 20.0f, -240.0f);
+    ok = renderPixel(dynamicListScrollRuntime, 20, 20, dynamicListScrolled) && ok;
+    ok = expect(
+             dynamicListScrollRuntime.appendHtmlById(
+                 "message-list",
+                 R"html(<div id="third" class="message third"></div>)html"),
+             "appendHtmlById should grow an absolutely positioned scroll list") &&
+         ok;
+    sendWheel(dynamicListScrollRuntime, 20.0f, 20.0f, -240.0f);
+    ok = renderPixel(dynamicListScrollRuntime, 20, 20, dynamicListAppended) && ok;
+    ok = expect(dynamicListScrollRuntime.setVisibleById("second", false),
+                "setVisibleById should shrink an absolutely positioned scroll list") &&
+         ok;
+    ok = renderPixel(dynamicListScrollRuntime, 20, 20, dynamicListHidden) && ok;
+    ok = expect(dynamicListScrollRuntime.removeElementById("third"),
+                "removeElementById should shrink an absolutely positioned scroll list") &&
+         ok;
+    ok = renderPixel(dynamicListScrollRuntime, 20, 20, dynamicListRemoved) && ok;
+    ok = expect(dynamicListInitial == solidColor(0xAA, 0x00, 0x00),
+                "dynamic scroll list should initially show the first item") &&
+         ok;
+    ok = expect(dynamicListScrolled == solidColor(0x00, 0x00, 0xAA),
+                "dynamic scroll list should scroll to the second item") &&
+         ok;
+    ok = expect(dynamicListAppended == solidColor(0x00, 0xAA, 0x00),
+                "appending an item should grow the dynamic scroll range") &&
+         ok;
+    ok = expect(dynamicListHidden == solidColor(0x00, 0xAA, 0x00),
+                "display none should shrink and clamp the dynamic scroll range") &&
+         ok;
+    ok = expect(dynamicListRemoved == solidColor(0xAA, 0x00, 0x00),
+                "removing the last item should reset the dynamic scroll range") &&
+         ok;
+
     skui::Runtime scrollbarDragRuntime(options);
     scrollbarDragRuntime.resize(kWidth, kHeight, 1.0f);
     if (!scrollbarDragRuntime.loadDocumentFromString(scrollHtml, "")) {

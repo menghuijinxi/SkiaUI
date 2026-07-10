@@ -412,9 +412,9 @@ ui.setElementEventCallback([&ui](const skui::ElementEvent& event) {
 
 注意：不要依赖完整 JavaScript 或浏览器 DOM API。SkUI 的动态能力来自 C++ 回调和运行时更新接口。简单状态更新优先使用 `applyUpdates` 批量同步样式、文本和属性；需要运行时增删 UI 节点时，使用 `appendHtmlById`、`prependHtmlById`、`replaceHtmlById`、`removeElementById`。隐藏节点有两种语义：`setVisibleById(id, false)` 使用 `display:none`，隐藏后不占布局；`setStyleById(id, "visibility:hidden;")` 隐藏绘制和命中但保留布局占位。元素仍显示但不应消耗输入时，使用 `setConsumesEventsById(id, false)` 或 CSS `pointer-events: none`。
 
-聊天记录、日志查看器这类只读文本建议使用 `selectable`。单个 `selectable` 节点内支持显式换行、多行拖选、分行高亮和 `Ctrl+C`；如果运行时写入带 `\n` 的文本，应使用 `setValueById` 保留换行。当前选择范围不会跨多个 DOM 节点，跨消息连续框选需要业务层合并为同一个 `selectable` 或后续扩展跨节点选择模型。
+聊天记录、日志查看器这类只读文本建议使用 `selectable`。单个 `selectable` 会按宽度自动折行，支持 `<br>` 显式换行、多行拖选、分行高亮和 `Ctrl+C`；如果运行时写入带 `\n` 的文本，应使用 `setValueById` 保留换行。当前选择范围不会跨多个 `selectable`，跨消息连续框选需要业务层合并为同一个 `selectable` 或后续扩展跨节点选择模型。
 
-同一条消息里需要超链接时，保持一个 `selectable`，用 `data-links` 标记链接区间。`data-links` 每行格式为 `start:end:action`，偏移按 `value` 的 UTF-8 字节序计算；点击区间会发出 `Click` 事件，`event.action` 为对应动作，常见做法是用 `open-url:https://...` 这类业务前缀交给宿主打开浏览器。这样链接绘制、点击和多行框选可以共存在同一个文本节点内。
+同一条消息里需要超链接时，保持一个 `selectable`，在文本流中直接写 `<a href="https://...">...</a>`。普通文本、`<br>` 和 `<a>` 会合并为一个选择范围，链接绘制、自动折行、点击命中和多行框选共用同一行布局；点击链接会发出 `Click` 事件，`event.action` 为 `open-url:` 加 `href`。运行时直接替换整段字符串时，仍可用 `value` 配合 `data-links` 标记链接区间。
 
 ### 下拉框
 

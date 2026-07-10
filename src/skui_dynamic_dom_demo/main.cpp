@@ -213,13 +213,6 @@ void refreshDemoStatus(skui::Runtime& runtime, const DemoState& state) {
     runtime.setTextById("demo-status", status);
 }
 
-void updateMultilineSample(skui::Runtime& runtime) {
-    runtime.setValueById("multiline-sample",
-                         "First selectable line\n"
-                         "Second line stays in the same node\n"
-                         "Third line should copy with line breaks");
-}
-
 void updateMotionCard(skui::Runtime& runtime, const DemoState& state) {
     std::string style = "transition: transform 600ms ease, opacity 600ms ease;";
     if (state.motionEnabled) {
@@ -346,7 +339,6 @@ int exportDocument(const wchar_t* outputPath, int width, int height, float dpiSc
             std::cerr << "load html failed: " << runtime.lastError() << "\n";
             result = 2;
         } else {
-            updateMultilineSample(runtime);
             runtime.resize(width, height, dpiScale);
             addMessage(runtime, state);
             toggleNotice(runtime, state);
@@ -409,7 +401,6 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCmd) {
             std::cerr << "load html failed: " << runtime.lastError() << "\n";
             return;
         }
-        updateMultilineSample(runtime);
         refreshDemoStatus(runtime, state);
     };
 

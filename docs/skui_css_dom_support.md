@@ -20,7 +20,7 @@
 | `button` | 普通可命中节点，可通过 `data-action` 发出事件 |
 | `input` | 单行输入框，支持焦点、光标、选区、剪贴板、IME、Ctrl+Z |
 | `textarea` | 多行输入框，复用输入框行为，支持换行、选区、剪贴板、IME、Ctrl+Z |
-| `selectable` | 可框选复制文本标签，支持单节点显式多行文本和 `data-links` 文本区间超链接；普通文本默认不可选中 |
+| `selectable` | 可框选复制文本标签，支持自动折行、`<br>` 显式换行和内联 `<a href>`；普通文本默认不可选中 |
 | `progress` | 进度条，`value` / `max` 控制填充比例 |
 | `img` | 加载本地图片资源；SVG 走 SVG DOM，位图走异步加载 |
 | `svg` | 内联 SVG，由 Skia SVG DOM 绘制 |
@@ -35,10 +35,11 @@
 | `class` | 支持多 class，参与 CSS 匹配 |
 | `style` | 内联 CSS 声明，优先级高于 `<style>` 规则 |
 | `data-action` | 命中事件回调中的业务动作名 |
-| `data-links` | `selectable` 专用文本区间动作表，格式为每行 `start:end:action`，区间按 `value` 的 UTF-8 字节偏移计算 |
+| `data-links` | `selectable` 的兼容/运行时文本区间动作表，格式为每行 `start:end:action`，区间按 `value` 的 UTF-8 字节偏移计算 |
 | `value` | 输入框值；进度条当前值 |
 | `max` | 进度条最大值 |
 | `placeholder` | 输入框占位文本 |
+| `href` | `selectable` 内 `<a>` 的链接目标；点击时转换为 `open-url:` 动作 |
 | `src` | `img` 的资源路径 |
 | `data-virtual-width` / `data-virtual-height` | 虚拟滚动内容尺寸，不需要真实子元素撑开 |
 
@@ -233,18 +234,19 @@ SkUI 的事件返回值表示“UI 是否实际消费了事件”，不是“DOM
 <selectable class="message-text">能把最新的 Q2 报告发我吗?</selectable>
 ```
 
-`selectable` 支持拖拽选择、双击选中单词或单个非 ASCII 字符、`Ctrl+A`、`Ctrl+C`。同一个 `selectable` 节点内的显式换行文本支持多行选择和分行高亮；当前不支持像浏览器一样跨多个 DOM 节点连续框选。
+`selectable` 支持拖拽选择、双击选中单词或单个非 ASCII 字符、`Ctrl+A`、`Ctrl+C`。文本会按节点宽度自动折行，`<br>` 会产生显式换行。同一个 `selectable` 内的普通文本、`<br>` 和 `<a>` 会合并成统一文本流，因此绘制、链接命中、选择高亮和复制使用相同的行布局；当前不支持跨多个 `selectable` 连续框选。
 
-`selectable` 可以通过 `data-links` 给文本中的局部区间绑定动作。格式是一行一个区间：`start:end:action`，其中 `start` 和 `end` 是 `value` 字符串里的 UTF-8 字节偏移，`end` 不包含在区间内。点击链接区间且没有拖出选区时，会向 `RuntimeOptions::onElementEvent` 发出 `Click` 事件，`event.action` 为该区间动作，`event.text` 为区间文本，`event.value` 为完整文本。拖拽选择仍按普通 `selectable` 处理，`Ctrl+C` 会复制完整选区文本，不会被链接区间拆断。
+静态 HTML 中应直接使用 `<a href>`。点击链接且没有拖出选区时，会向 `RuntimeOptions::onElementEvent` 发出 `Click` 事件，`event.action` 为 `open-url:` 加 `href`，`event.text` 为链接文本，`event.value` 为完整文本。拖拽选择仍按普通 `selectable` 处理，`Ctrl+C` 会复制完整选区文本，不会被链接拆断。
 
 ```html
-<selectable
-  value="first&#10;open link&#10;last"
-  data-links="6:15:open-url:https://example.com">
+<selectable>
+  first<br>
+  <a href="https://example.com">open link</a><br>
+  last
 </selectable>
 ```
 
-建议聊天消息、日志项这类内容保持“一条消息一个 `selectable`”。需要超链接时只更新该节点的 `value` 和 `data-links`，不要把一条消息拆成多个 `selectable`，否则无法在同一条消息内部自然拖选多行文本。
+运行时如果直接替换整段字符串，仍可使用 `value` 和 `data-links`：`data-links` 每行格式为 `start:end:action`，偏移按 `value` 的 UTF-8 字节序计算。建议聊天消息、日志项保持“一条消息一个 `selectable`”，不要为了链接拆成多个 `selectable`。
 
 ## 图片和 SVG
 

@@ -283,6 +283,94 @@ void appendText(Node& node, std::string_view text) {
     }
 }
 
+void flushInlineSpace(std::string& text, bool& pendingSpace) {
+    if (pendingSpace && !text.empty() && text.back() != '\n') {
+        text.push_back(' ');
+    }
+    pendingSpace = false;
+}
+
+void appendInlineText(std::string& output,
+                      std::string_view text,
+                      bool& pendingSpace) {
+    for (char ch : text) {
+        if (std::isspace(static_cast<unsigned char>(ch)) != 0) {
+            pendingSpace = !output.empty() && output.back() != '\n';
+            continue;
+        }
+        flushInlineSpace(output, pendingSpace);
+        output.push_back(ch);
+    }
+}
+
+void appendSelectableContent(lxb_dom_node_t* domNode,
+                             Node& node,
+                             bool& pendingSpace) {
+    if (!domNode) {
+        return;
+    }
+    if (domNode->type == LXB_DOM_NODE_TYPE_TEXT) {
+        auto* data = lxb_dom_interface_character_data(domNode);
+        if (data && data->data.data && data->data.length > 0) {
+            appendInlineText(
+                node.text,
+                std::string_view(
+                    reinterpret_cast<const char*>(data->data.data),
+                    data->data.length),
+                pendingSpace);
+        }
+        return;
+    }
+    if (domNode->type != LXB_DOM_NODE_TYPE_ELEMENT) {
+        return;
+    }
+
+    auto* element = lxb_dom_interface_element(domNode);
+    const std::string tag = nodeName(element);
+    if (tag == "br") {
+        pendingSpace = false;
+        node.text.push_back('\n');
+        return;
+    }
+
+    const bool isLink = tag == "a";
+    if (isLink) {
+        flushInlineSpace(node.text, pendingSpace);
+    }
+    const size_t linkStart = node.text.size();
+    for (lxb_dom_node_t* child = domNode->first_child; child; child = child->next) {
+        appendSelectableContent(child, node, pendingSpace);
+    }
+    if (!isLink) {
+        return;
+    }
+
+    flushInlineSpace(node.text, pendingSpace);
+    const size_t linkEnd = node.text.size();
+    std::string action = attr(element, "data-action");
+    if (action.empty()) {
+        const std::string href = attr(element, "href");
+        if (!href.empty()) {
+            action = "open-url:" + href;
+        }
+    }
+    if (linkStart < linkEnd && !action.empty()) {
+        node.textLinks.push_back({linkStart, linkEnd, std::move(action)});
+    }
+}
+
+void parseSelectableContent(lxb_dom_element_t* element, Node& node) {
+    bool pendingSpace = false;
+    for (lxb_dom_node_t* child = lxb_dom_interface_node(element)->first_child;
+         child;
+         child = child->next) {
+        appendSelectableContent(child, node, pendingSpace);
+    }
+    if (!node.text.empty()) {
+        ++node.textRevision;
+    }
+}
+
 void setEdges(EdgeValues& edges,
               Style::Flags& flags,
               bool Style::Flags::*leftFlag,
@@ -1817,22 +1905,33 @@ std::unique_ptr<Node> convertElement(lxb_dom_element_t* element, Node* parent, s
         return node;
     }
 
-    for (lxb_dom_node_t* child = lxb_dom_interface_node(element)->first_child; child; child = child->next) {
-        if (child->type == LXB_DOM_NODE_TYPE_TEXT) {
-            auto* data = lxb_dom_interface_character_data(child);
-            if (data && data->data.data && data->data.length > 0) {
-                std::string_view text(reinterpret_cast<const char*>(data->data.data), data->data.length);
-                if (tag == "textarea" && node->value.empty()) {
-                    node->value += trim(text);
-                    ++node->textRevision;
-                } else {
-                    appendText(*node, text);
+    if (tag == "selectable") {
+        if (node->value.empty()) {
+            parseSelectableContent(element, *node);
+        }
+    } else {
+        for (lxb_dom_node_t* child = lxb_dom_interface_node(element)->first_child;
+             child;
+             child = child->next) {
+            if (child->type == LXB_DOM_NODE_TYPE_TEXT) {
+                auto* data = lxb_dom_interface_character_data(child);
+                if (data && data->data.data && data->data.length > 0) {
+                    std::string_view text(
+                        reinterpret_cast<const char*>(data->data.data),
+                        data->data.length);
+                    if (tag == "textarea" && node->value.empty()) {
+                        node->value += trim(text);
+                        ++node->textRevision;
+                    } else {
+                        appendText(*node, text);
+                    }
                 }
-            }
-        } else if (child->type == LXB_DOM_NODE_TYPE_ELEMENT) {
-            std::unique_ptr<Node> childNode = convertElement(lxb_dom_interface_element(child), node.get(), rules);
-            if (childNode) {
-                node->children.push_back(std::move(childNode));
+            } else if (child->type == LXB_DOM_NODE_TYPE_ELEMENT) {
+                std::unique_ptr<Node> childNode =
+                    convertElement(lxb_dom_interface_element(child), node.get(), rules);
+                if (childNode) {
+                    node->children.push_back(std::move(childNode));
+                }
             }
         }
     }

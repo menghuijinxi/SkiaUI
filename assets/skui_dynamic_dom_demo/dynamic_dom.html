@@ -260,10 +260,15 @@
       border-radius: 7px;
     }
     .message-list {
+      position: absolute;
+      left: 0;
+      top: 0;
+      right: 0;
       flex-direction: column;
       padding: 12px;
     }
     .message {
+      position: relative;
       height: 58px;
       margin-bottom: 10px;
       flex-shrink: 0;
@@ -341,11 +346,11 @@
           <div id="message-list" class="message-list">
             <div id="message-multiline" class="message message-multiline">
               <selectable class="message-name">Multiline selectable sample</selectable>
-              <selectable id="multiline-sample" class="message-text message-text-multiline">Runtime fills this block with multiline text.</selectable>
+              <selectable id="multiline-sample" class="message-text message-text-multiline">First selectable line<br>Second line stays in the same node<br>Third line should copy with line breaks</selectable>
             </div>
             <div id="message-link" class="message">
               <selectable class="message-name">Mixed inline link sample</selectable>
-              <selectable class="message-text" value="Before link https://example.com after link" data-links="12:31:open-url:https://example.com"></selectable>
+              <selectable class="message-text">Before link <a href="https://example.com">https://example.com</a> after link</selectable>
             </div>
             <div id="message-1" class="message">
               <selectable class="message-name">Message 1</selectable>
