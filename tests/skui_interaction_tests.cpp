@@ -3382,6 +3382,40 @@ int main() {
     ok = expect(horizontalScrolled == solidColor(0x77, 0x88, 0x99), "Shift+mouse wheel should scroll horizontal overflow content") && ok;
     ok = expect(verticalTrackScrolled == solidColor(0xAB, 0xCD, 0xEF), "clicking vertical scrollbar track should update scroll position") && ok;
 
+    std::vector<float> continuousScrollOffsets;
+    skui::RuntimeOptions continuousScrollOptions = options;
+    continuousScrollOptions.onElementEvent = [&](const skui::ElementEvent& event) {
+        if (event.type == skui::ElementEventType::Scroll) {
+            continuousScrollOffsets.push_back(event.scrollY);
+        }
+    };
+    skui::Runtime continuousScrollRuntime(continuousScrollOptions);
+    continuousScrollRuntime.resize(kWidth, kHeight, 1.0f);
+    if (!continuousScrollRuntime.loadDocumentFromString(scrollHtml, "")) {
+        std::cerr << "continuous scroll load failed: "
+                  << continuousScrollRuntime.lastError() << "\n";
+        return 1;
+    }
+    sendWheel(continuousScrollRuntime, 20.0f, 20.0f, -30.0f);
+    sendWheel(continuousScrollRuntime, 20.0f, 20.0f, -30.0f);
+    sendWheel(continuousScrollRuntime, 20.0f, 20.0f, -30.0f);
+    ok = expect(continuousScrollOffsets.size() == 3,
+                "continuous wheel input should emit each accepted scroll event") &&
+         ok;
+    if (continuousScrollOffsets.size() == 3) {
+        ok = expect(
+                 std::abs(continuousScrollOffsets[1] -
+                          continuousScrollOffsets[2]) <= 0.001f,
+                 "continuous wheel input should retarget without synchronous steps") &&
+             ok;
+    }
+    ok = finishScrollAnimation(continuousScrollRuntime) && ok;
+    uint32_t continuousScrollSettled = 0;
+    ok = renderPixel(continuousScrollRuntime, 20, 35, continuousScrollSettled) && ok;
+    ok = expect(continuousScrollSettled == solidColor(0xAB, 0xCD, 0xEF),
+                "continuous wheel targets should accumulate to the final offset") &&
+         ok;
+
     constexpr std::string_view dynamicListScrollHtml = R"html(
 <!doctype html>
 <html>

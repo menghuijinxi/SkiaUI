@@ -967,8 +967,11 @@ std::optional<TransitionDefinition> transitionFor(const Style& style, Transition
 
 using AnimationClock = std::chrono::steady_clock;
 
-constexpr float kSmoothScrollDurationSeconds = 0.18f;
 constexpr float kSmoothScrollInitialFraction = 0.12f;
+constexpr float kSmoothScrollAngularFrequency = 28.0f;
+constexpr float kSmoothScrollSettleDistance = 0.75f;
+constexpr float kSmoothScrollSettleVelocity = 20.0f;
+constexpr float kSmoothScrollMaxFrameSeconds = 0.25f;
 
 struct ActiveAnimation {
     Node* node = nullptr;
@@ -985,11 +988,11 @@ struct ActiveAnimation {
 
 struct ActiveScrollAnimation {
     Node* node = nullptr;
-    float fromX = 0.0f;
-    float fromY = 0.0f;
     float targetX = 0.0f;
     float targetY = 0.0f;
-    AnimationClock::time_point start;
+    float velocityX = 0.0f;
+    float velocityY = 0.0f;
+    AnimationClock::time_point lastFrame;
 };
 
 struct StyleSnapshot {
@@ -1002,6 +1005,33 @@ struct StyleSnapshot {
 
 float elapsedSeconds(AnimationClock::time_point from, AnimationClock::time_point to) {
     return std::chrono::duration<float>(to - from).count();
+}
+
+struct SpringStep {
+    float position = 0.0f;
+    float velocity = 0.0f;
+};
+
+SpringStep advanceCriticalSpring(float position,
+                                 float velocity,
+                                 float target,
+                                 float elapsed) {
+    const float displacement = position - target;
+    const float coefficient =
+        velocity + kSmoothScrollAngularFrequency * displacement;
+    const float decay =
+        std::exp(-kSmoothScrollAngularFrequency * elapsed);
+    return {
+        target + (displacement + coefficient * elapsed) * decay,
+        (velocity -
+         kSmoothScrollAngularFrequency * coefficient * elapsed) *
+            decay,
+    };
+}
+
+bool springSettled(float position, float velocity, float target) {
+    return std::abs(position - target) <= kSmoothScrollSettleDistance &&
+           std::abs(velocity) <= kSmoothScrollSettleVelocity;
 }
 
 void clearAnimatedStyle(Node& node) {
@@ -1500,6 +1530,16 @@ public:
         ActiveScrollAnimation* currentAnimation = scrollAnimationFor(node);
         const float baseX = currentAnimation ? currentAnimation->targetX : node.scrollX;
         const float baseY = currentAnimation ? currentAnimation->targetY : node.scrollY;
+        const bool xWasActive =
+            currentAnimation &&
+            !springSettled(node.scrollX,
+                           currentAnimation->velocityX,
+                           currentAnimation->targetX);
+        const bool yWasActive =
+            currentAnimation &&
+            !springSettled(node.scrollY,
+                           currentAnimation->velocityY,
+                           currentAnimation->targetY);
         float targetX = baseX;
         float targetY = baseY;
         if (dx != 0.0f && canScrollX(node)) {
@@ -1512,23 +1552,32 @@ public:
             return false;
         }
 
-        node.scrollX = clampf(mix(node.scrollX, targetX, kSmoothScrollInitialFraction),
-                              0.0f,
-                              scrollMaxX(node));
-        node.scrollY = clampf(mix(node.scrollY, targetY, kSmoothScrollInitialFraction),
-                              0.0f,
-                              scrollMaxY(node));
+        if (dx != 0.0f && !xWasActive) {
+            node.scrollX =
+                clampf(mix(node.scrollX,
+                           targetX,
+                           kSmoothScrollInitialFraction),
+                       0.0f,
+                       scrollMaxX(node));
+        }
+        if (dy != 0.0f && !yWasActive) {
+            node.scrollY =
+                clampf(mix(node.scrollY,
+                           targetY,
+                           kSmoothScrollInitialFraction),
+                       0.0f,
+                       scrollMaxY(node));
+        }
 
-        ActiveScrollAnimation animation;
-        animation.node = &node;
-        animation.fromX = node.scrollX;
-        animation.fromY = node.scrollY;
-        animation.targetX = targetX;
-        animation.targetY = targetY;
-        animation.start = AnimationClock::now();
         if (currentAnimation) {
-            *currentAnimation = animation;
+            currentAnimation->targetX = targetX;
+            currentAnimation->targetY = targetY;
         } else {
+            ActiveScrollAnimation animation;
+            animation.node = &node;
+            animation.targetX = targetX;
+            animation.targetY = targetY;
+            animation.lastFrame = AnimationClock::now();
             activeScrollAnimations.push_back(animation);
         }
 
@@ -1603,33 +1652,56 @@ public:
 
         clearScrollAnimationsForMissingNodes(activeScrollAnimations, document);
         for (ActiveScrollAnimation& animation : activeScrollAnimations) {
-            const float progress = clampf(
-                elapsedSeconds(animation.start, now) /
-                    kSmoothScrollDurationSeconds,
+            const float elapsed = clampf(
+                elapsedSeconds(animation.lastFrame, now),
                 0.0f,
-                1.0f);
-            const float eased = 1.0f - std::pow(1.0f - progress, 3.0f);
+                kSmoothScrollMaxFrameSeconds);
+            animation.lastFrame = now;
             const float maxX = scrollMaxX(*animation.node);
             const float maxY = scrollMaxY(*animation.node);
             animation.targetX = clampf(animation.targetX, 0.0f, maxX);
             animation.targetY = clampf(animation.targetY, 0.0f, maxY);
-            const float nextX =
-                clampf(mix(animation.fromX, animation.targetX, eased), 0.0f, maxX);
-            const float nextY =
-                clampf(mix(animation.fromY, animation.targetY, eased), 0.0f, maxY);
+            const SpringStep xStep =
+                advanceCriticalSpring(animation.node->scrollX,
+                                      animation.velocityX,
+                                      animation.targetX,
+                                      elapsed);
+            const SpringStep yStep =
+                advanceCriticalSpring(animation.node->scrollY,
+                                      animation.velocityY,
+                                      animation.targetY,
+                                      elapsed);
+            const float nextX = clampf(xStep.position, 0.0f, maxX);
+            const float nextY = clampf(yStep.position, 0.0f, maxY);
             changed = !nearlyEqual(nextX, animation.node->scrollX) ||
                       !nearlyEqual(nextY, animation.node->scrollY) ||
                       changed;
             animation.node->scrollX = nextX;
             animation.node->scrollY = nextY;
+            animation.velocityX =
+                nearlyEqual(nextX, xStep.position) ? xStep.velocity : 0.0f;
+            animation.velocityY =
+                nearlyEqual(nextY, yStep.position) ? yStep.velocity : 0.0f;
         }
         activeScrollAnimations.erase(
             std::remove_if(
                 activeScrollAnimations.begin(),
                 activeScrollAnimations.end(),
-                [now](const ActiveScrollAnimation& animation) {
-                    return elapsedSeconds(animation.start, now) >=
-                           kSmoothScrollDurationSeconds;
+                [](ActiveScrollAnimation& animation) {
+                    const bool settledX =
+                        springSettled(animation.node->scrollX,
+                                      animation.velocityX,
+                                      animation.targetX);
+                    const bool settledY =
+                        springSettled(animation.node->scrollY,
+                                      animation.velocityY,
+                                      animation.targetY);
+                    if (settledX && settledY) {
+                        animation.node->scrollX = animation.targetX;
+                        animation.node->scrollY = animation.targetY;
+                        return true;
+                    }
+                    return false;
                 }),
             activeScrollAnimations.end());
 
