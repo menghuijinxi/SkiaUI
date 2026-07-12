@@ -18,8 +18,12 @@ Demo target：
 
 - `SkiaUiDesk`：SkUI 自制 CSS + DOM 功能 demo。
 - `SkiaRelayDeskDemo`：RelayDesk 界面 demo。
-- `SkiaDynamicDomDemo`：动态 DOM 增删、替换、显示/隐藏、滚动布局和轻量 CSS transition demo。
+- `SkiaDynamicDomDemo`：动态 DOM 增删、替换、显示/隐藏、滚动布局、轻量 CSS transition / animation 和雪碧图 demo。
 - `SkuiInteractionTests`：运行时行为回归测试。
+
+`SkiaDynamicDomDemo` 的静态资源由 `SkiaDynamicDomDemoAssets` 目标同步到可执行文件同级的
+`assets/skui_dynamic_dom_demo` 目录。修改 `assets/skui_dynamic_dom_demo` 下的 HTML、图片或其他资源后，
+重新构建 `SkiaDynamicDomDemo` 会刷新运行时实际读取的资源，避免 exe 旁边残留旧 demo 文件。
 
 ## 依赖
 
@@ -255,6 +259,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCmd) {
 | --- | --- |
 | HTML/CSS 解析、DOM、Yoga 布局、命中测试、控件状态 | `Skui` |
 | Skia 绘制命令输出 | `Skui`，通过 `Runtime::render(SkCanvas*)` |
+| CSS 动画时间推进 | `Skui`，由宿主每帧调用 `Runtime::tick(deltaSeconds)` |
 | 窗口创建、swapchain、GPU surface、present | 目标项目后端 |
 | 鼠标、键盘、输入法、剪贴板、光标 | 目标项目平台适配层；Windows 项目可以复用 `SkuiWin32` |
 | 图片加载完成后的重绘调度 | 目标项目通过 `RuntimeOptions::requestRedraw` 接入 |
@@ -266,8 +271,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCmd) {
 3. 创建 `skui::Runtime`，设置 `assetRoot`、剪贴板回调、重绘回调和业务事件回调。
 4. 窗口尺寸或 DPI 变化时调用 `Runtime::resize(width, height, dpiScale)`。
 5. 平台输入事件转成 `skui::Event` 后调用 `Runtime::handleEvent(event)`。
-6. 每帧拿到目标后端当前帧的 `SkCanvas`，调用 `Runtime::render(canvas)`，再由目标后端 present。
-7. 图片异步加载、状态更新或输入事件触发重绘时，由宿主根据 `requestRedraw` 或自己的 dirty flag 安排下一帧。
+6. 每帧先调用 `Runtime::tick(deltaSeconds)` 推进 transition / animation，再拿到目标后端当前帧的
+   `SkCanvas` 调用 `Runtime::render(canvas)`，最后由目标后端 present。
+7. 图片异步加载、状态更新、输入事件或 `tick()` 返回仍有动画帧时，由宿主根据 `requestRedraw`、
+   `animationPending` 或自己的 dirty flag 安排下一帧。
 
 自定义后端传给 `Runtime::resize(width, height, dpiScale)` 的 `dpiScale` 应只表示平台 DPI 倍率。如果宿主不希望 SkUI 跟随系统 DPI，就传 `1.0f`；如果还需要用户自定义 UI 缩放，设置 `RuntimeOptions::scale` 或运行时调用 `Runtime::setScale(scale)`。SkUI 内部会用 `dpiScale * scale` 统一处理逻辑视口、Skia 绘制缩放和输入命中坐标。
 
@@ -340,8 +347,12 @@ e.x = mouseX;
 e.y = mouseY;
 ui.handleEvent(e);
 
-// 每帧绘制：
+// 每帧推进动画并绘制：
+const bool animationPending = ui.tick(deltaSeconds);
 ui.render(canvas);
+if (animationPending) {
+    // 安排下一帧，让 CSS transition / animation 继续推进。
+}
 ```
 
 `Runtime::renderToBgraPixels` 可用于离屏截图、自动化测试和视觉回归。
@@ -357,7 +368,10 @@ ui.render(canvas);
 - **事件转换**：把平台鼠标、滚轮、键盘、文本输入、IME 组合文本、焦点变化转成 `skui::Event`。
 - **剪贴板**：设置 `RuntimeOptions::readClipboardText` 和 `RuntimeOptions::writeClipboardText`，文本统一转成 UTF-8。
 - **光标**：每次输入事件或 hover 变化后读取 `Runtime::cursor()`，映射成平台光标。
-- **重绘调度**：设置 `RuntimeOptions::requestRedraw`，图片加载、动画或运行时更新完成后能唤醒后端绘制一帧。
+- **动画 tick**：每帧在 `render` 前调用 `Runtime::tick(deltaSeconds)`，让 CSS transition / animation
+  与宿主引擎的 tick 或真实帧时间同步。
+- **重绘调度**：设置 `RuntimeOptions::requestRedraw`，图片加载、动画或运行时更新完成后能唤醒后端绘制一帧；
+  `tick()` 返回 `true` 时也应继续安排下一帧。
 - **资源路径**：设置 `RuntimeOptions::assetRoot`，并在目标项目构建后复制 HTML、CSS、SVG、图片等资源。
 
 不同后端只差在“如何得到 SkCanvas”和“如何接入平台事件”。只要 Skia 能在目标后端上创建 surface，SkUI 就可以复用同一套 DOM/CSS/布局和控件逻辑。

@@ -150,16 +150,18 @@
 
 ### 关键帧动画
 
-当前支持轻量 CSS Animation 子集，主要用于浏览器式雪碧图：
+当前支持轻量 CSS Animation 子集，覆盖浏览器式雪碧图、透明度和基础 transform 动画：
 
 - `@keyframes` 和 `@-webkit-keyframes`
 - `from`、`to`、百分比以及逗号分隔的关键帧选择器
 - `animation` shorthand，可设置时长、延迟、迭代次数 / `infinite`、方向、fill mode、播放状态
-- `linear`、`ease` 系列、`step-start`、`step-end`、`steps(n, start|end)`
+- `linear`、`ease` / `ease-in` / `ease-out` / `ease-in-out`、`cubic-bezier(...)`、`step-start`、`step-end`、`steps(n, start|end)`
 - 动画时间线只由 `Runtime::tick(deltaSeconds)` 推进，`Runtime::render()` 只绘制当前状态
 - `tick()` 返回是否仍需要后续动画帧；引擎可传入固定步长或本帧真实增量，实现与自身 tick 同步
 - Win32 封装会在每次实际绘制前使用单调时钟自动调用 `tick()`；正在运行的动画掉帧后会按实际经过时间追赶
-- 当前关键帧可动画化属性仅为 `background-position`
+- 当前关键帧可动画化属性包括 `background-position`、`opacity` 和 `transform`
+
+`transform` 会按 CSS 函数顺序保存和绘制，支持 `translate(...)` / `translateX(...)` / `translateY(...)`、`scale(...)` / `scaleX(...)` / `scaleY(...)`、`rotate(...)` 等基础函数；百分比位移按元素自身尺寸计算。不同关键帧之间的 `transform` 函数列表需要兼容，才能进行逐项插值；不兼容时会按离散状态切换。`transform-origin` 支持常用关键字、`px` 和百分比，可用于接近浏览器的旋转、缩放原点行为。
 
 引擎循环中的典型调用顺序为：
 
@@ -180,6 +182,19 @@ runtime.render(canvas);
   background-size: 900% 600%;
   background-repeat: no-repeat;
   animation: note-sprite-frames 2.25s step-end infinite;
+}
+```
+
+加载后立刻播放的对比动画可以直接写在静态 HTML/CSS 中，不需要脚本：
+
+```css
+.fade-chip {
+  animation: auto-fade 1.6s ease-in-out infinite;
+}
+
+.origin-chip {
+  transform-origin: left top;
+  animation: origin-swing 1.2s cubic-bezier(0.25, 0.1, 0.25, 1) infinite alternate;
 }
 ```
 
@@ -364,6 +379,7 @@ SkUI 的事件返回值表示“UI 是否实际消费了事件”，不是“DOM
 
 - `SkiaDynamicDomDemo` 演示运行时追加、替换、删除消息节点，以及 `display:none` 和 `visibility:hidden` 两种隐藏方式。
 - `SkiaDynamicDomDemo` 同时演示 `transition` 驱动的移动、旋转、缩放、渐隐和渐显效果。
+- `SkiaDynamicDomDemo` 内置加载即播放的 CSS 动画对比区，用于和浏览器核对 `opacity`、`rotate`、`scale`、`transform-origin` 和 transform 函数顺序。
 - 示例页面使用滚动容器验证动态增删节点后滚动条、裁剪和自动布局仍能更新。
 
 ## 通用 C++ 辅助能力
@@ -383,8 +399,8 @@ SkUI 的事件返回值表示“UI 是否实际消费了事件”，不是“DOM
 
 - 没有 JavaScript。
 - 没有完整浏览器表单控件。
-- 没有完整 CSS 标准或外部 stylesheet。transition 只覆盖 `opacity` 和 `transform`；关键帧动画当前只覆盖
-  `background-position`。
+- 没有完整 CSS 标准或外部 stylesheet。transition 覆盖 `opacity` 和 `transform`；关键帧动画覆盖
+  `background-position`、`opacity` 和兼容函数列表内的 `transform`。
 - `img` 只支持本地资源路径；位图支持 PNG、JPEG、WebP 和 BMP。懒加载属性使用浏览器一致的 `loading="lazy"`，不支持旧式 `data-loading`。暂不支持网络 URL、`srcset` 和浏览器图片事件。
 - 文本排版是单行、`selectable` 显式多行或简单多行编辑框，不是富文本排版引擎；`selectable` 暂不支持跨 DOM 节点连续选择。
 - 中文双击选词目前按单个非 ASCII 字符处理，不做自然语言分词。
