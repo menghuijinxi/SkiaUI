@@ -264,6 +264,25 @@ void setEdge(YGNodeRef node,
     }
 }
 
+void setGapMargin(YGNodeRef node,
+                  YGEdge edge,
+                  const std::optional<Length>& gap,
+                  const std::optional<Length>& existingMargin) {
+    if (!gap || gap->unit == LengthUnit::Auto) {
+        return;
+    }
+    const float existing =
+        existingMargin && existingMargin->unit == gap->unit
+            ? existingMargin->value
+            : 0.0f;
+    const float value = existing + gap->value;
+    if (gap->unit == LengthUnit::Percent) {
+        YGNodeStyleSetMarginPercent(node, edge, value);
+    } else {
+        YGNodeStyleSetMargin(node, edge, value);
+    }
+}
+
 }  // namespace
 
 void updateScrollMetrics(Node& node) {
@@ -367,7 +386,8 @@ void LayoutEngine::buildYoga(Node& node, YGNodeRef yogaNode, bool isRoot) {
     }
 
     YGNodeSetContext(yogaNode, &node);
-    YGNodeStyleSetFlexDirection(yogaNode, s.flexDirection);
+    const YGFlexDirection flexDirection = s.flexDirection;
+    YGNodeStyleSetFlexDirection(yogaNode, flexDirection);
     YGNodeStyleSetFlexWrap(yogaNode, s.flexWrap);
     YGNodeStyleSetAlignItems(yogaNode, s.alignItems);
     YGNodeStyleSetJustifyContent(yogaNode, s.justifyContent);
@@ -424,13 +444,26 @@ void LayoutEngine::buildYoga(Node& node, YGNodeRef yogaNode, bool isRoot) {
         YGNodeSetMeasureFunc(yogaNode, measureTextNode);
     }
 
+    bool hasPreviousLayoutChild = false;
     for (auto& child : node.children) {
         if (child->style.display == Display::None) {
             continue;
         }
         YGNodeRef childRef = YGNodeNew();
         buildYoga(*child, childRef, false);
+        if (s.display == Display::Flex &&
+            hasPreviousLayoutChild &&
+            (s.rowGap || s.columnGap)) {
+            const bool isRow =
+                flexDirection == YGFlexDirectionRow ||
+                flexDirection == YGFlexDirectionRowReverse;
+            setGapMargin(childRef,
+                         isRow ? YGEdgeLeft : YGEdgeTop,
+                         isRow ? s.columnGap : s.rowGap,
+                         isRow ? child->style.margin.left : child->style.margin.top);
+        }
         YGNodeInsertChild(yogaNode, childRef, YGNodeGetChildCount(yogaNode));
+        hasPreviousLayoutChild = true;
     }
 }
 

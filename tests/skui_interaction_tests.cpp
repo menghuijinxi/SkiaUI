@@ -2500,6 +2500,86 @@ int main() {
     ok = expect(isMostlyBlue(translatedPixel),
                 "opacity transition should restore the fully visible card") && ok;
 
+    constexpr std::string_view heightTransitionHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      width: 100px;
+      height: 100px;
+      background-color: #000000;
+    }
+    .stack {
+      width: 20px;
+      height: 100px;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+    }
+    .expander {
+      width: 20px;
+      height: 20px;
+      flex-shrink: 0;
+      background-color: #ff0000;
+      transition: height 100ms linear;
+    }
+    .follower {
+      width: 20px;
+      height: 20px;
+      flex-shrink: 0;
+      background-color: #00ff00;
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <div class="stack">
+      <div id="expander" class="expander"></div>
+      <div class="follower"></div>
+    </div>
+  </div>
+</body>
+</html>
+)html";
+
+    skui::Runtime heightTransitionRuntime(options);
+    heightTransitionRuntime.resize(kWidth, kHeight, 1.0f);
+    if (!heightTransitionRuntime.loadDocumentFromString(heightTransitionHtml, "")) {
+        std::cerr << "height transition load failed: "
+                  << heightTransitionRuntime.lastError() << "\n";
+        return 1;
+    }
+
+    uint32_t initialFollowerPixel = 0;
+    uint32_t halfHeightPixel = 0;
+    uint32_t halfFollowerPixel = 0;
+    uint32_t finalHeightPixel = 0;
+    uint32_t finalFollowerPixel = 0;
+    ok = renderPixel(heightTransitionRuntime, 10, 25, initialFollowerPixel) && ok;
+    ok = expect(initialFollowerPixel == solidColor(0x00, 0xFF, 0x00),
+                "height transition follower should start below initial height") && ok;
+    ok = expect(heightTransitionRuntime.setStyleById("expander", "height:60px;"),
+                "height transition style update should apply") && ok;
+    ok = renderPixel(heightTransitionRuntime, 10, 25, initialFollowerPixel) && ok;
+    ok = expect(initialFollowerPixel == solidColor(0x00, 0xFF, 0x00),
+                "height transition should not advance without tick") && ok;
+    ok = expect(heightTransitionRuntime.tick(0.05f),
+                "height transition should request an intermediate frame") && ok;
+    ok = renderPixel(heightTransitionRuntime, 10, 25, halfHeightPixel) && ok;
+    ok = renderPixel(heightTransitionRuntime, 10, 45, halfFollowerPixel) && ok;
+    ok = expect(halfHeightPixel == solidColor(0xFF, 0x00, 0x00),
+                "height transition should interpolate the animated element height") && ok;
+    ok = expect(halfFollowerPixel == solidColor(0x00, 0xFF, 0x00),
+                "height transition should relayout following siblings each frame") && ok;
+    (void)heightTransitionRuntime.tick(0.06f);
+    ok = renderPixel(heightTransitionRuntime, 10, 45, finalHeightPixel) && ok;
+    ok = renderPixel(heightTransitionRuntime, 10, 65, finalFollowerPixel) && ok;
+    ok = expect(finalHeightPixel == solidColor(0xFF, 0x00, 0x00),
+                "height transition should reach the target height") && ok;
+    ok = expect(finalFollowerPixel == solidColor(0x00, 0xFF, 0x00),
+                "height transition should leave siblings at their final layout") && ok;
+
     constexpr std::string_view cssTransformHtml = R"html(
 <!doctype html>
 <html>
@@ -4088,6 +4168,78 @@ int main() {
     ok = renderPixel(flexWrapRuntime, 20, 46, secondRowProbe) && ok;
     ok = expect(firstRowProbe == solidColor(0xFF, 0x00, 0x00), "flex-wrap should keep first child on first row") && ok;
     ok = expect(secondRowProbe == solidColor(0x00, 0xFF, 0x00), "flex-wrap should move overflowing child to next row") && ok;
+
+    constexpr std::string_view flexGapHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      position: relative;
+      width: 140px;
+      height: 90px;
+      background-color: #000000;
+    }
+    .toolbar {
+      position: absolute;
+      left: 0px;
+      top: 10px;
+      width: 140px;
+      height: 20px;
+      display: flex;
+      justify-content: center;
+      gap: 10px;
+    }
+    .tool {
+      width: 20px;
+      height: 20px;
+      background-color: #111111;
+    }
+    .a {
+      background-color: #ff0000;
+    }
+    .b {
+      background-color: #00ff00;
+    }
+    .c {
+      background-color: #0000ff;
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <div class="toolbar">
+      <div class="tool a"></div>
+      <div class="tool b"></div>
+      <div class="tool c"></div>
+    </div>
+  </div>
+</body>
+</html>
+)html";
+
+    skui::Runtime flexGapRuntime(options);
+    flexGapRuntime.resize(kWidth, kHeight, 1.0f);
+    if (!flexGapRuntime.loadDocumentFromString(flexGapHtml, "")) {
+        std::cerr << "flex gap load failed: " << flexGapRuntime.lastError() << "\n";
+        return 1;
+    }
+    uint32_t firstGapProbe = 0;
+    uint32_t gapProbe = 0;
+    uint32_t secondGapProbe = 0;
+    uint32_t thirdGapProbe = 0;
+    ok = renderPixel(flexGapRuntime, 40, 18, firstGapProbe) && ok;
+    ok = renderPixel(flexGapRuntime, 55, 18, gapProbe) && ok;
+    ok = renderPixel(flexGapRuntime, 70, 18, secondGapProbe) && ok;
+    ok = renderPixel(flexGapRuntime, 100, 18, thirdGapProbe) && ok;
+    ok = expect(firstGapProbe == solidColor(0xFF, 0x00, 0x00),
+                "display:flex should default to row and center children") && ok;
+    ok = expect(gapProbe == solidColor(0x00, 0x00, 0x00),
+                "gap should leave space between row flex children") && ok;
+    ok = expect(secondGapProbe == solidColor(0x00, 0xFF, 0x00),
+                "second flex child should appear after gap") && ok;
+    ok = expect(thirdGapProbe == solidColor(0x00, 0x00, 0xFF),
+                "third flex child should appear after second gap") && ok;
 
     constexpr std::string_view scrollHtml = R"html(
 <!doctype html>

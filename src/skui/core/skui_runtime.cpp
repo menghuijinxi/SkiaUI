@@ -922,6 +922,22 @@ bool sameLength(const Length& lhs, const Length& rhs) {
     return lhs.unit == rhs.unit && nearlyEqual(lhs.value, rhs.value);
 }
 
+bool sameOptionalLength(const std::optional<Length>& lhs,
+                        const std::optional<Length>& rhs) {
+    if (lhs.has_value() != rhs.has_value()) {
+        return false;
+    }
+    return !lhs || sameLength(*lhs, *rhs);
+}
+
+bool canInterpolateLength(const std::optional<Length>& from,
+                          const std::optional<Length>& to) {
+    return from &&
+           to &&
+           from->unit != LengthUnit::Auto &&
+           from->unit == to->unit;
+}
+
 bool sameTransformOperation(const TransformOperation& lhs,
                             const TransformOperation& rhs) {
     return lhs.kind == rhs.kind &&
@@ -1084,6 +1100,8 @@ std::optional<TransitionDefinition> transitionFor(const Style& style, Transition
 struct ActiveAnimation {
     Node* node = nullptr;
     TransitionProperty property = TransitionProperty::Opacity;
+    Length fromHeight;
+    Length toHeight;
     float fromOpacity = 1.0f;
     float toOpacity = 1.0f;
     Transform fromTransform;
@@ -1116,6 +1134,8 @@ struct KeyframeAnimationSample {
 
 struct StyleSnapshot {
     Node* node = nullptr;
+    std::optional<Length> renderedHeight;
+    std::optional<Length> targetHeight;
     float renderedOpacity = 1.0f;
     float targetOpacity = 1.0f;
     Transform renderedTransform;
@@ -1344,6 +1364,10 @@ void clearAnimatedStyleTree(Node& node) {
 Style renderedStyle(const Node& node) {
     Style style = node.style;
     if (node.hasAnimatedStyle) {
+        if (node.animatedStyleFlags.height) {
+            style.height = node.animatedStyle.height;
+            style.flags.height = true;
+        }
         if (node.animatedStyleFlags.opacity) {
             style.opacity = node.animatedStyle.opacity;
             style.flags.opacity = true;
@@ -1377,9 +1401,16 @@ void collectStyleSnapshots(const Node& node,
     const Style currentStyle = renderedStyle(node);
     StyleSnapshot snapshot;
     snapshot.node = const_cast<Node*>(&node);
+    snapshot.renderedHeight = currentStyle.height;
     snapshot.renderedOpacity = currentStyle.opacity;
     snapshot.renderedTransform = currentStyle.transform;
 
+    if (const ActiveAnimation* animation =
+            activeAnimationFor(animations, &node, TransitionProperty::Height)) {
+        snapshot.targetHeight = animation->toHeight;
+    } else {
+        snapshot.targetHeight = currentStyle.height;
+    }
     if (const ActiveAnimation* animation =
             activeAnimationFor(animations, &node, TransitionProperty::Opacity)) {
         snapshot.targetOpacity = animation->toOpacity;
@@ -1417,6 +1448,12 @@ void writeAnimatedOpacity(Node& node, float opacity) {
 void writeAnimatedTransform(Node& node, const Transform& transform) {
     node.animatedStyle.transform = transform;
     node.animatedStyleFlags.transform = true;
+    node.hasAnimatedStyle = true;
+}
+
+void writeAnimatedHeight(Node& node, const Length& height) {
+    node.animatedStyle.height = height;
+    node.animatedStyleFlags.height = true;
     node.hasAnimatedStyle = true;
 }
 
@@ -1915,10 +1952,10 @@ public:
             perf::Trace::write("skui", "style_recompute", width, height, perf::Trace::elapsedMs(styleStart));
         }
         const auto layoutStart = traceEnabled ? perf::Trace::now() : perf::Trace::Clock::time_point{};
-        layoutEngine.layout(document, viewportWidth, viewportHeight);
         if (document.root) {
             applyAnimatedStyles(*document.root);
         }
+        layoutEngine.layout(document, viewportWidth, viewportHeight);
         requestAnimationFrame();
         if (traceEnabled) {
             perf::Trace::write("skui", "layout", width, height, perf::Trace::elapsedMs(layoutStart));
@@ -1938,12 +1975,43 @@ public:
     void startTransitionsRecursive(Node& node, const std::vector<StyleSnapshot>& snapshots) {
         const StyleSnapshot* snapshot = findStyleSnapshot(snapshots, &node);
         if (snapshot) {
+            startHeightTransition(node, *snapshot);
             startOpacityTransition(node, *snapshot);
             startTransformTransition(node, *snapshot);
         }
         for (auto& child : node.children) {
             startTransitionsRecursive(*child, snapshots);
         }
+    }
+
+    void startHeightTransition(Node& node, const StyleSnapshot& snapshot) {
+        const std::optional<Length>& nextHeight = node.style.height;
+        if (sameOptionalLength(snapshot.targetHeight, nextHeight)) {
+            return;
+        }
+
+        removeAnimationFor(activeAnimations, &node, TransitionProperty::Height);
+        if (!canInterpolateLength(snapshot.renderedHeight, nextHeight)) {
+            return;
+        }
+
+        std::optional<TransitionDefinition> transition =
+            transitionFor(node.style, TransitionProperty::Height);
+        if (!transition) {
+            return;
+        }
+
+        ActiveAnimation animation;
+        animation.node = &node;
+        animation.property = TransitionProperty::Height;
+        animation.fromHeight = *snapshot.renderedHeight;
+        animation.toHeight = *nextHeight;
+        animation.startSeconds = animationTimeSeconds;
+        animation.durationSeconds = transition->durationSeconds;
+        animation.delaySeconds = transition->delaySeconds;
+        animation.easing = transition->easing;
+        activeAnimations.push_back(animation);
+        writeAnimatedHeight(node, animation.fromHeight);
     }
 
     void startOpacityTransition(Node& node, const StyleSnapshot& snapshot) {
@@ -2046,6 +2114,7 @@ public:
         clearAnimationsForMissingNodes(activeAnimations, document);
 
         bool changed = false;
+        bool layoutChanged = false;
         for (ActiveAnimation& animation : activeAnimations) {
             const float elapsed = static_cast<float>(
                                       animationTimeSeconds -
@@ -2056,7 +2125,14 @@ public:
                     ? 1.0f
                     : clampf(elapsed / animation.durationSeconds, 0.0f, 1.0f);
             const float eased = easingValue(animation.easing, progress);
-            if (animation.property == TransitionProperty::Opacity) {
+            if (animation.property == TransitionProperty::Height) {
+                writeAnimatedHeight(
+                    *animation.node,
+                    mixLength(animation.fromHeight,
+                              animation.toHeight,
+                              eased));
+                layoutChanged = true;
+            } else if (animation.property == TransitionProperty::Opacity) {
                 writeAnimatedOpacity(
                     *animation.node,
                     mix(animation.fromOpacity, animation.toOpacity, eased));
@@ -2084,6 +2160,9 @@ public:
             activeAnimations.end());
         changed = applyKeyframeAnimations(animationTimeSeconds) || changed;
         applyAnimatedStyles(*document.root);
+        if (layoutChanged) {
+            layoutEngine.layout(document, viewportWidth, viewportHeight);
+        }
         if (hasPendingAnimationFrame()) {
             requestAnimationFrame();
         }

@@ -96,6 +96,7 @@ enum class LengthUnit {
 
 enum class TransitionProperty {
     All,
+    Height,
     Opacity,
     Transform
 };
@@ -277,6 +278,8 @@ struct Style {
         bool position = false;
         bool flexDirection = false;
         bool flexWrap = false;
+        bool rowGap = false;
+        bool columnGap = false;
         bool alignItems = false;
         bool justifyContent = false;
         bool alignSelf = false;
@@ -331,10 +334,13 @@ struct Style {
 
     Flags flags;
     Display display = Display::Flex;
+    bool displayFlex = false;
     Visibility visibility = Visibility::Visible;
     Position position = Position::Relative;
     YGFlexDirection flexDirection = YGFlexDirectionColumn;
     YGWrap flexWrap = YGWrapNoWrap;
+    std::optional<Length> rowGap;
+    std::optional<Length> columnGap;
     YGAlign alignItems = YGAlignStretch;
     YGJustify justifyContent = YGJustifyFlexStart;
     YGAlign alignSelf = YGAlignAuto;

@@ -108,11 +108,12 @@
 | `padding` / 单边 `padding-*` | 1-4 值，`px` / `%` |
 | `flex-direction` | `row`、`column` |
 | `flex-wrap` | `nowrap`、`wrap` |
+| `gap` / `row-gap` / `column-gap` | `px` / `%`，用于 flex 容器 |
 | `flex-grow` / `flex-shrink` | 数字 |
 | `align-items` / `align-self` | `stretch`、`center`、`flex-start`、`flex-end` |
 | `justify-content` | `flex-start`、`center`、`flex-end`、`space-between` |
 
-布局由 Yoga 计算。当前没有实现 `gap`、`row-gap`、`column-gap`，需要用 margin 表达间距。
+布局由 Yoga 计算。显式 `display:flex` 的容器使用浏览器默认的 `flex-direction: row`；未显式设置 `display` 的旧写法保持原有默认纵向排布。
 
 显隐语义：
 
@@ -147,6 +148,15 @@
 - `#RRGGBB`
 - `rgb(r,g,b)`
 - `rgba(r,g,b,a)`，`a` 可用 `0-1` 或 `0-255`
+
+### 过渡动画
+
+`transition` shorthand 当前支持 `height`、`opacity` 和 `transform`，可设置时长、延迟以及
+`linear`、`ease` / `ease-in` / `ease-out` / `ease-in-out`、`cubic-bezier(...)` 缓动。
+
+`height` 过渡会在每帧重新执行布局，因此 flex 容器中的后续兄弟节点会随高度插值平滑移动。
+当前只插值两端均为明确数值且单位相同的高度，例如 `75px → 560px` 或 `20% → 60%`；
+`auto`、缺省高度和不同单位之间按离散状态切换。
 
 ### 关键帧动画
 
@@ -399,7 +409,7 @@ SkUI 的事件返回值表示“UI 是否实际消费了事件”，不是“DOM
 
 - 没有 JavaScript。
 - 没有完整浏览器表单控件。
-- 没有完整 CSS 标准或外部 stylesheet。transition 覆盖 `opacity` 和 `transform`；关键帧动画覆盖
+- 没有完整 CSS 标准或外部 stylesheet。transition 覆盖 `height`、`opacity` 和 `transform`；关键帧动画覆盖
   `background-position`、`opacity` 和兼容函数列表内的 `transform`。
 - `img` 只支持本地资源路径；位图支持 PNG、JPEG、WebP 和 BMP。懒加载属性使用浏览器一致的 `loading="lazy"`，不支持旧式 `data-loading`。暂不支持网络 URL、`srcset` 和浏览器图片事件。
 - 文本排版是单行、`selectable` 显式多行或简单多行编辑框，不是富文本排版引擎；`selectable` 暂不支持跨 DOM 节点连续选择。

@@ -944,6 +944,9 @@ std::optional<TransitionProperty> parseTransitionProperty(std::string_view raw) 
     if (value == "all") {
         return TransitionProperty::All;
     }
+    if (value == "height") {
+        return TransitionProperty::Height;
+    }
     if (value == "opacity") {
         return TransitionProperty::Opacity;
     }
@@ -1163,6 +1166,7 @@ void mergeStyle(Style& target, const Style& source) {
     const Style::Flags& f = source.flags;
     if (f.display) {
         target.display = source.display;
+        target.displayFlex = source.displayFlex;
         target.flags.display = true;
     }
     if (f.visibility) {
@@ -1180,6 +1184,14 @@ void mergeStyle(Style& target, const Style& source) {
     if (f.flexWrap) {
         target.flexWrap = source.flexWrap;
         target.flags.flexWrap = true;
+    }
+    if (f.rowGap) {
+        target.rowGap = source.rowGap;
+        target.flags.rowGap = true;
+    }
+    if (f.columnGap) {
+        target.columnGap = source.columnGap;
+        target.flags.columnGap = true;
     }
     if (f.alignItems) {
         target.alignItems = source.alignItems;
@@ -1576,6 +1588,7 @@ void applyAnimatedStylesToSelf(Node& node) {
     }
     Style animated;
     animated.flags = node.animatedStyleFlags;
+    animated.height = node.animatedStyle.height;
     animated.opacity = node.animatedStyle.opacity;
     animated.transform = node.animatedStyle.transform;
     animated.backgroundPosition = node.animatedStyle.backgroundPosition;
@@ -1590,6 +1603,12 @@ void applyAnimatedStylesRecursive(Node& node) {
 }
 
 void applyInheritedStyle(Node& node, const RuntimeOptions& options) {
+    if (node.style.display == Display::Flex &&
+        node.style.displayFlex &&
+        !node.style.flags.flexDirection) {
+        node.style.flexDirection = YGFlexDirectionRow;
+    }
+
     if (!node.parent) {
         if (!node.style.flags.color) {
             node.style.color = options.theme.text;
@@ -1780,7 +1799,13 @@ void applyDeclaration(Style& style, std::string_view rawName, std::string_view r
     auto length = parseLength(value);
     auto number = parseNumberOrPx(value);
     if (name == "display") {
-        style.display = lower(value) == "none" ? Display::None : Display::Flex;
+        const std::string v = lower(value);
+        if (v == "none") {
+            style.display = Display::None;
+        } else {
+            style.display = Display::Flex;
+        }
+        style.displayFlex = v == "flex";
         style.flags.display = true;
     } else if (name == "visibility") {
         style.visibility = lower(value) == "hidden" ? Visibility::Hidden : Visibility::Visible;
@@ -1803,6 +1828,24 @@ void applyDeclaration(Style& style, std::string_view rawName, std::string_view r
         const std::string v = lower(value);
         style.flexWrap = v == "wrap" ? YGWrapWrap : YGWrapNoWrap;
         style.flags.flexWrap = true;
+    } else if (name == "gap") {
+        std::vector<std::string> values = splitCssTokens(value);
+        if (!values.empty() && values.size() <= 2) {
+            std::optional<Length> rowGap = parseLength(values[0]);
+            std::optional<Length> columnGap = values.size() > 1 ? parseLength(values[1]) : rowGap;
+            if (rowGap && columnGap) {
+                style.rowGap = *rowGap;
+                style.columnGap = *columnGap;
+                style.flags.rowGap = true;
+                style.flags.columnGap = true;
+            }
+        }
+    } else if (name == "row-gap" && length) {
+        style.rowGap = *length;
+        style.flags.rowGap = true;
+    } else if (name == "column-gap" && length) {
+        style.columnGap = *length;
+        style.flags.columnGap = true;
     } else if (name == "align-items") {
         const std::string v = lower(value);
         if (v == "center") {
