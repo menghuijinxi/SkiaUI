@@ -412,6 +412,19 @@ if(SKIAUI_BUILD_IMAGE_SCROLLER_DEMO)
 endif()
 
 if(SKIAUI_BUILD_DYNAMIC_DOM_DEMO)
+    file(GLOB_RECURSE SKUI_DYNAMIC_DOM_DEMO_ASSETS CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/assets/skui_dynamic_dom_demo/*"
+    )
+
+    add_custom_target(SkiaDynamicDomDemoAssets ALL
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${CMAKE_CURRENT_SOURCE_DIR}/assets/skui_dynamic_dom_demo"
+                "$<TARGET_FILE_DIR:SkiaDynamicDomDemo>/assets/skui_dynamic_dom_demo"
+        DEPENDS ${SKUI_DYNAMIC_DOM_DEMO_ASSETS}
+    )
+
+    add_dependencies(SkiaDynamicDomDemo SkiaDynamicDomDemoAssets)
+
     target_include_directories(SkiaDynamicDomDemo PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/src"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/skui/public"
@@ -444,12 +457,6 @@ if(SKIAUI_BUILD_DYNAMIC_DOM_DEMO)
     if(MSVC)
         target_compile_options(SkiaDynamicDomDemo PRIVATE /utf-8 /permissive- /Zc:__cplusplus)
     endif()
-
-    add_custom_command(TARGET SkiaDynamicDomDemo POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-                "${CMAKE_CURRENT_SOURCE_DIR}/assets/skui_dynamic_dom_demo"
-                "$<TARGET_FILE_DIR:SkiaDynamicDomDemo>/assets/skui_dynamic_dom_demo"
-    )
 endif()
 
 if(SKIAUI_BUILD_TESTS)

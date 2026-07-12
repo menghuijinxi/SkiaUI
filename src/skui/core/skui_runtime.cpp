@@ -912,43 +912,160 @@ bool nearlyEqual(float lhs, float rhs) {
     return std::abs(lhs - rhs) <= 0.001f;
 }
 
-bool sameTransform(const Transform& lhs, const Transform& rhs) {
-    return nearlyEqual(lhs.translateX, rhs.translateX) &&
-           nearlyEqual(lhs.translateY, rhs.translateY) &&
+float mix(float from, float to, float t) {
+    return from + (to - from) * t;
+}
+
+Length mixLength(const Length& from, const Length& to, float amount);
+
+bool sameLength(const Length& lhs, const Length& rhs) {
+    return lhs.unit == rhs.unit && nearlyEqual(lhs.value, rhs.value);
+}
+
+bool sameTransformOperation(const TransformOperation& lhs,
+                            const TransformOperation& rhs) {
+    return lhs.kind == rhs.kind &&
+           sameLength(lhs.translateX, rhs.translateX) &&
+           sameLength(lhs.translateY, rhs.translateY) &&
            nearlyEqual(lhs.scaleX, rhs.scaleX) &&
            nearlyEqual(lhs.scaleY, rhs.scaleY) &&
            nearlyEqual(lhs.rotateDeg, rhs.rotateDeg);
 }
 
-float mix(float from, float to, float t) {
-    return from + (to - from) * t;
+bool sameTransform(const Transform& lhs, const Transform& rhs) {
+    if (lhs.operations.size() != rhs.operations.size()) {
+        return false;
+    }
+    for (size_t i = 0; i < lhs.operations.size(); ++i) {
+        if (!sameTransformOperation(lhs.operations[i], rhs.operations[i])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+TransformOperation identityOperationFor(const TransformOperation& operation) {
+    TransformOperation identity;
+    identity.kind = operation.kind;
+    if (operation.kind == TransformOperationKind::Translate) {
+        identity.translateX.unit = operation.translateX.unit;
+        identity.translateY.unit = operation.translateY.unit;
+    }
+    return identity;
+}
+
+TransformOperation mixTransformOperation(const TransformOperation& from,
+                                         const TransformOperation& to,
+                                         float amount) {
+    TransformOperation mixed = to;
+    mixed.translateX = mixLength(from.translateX, to.translateX, amount);
+    mixed.translateY = mixLength(from.translateY, to.translateY, amount);
+    mixed.scaleX = mix(from.scaleX, to.scaleX, amount);
+    mixed.scaleY = mix(from.scaleY, to.scaleY, amount);
+    mixed.rotateDeg = mix(from.rotateDeg, to.rotateDeg, amount);
+    return mixed;
+}
+
+bool compatibleTransformOperations(const Transform& from, const Transform& to) {
+    if (from.operations.empty() || to.operations.empty()) {
+        return true;
+    }
+    if (from.operations.size() != to.operations.size()) {
+        return false;
+    }
+    for (size_t i = 0; i < from.operations.size(); ++i) {
+        if (from.operations[i].kind != to.operations[i].kind) {
+            return false;
+        }
+    }
+    return true;
 }
 
 Transform mixTransform(const Transform& from, const Transform& to, float t) {
-    return {
-        mix(from.translateX, to.translateX, t),
-        mix(from.translateY, to.translateY, t),
-        mix(from.scaleX, to.scaleX, t),
-        mix(from.scaleY, to.scaleY, t),
-        mix(from.rotateDeg, to.rotateDeg, t),
-    };
+    Transform mixed;
+    if (!compatibleTransformOperations(from, to)) {
+        return t < 1.0f ? from : to;
+    }
+
+    const std::vector<TransformOperation>& operations =
+        from.operations.empty() ? to.operations : from.operations;
+    mixed.operations.reserve(operations.size());
+    for (size_t i = 0; i < operations.size(); ++i) {
+        const TransformOperation& fromOperation =
+            from.operations.empty() ? identityOperationFor(to.operations[i])
+                                    : from.operations[i];
+        const TransformOperation& toOperation =
+            to.operations.empty() ? identityOperationFor(from.operations[i])
+                                  : to.operations[i];
+        mixed.operations.push_back(
+            mixTransformOperation(fromOperation, toOperation, t));
+    }
+    return mixed;
 }
 
-float easingValue(Easing easing, float t) {
-    t = clampf(t, 0.0f, 1.0f);
+CubicBezier bezierForKeyword(Easing easing) {
     switch (easing) {
     case Easing::Linear:
-        return t;
+        return CubicBezier{0.0f, 0.0f, 1.0f, 1.0f};
     case Easing::EaseIn:
-        return t * t;
+        return CubicBezier{0.42f, 0.0f, 1.0f, 1.0f};
     case Easing::EaseOut:
-        return 1.0f - (1.0f - t) * (1.0f - t);
+        return CubicBezier{0.0f, 0.0f, 0.58f, 1.0f};
     case Easing::EaseInOut:
-        return t < 0.5f ? 2.0f * t * t : 1.0f - std::pow(-2.0f * t + 2.0f, 2.0f) * 0.5f;
+        return CubicBezier{0.42f, 0.0f, 0.58f, 1.0f};
     case Easing::Ease:
     default:
-        return t < 0.5f ? 4.0f * t * t * t : 1.0f - std::pow(-2.0f * t + 2.0f, 3.0f) * 0.5f;
+        return CubicBezier{0.25f, 0.1f, 0.25f, 1.0f};
     }
+}
+
+float cubicBezierComponent(float a, float b, float t) {
+    const float inv = 1.0f - t;
+    return 3.0f * inv * inv * t * a +
+           3.0f * inv * t * t * b +
+           t * t * t;
+}
+
+float cubicBezierDerivative(float a, float b, float t) {
+    const float inv = 1.0f - t;
+    return 3.0f * inv * inv * a +
+           6.0f * inv * t * (b - a) +
+           3.0f * t * t * (1.0f - b);
+}
+
+float cubicBezierValue(const CubicBezier& curve, float progress) {
+    float t = progress;
+    for (int i = 0; i < 8; ++i) {
+        const float x = cubicBezierComponent(curve.x1, curve.x2, t) - progress;
+        const float dx = cubicBezierDerivative(curve.x1, curve.x2, t);
+        if (std::abs(x) < 0.000001f || std::abs(dx) < 0.000001f) {
+            break;
+        }
+        t = clampf(t - x / dx, 0.0f, 1.0f);
+    }
+
+    float lo = 0.0f;
+    float hi = 1.0f;
+    for (int i = 0; i < 16; ++i) {
+        const float x = cubicBezierComponent(curve.x1, curve.x2, t);
+        if (std::abs(x - progress) < 0.000001f) {
+            break;
+        }
+        if (x < progress) {
+            lo = t;
+        } else {
+            hi = t;
+        }
+        t = (lo + hi) * 0.5f;
+    }
+    return cubicBezierComponent(curve.y1, curve.y2, t);
+}
+
+float easingValue(const EasingFunction& easing, float t) {
+    t = clampf(t, 0.0f, 1.0f);
+    return cubicBezierValue(easing.cubicBezier.value_or(
+                                bezierForKeyword(easing.keyword)),
+                            t);
 }
 
 bool transitionMatches(const TransitionDefinition& transition, TransitionProperty property) {
@@ -974,7 +1091,7 @@ struct ActiveAnimation {
     double startSeconds = 0.0;
     float durationSeconds = 0.0f;
     float delaySeconds = 0.0f;
-    Easing easing = Easing::Ease;
+    EasingFunction easing;
 };
 
 struct ActiveKeyframeAnimation {
@@ -989,7 +1106,12 @@ struct ActiveKeyframeAnimation {
 struct KeyframeAnimationSample {
     bool applies = false;
     bool needsFrame = false;
+    bool hasBackgroundPosition = false;
+    bool hasOpacity = false;
+    bool hasTransform = false;
     BackgroundPosition position;
+    float opacity = 1.0f;
+    Transform transform;
 };
 
 struct StyleSnapshot {
@@ -1082,18 +1204,51 @@ BackgroundPosition keyframePosition(const Keyframe& frame,
                : fallback;
 }
 
-BackgroundPosition evaluateKeyframes(const KeyframesDefinition& keyframes,
-                                     const BackgroundPosition& fallback,
-                                     const AnimationTimingFunction& timing,
-                                     float progress) {
+float keyframeOpacity(const Keyframe& frame, float fallback) {
+    return frame.style.flags.opacity ? frame.style.opacity : fallback;
+}
+
+Transform keyframeTransform(const Keyframe& frame, const Transform& fallback) {
+    return frame.style.flags.transform ? frame.style.transform : fallback;
+}
+
+bool hasBackgroundPositionFrames(const KeyframesDefinition& keyframes) {
+    return std::any_of(keyframes.frames.begin(),
+                       keyframes.frames.end(),
+                       [](const Keyframe& frame) {
+                           return frame.style.flags.backgroundPosition;
+                       });
+}
+
+bool hasOpacityFrames(const KeyframesDefinition& keyframes) {
+    return std::any_of(keyframes.frames.begin(),
+                       keyframes.frames.end(),
+                       [](const Keyframe& frame) {
+                           return frame.style.flags.opacity;
+                       });
+}
+
+bool hasTransformFrames(const KeyframesDefinition& keyframes) {
+    return std::any_of(keyframes.frames.begin(),
+                       keyframes.frames.end(),
+                       [](const Keyframe& frame) {
+                           return frame.style.flags.transform;
+                       });
+}
+
+std::pair<const Keyframe*, const Keyframe*> keyframeSpan(
+    const KeyframesDefinition& keyframes,
+    float progress) {
     if (keyframes.frames.empty()) {
-        return fallback;
+        return {nullptr, nullptr};
     }
     if (progress <= keyframes.frames.front().offset) {
-        return keyframePosition(keyframes.frames.front(), fallback);
+        const Keyframe& frame = keyframes.frames.front();
+        return {&frame, &frame};
     }
     if (progress >= keyframes.frames.back().offset) {
-        return keyframePosition(keyframes.frames.back(), fallback);
+        const Keyframe& frame = keyframes.frames.back();
+        return {&frame, &frame};
     }
 
     const auto upper = std::upper_bound(
@@ -1103,14 +1258,74 @@ BackgroundPosition evaluateKeyframes(const KeyframesDefinition& keyframes,
         [](float value, const Keyframe& frame) {
             return value < frame.offset;
         });
-    const Keyframe& to = *upper;
-    const Keyframe& from = *(upper - 1);
+    return {&*(upper - 1), &*upper};
+}
+
+float localKeyframeProgress(const Keyframe& from,
+                            const Keyframe& to,
+                            const AnimationTimingFunction& timing,
+                            float progress) {
+    if (&from == &to || nearlyEqual(from.offset, to.offset)) {
+        return 1.0f;
+    }
     const float span = std::max(0.000001f, to.offset - from.offset);
     const float localProgress = (progress - from.offset) / span;
-    const float timedProgress = animationTimingValue(timing, localProgress);
-    return mixBackgroundPosition(keyframePosition(from, fallback),
-                                 keyframePosition(to, fallback),
+    return animationTimingValue(timing, localProgress);
+}
+
+BackgroundPosition evaluateBackgroundPositionKeyframes(
+    const KeyframesDefinition& keyframes,
+    const BackgroundPosition& fallback,
+    const AnimationTimingFunction& timing,
+    float progress) {
+    if (keyframes.frames.empty()) {
+        return fallback;
+    }
+    const auto [fromFrame, toFrame] = keyframeSpan(keyframes, progress);
+    if (!fromFrame || !toFrame) {
+        return fallback;
+    }
+    const float timedProgress =
+        localKeyframeProgress(*fromFrame, *toFrame, timing, progress);
+    return mixBackgroundPosition(keyframePosition(*fromFrame, fallback),
+                                 keyframePosition(*toFrame, fallback),
                                  timedProgress);
+}
+
+float evaluateOpacityKeyframes(const KeyframesDefinition& keyframes,
+                               float fallback,
+                               const AnimationTimingFunction& timing,
+                               float progress) {
+    if (keyframes.frames.empty()) {
+        return fallback;
+    }
+    const auto [fromFrame, toFrame] = keyframeSpan(keyframes, progress);
+    if (!fromFrame || !toFrame) {
+        return fallback;
+    }
+    const float timedProgress =
+        localKeyframeProgress(*fromFrame, *toFrame, timing, progress);
+    return mix(keyframeOpacity(*fromFrame, fallback),
+               keyframeOpacity(*toFrame, fallback),
+               timedProgress);
+}
+
+Transform evaluateTransformKeyframes(const KeyframesDefinition& keyframes,
+                                     const Transform& fallback,
+                                     const AnimationTimingFunction& timing,
+                                     float progress) {
+    if (keyframes.frames.empty()) {
+        return fallback;
+    }
+    const auto [fromFrame, toFrame] = keyframeSpan(keyframes, progress);
+    if (!fromFrame || !toFrame) {
+        return fallback;
+    }
+    const float timedProgress =
+        localKeyframeProgress(*fromFrame, *toFrame, timing, progress);
+    return mixTransform(keyframeTransform(*fromFrame, fallback),
+                        keyframeTransform(*toFrame, fallback),
+                        timedProgress);
 }
 
 void clearAnimatedStyle(Node& node) {
@@ -1474,12 +1689,13 @@ public:
         return std::max(0.1f, std::max(0.1f, dpiScale) * userScale());
     }
 
-    bool hasBackgroundPositionKeyframes(
-        const KeyframesDefinition& keyframes) const {
+    bool hasAnimatedKeyframes(const KeyframesDefinition& keyframes) const {
         return std::any_of(keyframes.frames.begin(),
                            keyframes.frames.end(),
                            [](const Keyframe& frame) {
-                               return frame.style.flags.backgroundPosition;
+                               return frame.style.flags.backgroundPosition ||
+                                      frame.style.flags.opacity ||
+                                      frame.style.flags.transform;
                            });
     }
 
@@ -1491,7 +1707,7 @@ public:
             const AnimationDefinition& definition = node.style.animations[index];
             const auto keyframesIt = document.keyframes.find(definition.name);
             if (keyframesIt == document.keyframes.end() ||
-                !hasBackgroundPositionKeyframes(keyframesIt->second)) {
+                !hasAnimatedKeyframes(keyframesIt->second)) {
                 continue;
             }
 
@@ -1624,11 +1840,31 @@ public:
             progress,
             iterationIndex,
             animation.definition.direction);
-        sample.position = evaluateKeyframes(
-            keyframesIt->second,
-            animation.node->style.backgroundPosition,
-            animation.definition.timing,
-            progress);
+        const KeyframesDefinition& keyframes = keyframesIt->second;
+        if (hasBackgroundPositionFrames(keyframes)) {
+            sample.position = evaluateBackgroundPositionKeyframes(
+                keyframes,
+                animation.node->style.backgroundPosition,
+                animation.definition.timing,
+                progress);
+            sample.hasBackgroundPosition = true;
+        }
+        if (hasOpacityFrames(keyframes)) {
+            sample.opacity = evaluateOpacityKeyframes(
+                keyframes,
+                animation.node->style.opacity,
+                animation.definition.timing,
+                progress);
+            sample.hasOpacity = true;
+        }
+        if (hasTransformFrames(keyframes)) {
+            sample.transform = evaluateTransformKeyframes(
+                keyframes,
+                animation.node->style.transform,
+                animation.definition.timing,
+                progress);
+            sample.hasTransform = true;
+        }
         sample.applies = true;
         return sample;
     }
@@ -1644,8 +1880,16 @@ public:
             if (!sample.applies) {
                 continue;
             }
-            writeAnimatedBackgroundPosition(*animation.node,
-                                            sample.position);
+            if (sample.hasBackgroundPosition) {
+                writeAnimatedBackgroundPosition(*animation.node,
+                                                sample.position);
+            }
+            if (sample.hasOpacity) {
+                writeAnimatedOpacity(*animation.node, sample.opacity);
+            }
+            if (sample.hasTransform) {
+                writeAnimatedTransform(*animation.node, sample.transform);
+            }
             changed = true;
         }
         return changed;

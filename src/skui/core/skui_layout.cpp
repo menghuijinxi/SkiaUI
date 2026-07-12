@@ -336,7 +336,7 @@ void LayoutEngine::layout(Document& document, float width, float height) {
     YGNodeStyleSetWidth(rootYoga.get(), std::max(1.0f, width));
     YGNodeStyleSetHeight(rootYoga.get(), std::max(1.0f, height));
     const auto buildStart = traceEnabled ? perf::Trace::now() : perf::Trace::Clock::time_point{};
-    buildYoga(*document.root, rootYoga.get());
+    buildYoga(*document.root, rootYoga.get(), true);
     if (traceEnabled) {
         perf::Trace::write("skui_layout", "build_yoga", static_cast<int>(width), static_cast<int>(height), perf::Trace::elapsedMs(buildStart));
     }
@@ -360,7 +360,7 @@ void LayoutEngine::layout(Document& document, float width, float height) {
     }
 }
 
-void LayoutEngine::buildYoga(Node& node, YGNodeRef yogaNode) {
+void LayoutEngine::buildYoga(Node& node, YGNodeRef yogaNode, bool isRoot) {
     const Style& s = node.style;
     if (s.display == Display::None) {
         return;
@@ -392,8 +392,10 @@ void LayoutEngine::buildYoga(Node& node, YGNodeRef yogaNode) {
                                    ? YGPositionTypeAbsolute
                                    : YGPositionTypeRelative);
 
-    setOptional(yogaNode, YGNodeStyleSetWidth, YGNodeStyleSetWidthPercent, YGNodeStyleSetWidthAuto, s.width);
-    setOptional(yogaNode, YGNodeStyleSetHeight, YGNodeStyleSetHeightPercent, YGNodeStyleSetHeightAuto, s.height);
+    if (!isRoot) {
+        setOptional(yogaNode, YGNodeStyleSetWidth, YGNodeStyleSetWidthPercent, YGNodeStyleSetWidthAuto, s.width);
+        setOptional(yogaNode, YGNodeStyleSetHeight, YGNodeStyleSetHeightPercent, YGNodeStyleSetHeightAuto, s.height);
+    }
     setOptional(yogaNode, YGNodeStyleSetMinWidth, YGNodeStyleSetMinWidthPercent, nullptr, s.minWidth);
     setOptional(yogaNode, YGNodeStyleSetMinHeight, YGNodeStyleSetMinHeightPercent, nullptr, s.minHeight);
     setOptional(yogaNode, YGNodeStyleSetMaxWidth, YGNodeStyleSetMaxWidthPercent, nullptr, s.maxWidth);
@@ -427,7 +429,7 @@ void LayoutEngine::buildYoga(Node& node, YGNodeRef yogaNode) {
             continue;
         }
         YGNodeRef childRef = YGNodeNew();
-        buildYoga(*child, childRef);
+        buildYoga(*child, childRef, false);
         YGNodeInsertChild(yogaNode, childRef, YGNodeGetChildCount(yogaNode));
     }
 }

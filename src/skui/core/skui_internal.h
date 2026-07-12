@@ -108,6 +108,22 @@ enum class Easing {
     EaseInOut
 };
 
+struct CubicBezier {
+    float x1 = 0.25f;
+    float y1 = 0.1f;
+    float x2 = 0.25f;
+    float y2 = 1.0f;
+
+    [[nodiscard]] bool operator==(const CubicBezier&) const = default;
+};
+
+struct EasingFunction {
+    Easing keyword = Easing::Ease;
+    std::optional<CubicBezier> cubicBezier;
+
+    [[nodiscard]] bool operator==(const EasingFunction&) const = default;
+};
+
 enum class BackgroundRepeat {
     Repeat,
     NoRepeat,
@@ -186,32 +202,59 @@ struct CornerRadii {
     }
 };
 
-struct Transform {
-    float translateX = 0.0f;
-    float translateY = 0.0f;
+enum class TransformOperationKind {
+    Translate,
+    Scale,
+    Rotate
+};
+
+struct TransformOperation {
+    TransformOperationKind kind = TransformOperationKind::Translate;
+    Length translateX = {0.0f, LengthUnit::Px};
+    Length translateY = {0.0f, LengthUnit::Px};
     float scaleX = 1.0f;
     float scaleY = 1.0f;
     float rotateDeg = 0.0f;
+};
+
+struct Transform {
+    std::vector<TransformOperation> operations;
 
     [[nodiscard]] bool isIdentity() const {
-        return translateX == 0.0f &&
-               translateY == 0.0f &&
-               scaleX == 1.0f &&
-               scaleY == 1.0f &&
-               rotateDeg == 0.0f;
+        for (const TransformOperation& operation : operations) {
+            if (operation.kind == TransformOperationKind::Translate &&
+                (operation.translateX.value != 0.0f ||
+                 operation.translateY.value != 0.0f)) {
+                return false;
+            }
+            if (operation.kind == TransformOperationKind::Scale &&
+                (operation.scaleX != 1.0f || operation.scaleY != 1.0f)) {
+                return false;
+            }
+            if (operation.kind == TransformOperationKind::Rotate &&
+                operation.rotateDeg != 0.0f) {
+                return false;
+            }
+        }
+        return true;
     }
+};
+
+struct TransformOrigin {
+    Length x = {50.0f, LengthUnit::Percent};
+    Length y = {50.0f, LengthUnit::Percent};
 };
 
 struct TransitionDefinition {
     TransitionProperty property = TransitionProperty::All;
     float durationSeconds = 0.0f;
     float delaySeconds = 0.0f;
-    Easing easing = Easing::Ease;
+    EasingFunction easing;
 };
 
 struct AnimationTimingFunction {
     AnimationTimingKind kind = AnimationTimingKind::Easing;
-    Easing easing = Easing::Ease;
+    EasingFunction easing;
     int steps = 1;
     AnimationStepPosition stepPosition = AnimationStepPosition::End;
 };
@@ -276,6 +319,7 @@ struct Style {
         bool backgroundGradient = false;
         bool opacity = false;
         bool transform = false;
+        bool transformOrigin = false;
         bool transition = false;
         bool animation = false;
         bool overflowX = false;
@@ -321,6 +365,7 @@ struct Style {
     Gradient backgroundGradient;
     float opacity = 1.0f;
     Transform transform;
+    TransformOrigin transformOrigin;
     std::vector<TransitionDefinition> transitions;
     std::vector<AnimationDefinition> animations;
     Overflow overflowX = Overflow::Visible;
@@ -479,7 +524,7 @@ public:
     void layout(Document& document, float width, float height);
 
 private:
-    void buildYoga(Node& node, YGNodeRef yogaNode);
+    void buildYoga(Node& node, YGNodeRef yogaNode, bool isRoot);
     void readYoga(Node& node, YGNodeRef yogaNode, float offsetX, float offsetY);
 };
 

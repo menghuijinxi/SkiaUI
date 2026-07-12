@@ -248,6 +248,130 @@
       flex-shrink: 0;
       margin-bottom: 28px;
     }
+    @keyframes auto-fade {
+      0% { opacity: 0.3; transform: translateX(0px); }
+      50% { opacity: 1; transform: translateX(18px); }
+      100% { opacity: 0.3; transform: translateX(0px); }
+    }
+    @keyframes auto-rotate-scale {
+      0% { transform: rotate(0deg) scale(1); }
+      100% { transform: rotate(18deg) scale(1.18); }
+    }
+    @keyframes auto-origin-swing {
+      0% { transform: rotate(-12deg) scale(1); }
+      100% { transform: rotate(12deg) scale(1.08); }
+    }
+    @keyframes auto-transform-order-a {
+      0% { transform: translateX(0px) scale(1); }
+      100% { transform: translateX(48px) scale(1.35); }
+    }
+    @keyframes auto-transform-order-b {
+      0% { transform: scale(1) translateX(0px); }
+      100% { transform: scale(1.35) translateX(48px); }
+    }
+    .animation-lab {
+      position: relative;
+      flex-shrink: 0;
+      height: 128px;
+      margin-bottom: 18px;
+      background-color: #fbfdff;
+      border-color: #d7e0ea;
+      border-width: 1px;
+      border-style: solid;
+      border-radius: 8px;
+    }
+    .animation-lab-title {
+      position: absolute;
+      left: 18px;
+      top: 12px;
+      width: 280px;
+      height: 22px;
+      color: #263348;
+      font-size: 15px;
+      font-weight: bold;
+    }
+    .animation-lab-note {
+      position: absolute;
+      left: 18px;
+      top: 36px;
+      width: 620px;
+      height: 20px;
+      color: #657285;
+      font-size: 12px;
+    }
+    .animation-track {
+      position: absolute;
+      top: 68px;
+      width: 150px;
+      height: 42px;
+      background-color: #f1f5f9;
+      border-color: #d7e0ea;
+      border-width: 1px;
+      border-style: solid;
+      border-radius: 7px;
+    }
+    .animation-track-fade {
+      left: 18px;
+    }
+    .animation-track-rotate {
+      left: 190px;
+    }
+    .animation-track-origin {
+      left: 362px;
+    }
+    .animation-track-order {
+      left: 534px;
+      width: 210px;
+    }
+    .animation-chip {
+      position: absolute;
+      left: 12px;
+      top: 9px;
+      width: 52px;
+      height: 24px;
+      align-items: center;
+      justify-content: center;
+      background-color: #eef4ff;
+      border-color: #9bbdf5;
+      border-width: 1px;
+      border-style: solid;
+      border-radius: 6px;
+      color: #174a8f;
+      font-size: 11px;
+      font-weight: bold;
+    }
+    .animation-chip-fade {
+      animation: auto-fade 1.6s ease-in-out infinite;
+    }
+    .animation-chip-rotate {
+      transform-origin: center center;
+      animation: auto-rotate-scale 1.4s cubic-bezier(0.25, 0.1, 0.25, 1) infinite alternate;
+    }
+    .animation-chip-origin {
+      transform-origin: left top;
+      animation: auto-origin-swing 1.2s ease-in-out infinite alternate;
+    }
+    .animation-dot {
+      position: absolute;
+      left: 10px;
+      top: 12px;
+      width: 18px;
+      height: 18px;
+      border-radius: 9px;
+      border-width: 1px;
+      border-style: solid;
+    }
+    .animation-dot-a {
+      background-color: #eaf7ee;
+      border-color: #9ccfad;
+      animation: auto-transform-order-a 1.6s ease-in-out infinite alternate;
+    }
+    .animation-dot-b {
+      left: 44px;
+      background-color: #fff1f1;
+      border-color: #efb6b6;
+      animation: auto-transform-order-b 1.6s ease-in-out infinite alternate;
+    }
     .notice-card {
       position: relative;
       flex-grow: 1;
@@ -430,6 +554,23 @@
           <div id="motion-card" class="motion-card">
             <selectable class="motion-title">Animated card</selectable>
             <selectable class="motion-text">Runtime style changes drive transform and opacity transitions.</selectable>
+          </div>
+        </div>
+        <div class="animation-lab">
+          <selectable class="animation-lab-title">Auto CSS animations</selectable>
+          <selectable class="animation-lab-note">Starts on load: opacity, rotate, scale, transform-origin and transform order.</selectable>
+          <div class="animation-track animation-track-fade">
+            <selectable class="animation-chip animation-chip-fade">fade</selectable>
+          </div>
+          <div class="animation-track animation-track-rotate">
+            <selectable class="animation-chip animation-chip-rotate">rotate</selectable>
+          </div>
+          <div class="animation-track animation-track-origin">
+            <selectable class="animation-chip animation-chip-origin">origin</selectable>
+          </div>
+          <div class="animation-track animation-track-order">
+            <div class="animation-dot animation-dot-a"></div>
+            <div class="animation-dot animation-dot-b"></div>
           </div>
         </div>
         <div class="list">

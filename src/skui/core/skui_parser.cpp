@@ -54,6 +54,18 @@ bool parseFloat(std::string_view raw, float& out) {
     return result.ec == std::errc{} && result.ptr == end;
 }
 
+std::optional<float> parseUnitlessFloat(std::string_view raw) {
+    const std::string value = trim(raw);
+    float number = 0.0f;
+    const char* begin = value.data();
+    const char* end = value.data() + value.size();
+    const auto result = std::from_chars(begin, end, number);
+    if (result.ec != std::errc{} || result.ptr != end) {
+        return std::nullopt;
+    }
+    return number;
+}
+
 std::optional<float> parseNumberOrPx(std::string_view raw) {
     float value = 0.0f;
     if (!parseFloat(raw, value)) {
@@ -104,6 +116,29 @@ std::optional<Length> parseLength(std::string_view raw) {
         return std::nullopt;
     }
     return Length{number, unit};
+}
+
+std::optional<float> parseAngleDegrees(std::string_view raw) {
+    std::string value = lower(trim(raw));
+    float multiplier = 1.0f;
+    if (value.ends_with("deg")) {
+        value.resize(value.size() - 3);
+    } else if (value.ends_with("rad")) {
+        value.resize(value.size() - 3);
+        multiplier = 180.0f / 3.14159265358979323846f;
+    } else if (value.ends_with("turn")) {
+        value.resize(value.size() - 4);
+        multiplier = 360.0f;
+    } else if (value.ends_with("grad")) {
+        value.resize(value.size() - 4);
+        multiplier = 0.9f;
+    }
+
+    std::optional<float> number = parseUnitlessFloat(value);
+    if (!number) {
+        return std::nullopt;
+    }
+    return *number * multiplier;
 }
 
 std::vector<std::string> splitCommaList(std::string_view raw) {
@@ -225,6 +260,44 @@ std::optional<BackgroundPosition> parseBackgroundPosition(std::string_view raw) 
     position.x = *x;
     position.y = *y;
     return position;
+}
+
+std::optional<TransformOrigin> parseTransformOrigin(std::string_view raw) {
+    const std::vector<std::string> tokens = splitWhitespace(raw);
+    if (tokens.empty() || tokens.size() > 2) {
+        return std::nullopt;
+    }
+
+    TransformOrigin origin;
+    if (tokens.size() == 1) {
+        const std::string value = lower(tokens.front());
+        if (value == "top" || value == "bottom") {
+            origin.x = {50.0f, LengthUnit::Percent};
+            std::optional<Length> y = parseBackgroundPositionValue(value, false);
+            if (!y) {
+                return std::nullopt;
+            }
+            origin.y = *y;
+            return origin;
+        }
+
+        std::optional<Length> x = parseBackgroundPositionValue(value, true);
+        if (!x) {
+            return std::nullopt;
+        }
+        origin.x = *x;
+        origin.y = {50.0f, LengthUnit::Percent};
+        return origin;
+    }
+
+    std::optional<Length> x = parseBackgroundPositionValue(tokens[0], true);
+    std::optional<Length> y = parseBackgroundPositionValue(tokens[1], false);
+    if (!x || !y) {
+        return std::nullopt;
+    }
+    origin.x = *x;
+    origin.y = *y;
+    return origin;
 }
 
 std::optional<BackgroundSize> parseBackgroundSize(std::string_view raw) {
@@ -558,6 +631,10 @@ std::vector<std::string> splitCssTokens(std::string_view raw) {
     return tokens;
 }
 
+std::vector<std::string> splitCssWhitespaceTokens(std::string_view raw) {
+    return splitCssTokens(raw);
+}
+
 bool applyEdgeShorthand(EdgeValues& edges,
                         Style::Flags& flags,
                         bool Style::Flags::*leftFlag,
@@ -650,28 +727,52 @@ void applyBorderShorthand(Style& style, std::string_view rawValue) {
     }
 }
 
-std::optional<Easing> parseEasing(std::string_view raw) {
+std::optional<EasingFunction> parseEasing(std::string_view raw) {
     const std::string value = lower(trim(raw));
+    EasingFunction easing;
     if (value == "linear") {
-        return Easing::Linear;
+        easing.keyword = Easing::Linear;
+        return easing;
     }
     if (value == "ease-in") {
-        return Easing::EaseIn;
+        easing.keyword = Easing::EaseIn;
+        return easing;
     }
     if (value == "ease-out") {
-        return Easing::EaseOut;
+        easing.keyword = Easing::EaseOut;
+        return easing;
     }
     if (value == "ease-in-out") {
-        return Easing::EaseInOut;
+        easing.keyword = Easing::EaseInOut;
+        return easing;
     }
     if (value == "ease") {
-        return Easing::Ease;
+        easing.keyword = Easing::Ease;
+        return easing;
+    }
+    if (value.starts_with("cubic-bezier(") && value.back() == ')') {
+        const std::vector<std::string> args =
+            splitCommaList(std::string_view(value).substr(13, value.size() - 14));
+        if (args.size() != 4) {
+            return std::nullopt;
+        }
+        std::optional<float> x1 = parseUnitlessFloat(args[0]);
+        std::optional<float> y1 = parseUnitlessFloat(args[1]);
+        std::optional<float> x2 = parseUnitlessFloat(args[2]);
+        std::optional<float> y2 = parseUnitlessFloat(args[3]);
+        if (!x1 || !y1 || !x2 || !y2 ||
+            *x1 < 0.0f || *x1 > 1.0f ||
+            *x2 < 0.0f || *x2 > 1.0f) {
+            return std::nullopt;
+        }
+        easing.cubicBezier = CubicBezier{*x1, *y1, *x2, *y2};
+        return easing;
     }
     return std::nullopt;
 }
 
 std::optional<AnimationTimingFunction> parseAnimationTimingFunction(std::string_view raw) {
-    if (std::optional<Easing> easing = parseEasing(raw)) {
+    if (std::optional<EasingFunction> easing = parseEasing(raw)) {
         AnimationTimingFunction timing;
         timing.easing = *easing;
         return timing;
@@ -749,7 +850,7 @@ void parseAnimation(std::string_view raw, Style& style) {
         bool hasDuration = false;
         bool hasDelay = false;
         bool valid = true;
-        for (const std::string& token : splitWhitespace(item)) {
+        for (const std::string& token : splitCssWhitespaceTokens(item)) {
             const std::string tokenLower = lower(token);
             if (std::optional<AnimationTimingFunction> timing =
                     parseAnimationTimingFunction(token)) {
@@ -864,12 +965,12 @@ void parseTransition(std::string_view raw, Style& style) {
         TransitionDefinition transition;
         bool hasDuration = false;
         bool valid = true;
-        for (const std::string& token : splitWhitespace(item)) {
+        for (const std::string& token : splitCssWhitespaceTokens(item)) {
             if (std::optional<TransitionProperty> property = parseTransitionProperty(token)) {
                 transition.property = *property;
                 continue;
             }
-            if (std::optional<Easing> easing = parseEasing(token)) {
+            if (std::optional<EasingFunction> easing = parseEasing(token)) {
                 transition.easing = *easing;
                 continue;
             }
@@ -903,36 +1004,47 @@ bool parseTransformFunction(std::string_view name, std::string_view rawArguments
         if (args.empty()) {
             return false;
         }
-        std::optional<float> x = parseNumberOrPx(args[0]);
-        std::optional<float> y = args.size() > 1 ? parseNumberOrPx(args[1])
-                                                  : std::optional<float>{0.0f};
+        std::optional<Length> x = parseLength(args[0]);
+        std::optional<Length> y = args.size() > 1 ? parseLength(args[1])
+                                                  : std::optional<Length>{Length{0.0f, LengthUnit::Px}};
         if (!x || !y) {
             return false;
         }
-        transform.translateX += *x;
-        transform.translateY += *y;
+        transform.operations.push_back(TransformOperation{
+            TransformOperationKind::Translate,
+            *x,
+            *y,
+        });
         return true;
     }
     if (function == "translatex") {
         if (args.size() != 1) {
             return false;
         }
-        std::optional<float> x = parseNumberOrPx(args[0]);
+        std::optional<Length> x = parseLength(args[0]);
         if (!x) {
             return false;
         }
-        transform.translateX += *x;
+        transform.operations.push_back(TransformOperation{
+            TransformOperationKind::Translate,
+            *x,
+            Length{0.0f, LengthUnit::Px},
+        });
         return true;
     }
     if (function == "translatey") {
         if (args.size() != 1) {
             return false;
         }
-        std::optional<float> y = parseNumberOrPx(args[0]);
+        std::optional<Length> y = parseLength(args[0]);
         if (!y) {
             return false;
         }
-        transform.translateY += *y;
+        transform.operations.push_back(TransformOperation{
+            TransformOperationKind::Translate,
+            Length{0.0f, LengthUnit::Px},
+            *y,
+        });
         return true;
     }
     if (function == "scale" || function == "scale3d") {
@@ -944,8 +1056,11 @@ bool parseTransformFunction(std::string_view name, std::string_view rawArguments
         if (!x || !y) {
             return false;
         }
-        transform.scaleX *= *x;
-        transform.scaleY *= *y;
+        TransformOperation operation;
+        operation.kind = TransformOperationKind::Scale;
+        operation.scaleX = *x;
+        operation.scaleY = *y;
+        transform.operations.push_back(operation);
         return true;
     }
     if (function == "scalex") {
@@ -956,7 +1071,10 @@ bool parseTransformFunction(std::string_view name, std::string_view rawArguments
         if (!x) {
             return false;
         }
-        transform.scaleX *= *x;
+        TransformOperation operation;
+        operation.kind = TransformOperationKind::Scale;
+        operation.scaleX = *x;
+        transform.operations.push_back(operation);
         return true;
     }
     if (function == "scaley") {
@@ -967,22 +1085,24 @@ bool parseTransformFunction(std::string_view name, std::string_view rawArguments
         if (!y) {
             return false;
         }
-        transform.scaleY *= *y;
+        TransformOperation operation;
+        operation.kind = TransformOperationKind::Scale;
+        operation.scaleY = *y;
+        transform.operations.push_back(operation);
         return true;
     }
     if (function == "rotate" || function == "rotatez") {
         if (args.size() != 1) {
             return false;
         }
-        std::string angle = lower(trim(args[0]));
-        if (angle.ends_with("deg")) {
-            angle.resize(angle.size() - 3);
-        }
-        std::optional<float> deg = parseNumberOrPx(angle);
+        std::optional<float> deg = parseAngleDegrees(args[0]);
         if (!deg) {
             return false;
         }
-        transform.rotateDeg += *deg;
+        TransformOperation operation;
+        operation.kind = TransformOperationKind::Rotate;
+        operation.rotateDeg = *deg;
+        transform.operations.push_back(operation);
         return true;
     }
     return false;
@@ -1228,6 +1348,10 @@ void mergeStyle(Style& target, const Style& source) {
     if (f.transform) {
         target.transform = source.transform;
         target.flags.transform = true;
+    }
+    if (f.transformOrigin) {
+        target.transformOrigin = source.transformOrigin;
+        target.flags.transformOrigin = true;
     }
     if (f.transition) {
         target.transitions = source.transitions;
@@ -1863,6 +1987,11 @@ void applyDeclaration(Style& style, std::string_view rawName, std::string_view r
         if (std::optional<Transform> transform = parseTransform(value)) {
             style.transform = *transform;
             style.flags.transform = true;
+        }
+    } else if (name == "transform-origin") {
+        if (std::optional<TransformOrigin> origin = parseTransformOrigin(value)) {
+            style.transformOrigin = *origin;
+            style.flags.transformOrigin = true;
         }
     } else if (name == "transition") {
         parseTransition(value, style);

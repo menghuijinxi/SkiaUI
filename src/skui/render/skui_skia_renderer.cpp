@@ -59,6 +59,30 @@ float resolveBackgroundDimension(const Length& length, float reference) {
     return 0.0f;
 }
 
+float resolveTransformLength(const Length& length, float reference) {
+    if (length.unit == LengthUnit::Percent) {
+        return reference * length.value / 100.0f;
+    }
+    if (length.unit == LengthUnit::Px) {
+        return length.value;
+    }
+    return 0.0f;
+}
+
+void applyTransformOperation(SkCanvas& canvas,
+                             const TransformOperation& operation,
+                             const Rect& layout) {
+    if (operation.kind == TransformOperationKind::Translate) {
+        canvas.translate(
+            resolveTransformLength(operation.translateX, layout.w),
+            resolveTransformLength(operation.translateY, layout.h));
+    } else if (operation.kind == TransformOperationKind::Scale) {
+        canvas.scale(operation.scaleX, operation.scaleY);
+    } else if (operation.kind == TransformOperationKind::Rotate) {
+        canvas.rotate(operation.rotateDeg);
+    }
+}
+
 ResolvedBackgroundSize resolveBackgroundSize(const BackgroundSize& size,
                                              const Rect& rect,
                                              int imageWidth,
@@ -561,14 +585,18 @@ void SkiaRenderer::drawNode(SkCanvas& canvas, const Document& document, const No
     }
     const bool hasTransform = !node.style.transform.isIdentity();
     if (hasTransform) {
-        const float centerX = node.layout.x + node.layout.w * 0.5f;
-        const float centerY = node.layout.y + node.layout.h * 0.5f;
+        const float originX =
+            node.layout.x +
+            resolveTransformLength(node.style.transformOrigin.x, node.layout.w);
+        const float originY =
+            node.layout.y +
+            resolveTransformLength(node.style.transformOrigin.y, node.layout.h);
         canvas.save();
-        canvas.translate(centerX + node.style.transform.translateX,
-                         centerY + node.style.transform.translateY);
-        canvas.rotate(node.style.transform.rotateDeg);
-        canvas.scale(node.style.transform.scaleX, node.style.transform.scaleY);
-        canvas.translate(-centerX, -centerY);
+        canvas.translate(originX, originY);
+        for (const TransformOperation& operation : node.style.transform.operations) {
+            applyTransformOperation(canvas, operation, node.layout);
+        }
+        canvas.translate(-originX, -originY);
     }
     const float opacity = clampf(node.style.opacity, 0.0f, 1.0f);
     if (opacity <= 0.0f) {

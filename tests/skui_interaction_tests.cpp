@@ -2500,6 +2500,170 @@ int main() {
     ok = expect(isMostlyBlue(translatedPixel),
                 "opacity transition should restore the fully visible card") && ok;
 
+    constexpr std::string_view cssTransformHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      position: relative;
+      width: 140px;
+      height: 90px;
+      background-color: #000000;
+    }
+    .box {
+      position: absolute;
+      left: 10px;
+      width: 10px;
+      height: 10px;
+      transform-origin: left top;
+    }
+    .first {
+      top: 10px;
+      background-color: #ff0000;
+      transform: translateX(20px) scale(2);
+    }
+    .second {
+      top: 40px;
+      background-color: #00ff00;
+      transform: scale(2) translateX(20px);
+    }
+    .origin {
+      top: 65px;
+      background-color: #0044ff;
+      transform: scale(2);
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <div class="box first"></div>
+    <div class="box second"></div>
+    <div class="box origin"></div>
+  </div>
+</body>
+</html>
+)html";
+
+    skui::Runtime cssTransformRuntime(options);
+    cssTransformRuntime.resize(kWidth, kHeight, 1.0f);
+    if (!cssTransformRuntime.loadDocumentFromString(cssTransformHtml, "")) {
+        std::cerr << "css transform load failed: "
+                  << cssTransformRuntime.lastError() << "\n";
+        return 1;
+    }
+    uint32_t orderedTranslateThenScale = 0;
+    uint32_t orderedScaleThenTranslate = 0;
+    uint32_t originScaledEdge = 0;
+    ok = renderPixel(cssTransformRuntime, 35, 15, orderedTranslateThenScale) && ok;
+    ok = renderPixel(cssTransformRuntime, 55, 45, orderedScaleThenTranslate) && ok;
+    ok = renderPixel(cssTransformRuntime, 28, 70, originScaledEdge) && ok;
+    ok = expect(isMostlyRed(orderedTranslateThenScale),
+                "CSS transform should preserve translate-before-scale order") && ok;
+    ok = expect(isMostlyGreen(orderedScaleThenTranslate),
+                "CSS transform should preserve scale-before-translate order") && ok;
+    ok = expect(isMostlyBlue(originScaledEdge),
+                "transform-origin:left top should scale from the top-left corner") && ok;
+
+    constexpr std::string_view easeTransitionHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      position: relative;
+      width: 140px;
+      height: 90px;
+      background-color: #000000;
+    }
+    #ease-card {
+      position: absolute;
+      left: 10px;
+      top: 10px;
+      width: 10px;
+      height: 10px;
+      background-color: #ff0000;
+      transition: transform 100ms ease;
+    }
+  </style>
+</head>
+<body>
+  <div class="root"><div id="ease-card"></div></div>
+</body>
+</html>
+)html";
+
+    skui::Runtime easeRuntime(options);
+    easeRuntime.resize(kWidth, kHeight, 1.0f);
+    if (!easeRuntime.loadDocumentFromString(easeTransitionHtml, "")) {
+        std::cerr << "ease transition load failed: "
+                  << easeRuntime.lastError() << "\n";
+        return 1;
+    }
+    ok = expect(easeRuntime.setStyleById("ease-card",
+                                         "transform: translateX(80px);"),
+                "ease transition style update should apply") && ok;
+    (void)easeRuntime.tick(0.05f);
+    uint32_t easedPixel = 0;
+    ok = renderPixel(easeRuntime, 75, 15, easedPixel) && ok;
+    ok = expect(isMostlyRed(easedPixel),
+                "CSS ease should use the standard cubic-bezier curve") && ok;
+
+    constexpr std::string_view keyframeTransformHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    @keyframes moveFade {
+      from {
+        transform: translateX(0px);
+        opacity: 1;
+      }
+      to {
+        transform: translateX(40px);
+        opacity: 0.2;
+      }
+    }
+    .root {
+      position: relative;
+      width: 140px;
+      height: 90px;
+      background-color: #000000;
+    }
+    .card {
+      position: absolute;
+      left: 10px;
+      top: 10px;
+      width: 20px;
+      height: 20px;
+      background-color: #0044ff;
+      animation: moveFade 100ms linear forwards;
+    }
+  </style>
+</head>
+<body>
+  <div class="root"><div class="card"></div></div>
+</body>
+</html>
+)html";
+
+    skui::Runtime keyframeTransformRuntime(options);
+    keyframeTransformRuntime.resize(kWidth, kHeight, 1.0f);
+    if (!keyframeTransformRuntime.loadDocumentFromString(keyframeTransformHtml, "")) {
+        std::cerr << "keyframe transform load failed: "
+                  << keyframeTransformRuntime.lastError() << "\n";
+        return 1;
+    }
+    (void)keyframeTransformRuntime.tick(0.12f);
+    uint32_t keyframeOriginPixel = 0;
+    uint32_t keyframeTargetPixel = 0;
+    ok = renderPixel(keyframeTransformRuntime, 15, 15, keyframeOriginPixel) && ok;
+    ok = renderPixel(keyframeTransformRuntime, 55, 15, keyframeTargetPixel) && ok;
+    ok = expect(keyframeOriginPixel == solidColor(0x00, 0x00, 0x00),
+                "transform keyframe should move the card away from origin") && ok;
+    ok = expect(isDimBlue(keyframeTargetPixel),
+                "opacity keyframe should fade the transformed card") && ok;
+
     const auto runSpriteAnimationTest = [&] {
         const std::filesystem::path spriteFixtureDir =
             std::filesystem::temp_directory_path() /
