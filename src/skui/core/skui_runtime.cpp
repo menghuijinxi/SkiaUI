@@ -1,6 +1,7 @@
 #include "skui_internal.h"
 
 #include "perf_trace.h"
+#include "skui_runtime_helpers.h"
 
 #include "include/core/SkCanvas.h"
 #include "include/core/SkColorType.h"
@@ -2504,6 +2505,7 @@ bool Runtime::handleEvent(const Event& event) {
         return false;
     }
 
+    RuntimeUpdateBatch eventUpdate(*this);
     const float scale = impl_->effectiveScale();
     const float x = event.x / scale;
     const float y = event.y / scale;

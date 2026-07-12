@@ -582,6 +582,82 @@ int main() {
         ok = expect(actionMoves == 1, "mouse move should be emitted for data-action elements") && ok;
     }
 
+    constexpr std::string_view eventMutationTransitionHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      width: 140px;
+      height: 90px;
+      background-color: #000000;
+    }
+    .item {
+      width: 80px;
+      height: 20px;
+      background-color: #0044ff;
+      transition: height 100ms ease-in-out;
+    }
+    .item.active {
+      height: 60px;
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <button id="first" class="item active"></button>
+    <button id="second" class="item" data-action="select-second"></button>
+  </div>
+</body>
+</html>
+)html";
+    {
+        bool insideClickCallback = false;
+        bool requestedRedrawInsideClickCallback = false;
+        skui::RuntimeOptions eventMutationOptions = options;
+        eventMutationOptions.requestRedraw = [&] {
+            requestedRedrawInsideClickCallback =
+                requestedRedrawInsideClickCallback || insideClickCallback;
+        };
+
+        skui::Runtime eventMutationRuntime(eventMutationOptions);
+        eventMutationRuntime.resize(kWidth, kHeight, 1.0f);
+        if (!eventMutationRuntime.loadDocumentFromString(eventMutationTransitionHtml, "")) {
+            std::cerr << "event mutation transition load failed: "
+                      << eventMutationRuntime.lastError() << "\n";
+            return 1;
+        }
+        eventMutationRuntime.setElementEventCallback(
+            [&](const skui::ElementEvent& event) {
+                if (event.type != skui::ElementEventType::Click ||
+                    event.action != "select-second") {
+                    return;
+                }
+
+                insideClickCallback = true;
+                {
+                    skui::RuntimeUpdateBatch update(eventMutationRuntime);
+                    eventMutationRuntime.removeClassById("first", "active");
+                    eventMutationRuntime.addClassById("second", "active");
+                }
+                insideClickCallback = false;
+            });
+
+        sendMouse(eventMutationRuntime,
+                  skui::EventType::MouseDown,
+                  20.0f,
+                  70.0f);
+        sendMouse(eventMutationRuntime,
+                  skui::EventType::MouseUp,
+                  20.0f,
+                  70.0f);
+        ok = expect(!requestedRedrawInsideClickCallback,
+                    "event callback mutations should commit after pointer state updates") && ok;
+        ok = expect(!eventMutationRuntime.hasClassById("first", "active") &&
+                        eventMutationRuntime.hasClassById("second", "active"),
+                    "event callback class mutations should remain applied") && ok;
+    }
+
     constexpr std::string_view buttonActionHtml = R"html(
 <!doctype html>
 <html>
