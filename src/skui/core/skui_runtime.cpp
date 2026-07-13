@@ -2787,7 +2787,7 @@ bool Runtime::handleEvent(const Event& event) {
         const float dx = event.shiftKey ? step : 0.0f;
         const float dy = event.shiftKey ? 0.0f : step;
         scrollChanged = impl_->scrollNearest(hit, dx, dy, &scrolledNode);
-        consumed = scrollChanged;
+        consumed = scrollChanged || scrollbarHit.has_value() || isPointerConsumingTarget(hit);
         break;
     }
     case EventType::KeyDown: {

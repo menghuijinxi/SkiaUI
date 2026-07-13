@@ -998,12 +998,32 @@ int main() {
     ok = expect(passThroughClicks == 1,
                 "data-action element should still emit click") && ok;
 
+    skui::Event passThroughWheel;
+    passThroughWheel.type = skui::EventType::MouseWheel;
+    passThroughWheel.wheelDelta = -120.0f;
+    passThroughWheel.x = 120.0f;
+    passThroughWheel.y = 80.0f;
+    ok = expect(!pointerPassThroughRuntime.handleEvent(passThroughWheel),
+                "transparent non-interactive area should not consume mouse wheel") && ok;
+    skui::Event decorWheel = passThroughWheel;
+    decorWheel.x = 140.0f;
+    decorWheel.y = 20.0f;
+    ok = expect(!pointerPassThroughRuntime.handleEvent(decorWheel),
+                "non-interactive decorative element should not consume mouse wheel") && ok;
+    skui::Event buttonWheel = passThroughWheel;
+    buttonWheel.x = 30.0f;
+    buttonWheel.y = 30.0f;
+    ok = expect(pointerPassThroughRuntime.handleEvent(buttonWheel),
+                "data-action element should consume mouse wheel without scrolling") && ok;
+
     ok = expect(pointerPassThroughRuntime.setConsumesEventsById("button", false),
                 "setConsumesEventsById should disable pointer events at runtime") && ok;
     ok = expect(!pointerPassThroughRuntime.handleEvent(buttonDown),
                 "runtime-disabled pointer events should not consume mouse down") && ok;
     ok = expect(!pointerPassThroughRuntime.handleEvent(buttonUp),
                 "runtime-disabled pointer events should not consume mouse up") && ok;
+    ok = expect(!pointerPassThroughRuntime.handleEvent(buttonWheel),
+                "runtime-disabled pointer events should not consume mouse wheel") && ok;
     ok = expect(passThroughClicks == 1,
                 "runtime-disabled pointer events should not emit click") && ok;
 
@@ -1013,6 +1033,8 @@ int main() {
                 "runtime-restored pointer events should consume mouse down") && ok;
     ok = expect(pointerPassThroughRuntime.handleEvent(buttonUp),
                 "runtime-restored pointer events should consume mouse up") && ok;
+    ok = expect(pointerPassThroughRuntime.handleEvent(buttonWheel),
+                "runtime-restored pointer events should consume mouse wheel") && ok;
     ok = expect(passThroughClicks == 2,
                 "runtime-restored pointer events should emit click") && ok;
 
