@@ -74,6 +74,28 @@ std::optional<float> parseNumberOrPx(std::string_view raw) {
     return value;
 }
 
+std::optional<int> parseZIndex(std::string_view raw) {
+    std::string value = lower(trim(raw));
+    if (value == "auto") {
+        return 0;
+    }
+    if (value.starts_with('+')) {
+        value.erase(0, 1);
+    }
+    if (value.empty()) {
+        return std::nullopt;
+    }
+
+    int zIndex = 0;
+    const char* begin = value.data();
+    const char* end = value.data() + value.size();
+    const auto result = std::from_chars(begin, end, zIndex);
+    if (result.ec != std::errc{} || result.ptr != end) {
+        return std::nullopt;
+    }
+    return zIndex;
+}
+
 std::optional<float> parseSeconds(std::string_view raw) {
     std::string value = lower(trim(raw));
     float multiplier = 1.0f;
@@ -1177,6 +1199,10 @@ void mergeStyle(Style& target, const Style& source) {
         target.position = source.position;
         target.flags.position = true;
     }
+    if (f.zIndex) {
+        target.zIndex = source.zIndex;
+        target.flags.zIndex = true;
+    }
     if (f.flexDirection) {
         target.flexDirection = source.flexDirection;
         target.flags.flexDirection = true;
@@ -1820,6 +1846,11 @@ void applyDeclaration(Style& style, std::string_view rawName, std::string_view r
             style.position = Position::Relative;
         }
         style.flags.position = true;
+    } else if (name == "z-index") {
+        if (std::optional<int> zIndex = parseZIndex(value)) {
+            style.zIndex = *zIndex;
+            style.flags.zIndex = true;
+        }
     } else if (name == "flex-direction") {
         const std::string v = lower(value);
         style.flexDirection = v == "row" ? YGFlexDirectionRow : YGFlexDirectionColumn;

@@ -677,8 +677,15 @@ void SkiaRenderer::drawNode(SkCanvas& canvas, const Document& document, const No
         }
         canvas.translate(-node.scrollX, -node.scrollY);
     }
-    for (const auto& child : node.children) {
-        drawNode(canvas, document, *child);
+    if (requiresZIndexOrdering(node)) {
+        const std::vector<const Node*> orderedChildren = childrenInPaintOrder(node);
+        for (const Node* child : orderedChildren) {
+            drawNode(canvas, document, *child);
+        }
+    } else {
+        for (const auto& child : node.children) {
+            drawNode(canvas, document, *child);
+        }
     }
     if (clipsChildren) {
         canvas.restore();

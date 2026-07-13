@@ -63,3 +63,17 @@
   - 透明像素是否在与最终混合一致的线性空间中预乘。
   - RHI 纹理的 `TexCreate_SRGB` 是否造成额外一次解码。
   - Slate 的混合状态是否与 Skia Surface 的 `kPremul_SkAlphaType` 约定一致。
+
+## 显式 width:auto 让绝对定位文本背景丢失固有宽度
+
+- 现象：绝对定位文本省略 `width` 时背景能包住文字和左右 padding，明确写成 `width:auto` 后背景框却只剩 padding，文字从右侧溢出。
+- 影响范围：没有子节点、依靠自身文本测量尺寸，并显式设置 `width:auto` 或 `height:auto` 的文本叶节点。
+- 根因：样式层用 `std::optional<Length>` 同时表达“未声明”和“已声明 auto”。布局层原先以 `!style.width && !style.height` 判断是否安装 Yoga 文本测量函数，导致显式 `auto` 被误判成固定尺寸并跳过固有尺寸测量。
+- 最终方案：统一用 `needsIntrinsicMeasure()` 判断尺寸未声明或单位为 `LengthUnit::Auto`；宽高任一方向需要自动计算时都保留文本测量函数，固定的另一方向继续交给 Yoga 约束。
+- 验证方式：`SkuiInteractionTests` 使用绝对定位、显式 `width:auto`、左右 padding 的文本标签，分别检查文字右侧和底部仍属于背景框；修改前该用例稳定失败，修改后通过全部 CTest。
+- 可复用经验：使用可选值表达 CSS 时，“属性不存在”和“属性值为 auto”在级联层不同，但在固有尺寸计算中经常属于同一分支。布局判断应检查值的语义，不能只检查容器是否有值。
+- 快速检查清单：
+  - 显式 `auto` 是否被误当作固定尺寸。
+  - 测量函数的启用条件是否分别考虑宽度和高度。
+  - Yoga 返回的内容尺寸是否仍由 padding、border 和 box-sizing 正确扩展。
+  - 回归是否同时覆盖省略尺寸与显式 `auto`。

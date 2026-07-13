@@ -100,6 +100,7 @@
 | `display` | `flex`、`none` |
 | `visibility` | `visible`、`hidden` |
 | `position` | `relative`、`absolute` |
+| `z-index` | `auto`、正负整数 |
 | `left` / `top` / `right` / `bottom` | `px`、`%`、`auto` |
 | `width` / `height` | `px`、`%`、`auto` |
 | `min-width` / `min-height` | `px`、`%` |
@@ -114,6 +115,10 @@
 | `justify-content` | `flex-start`、`center`、`flex-end`、`space-between` |
 
 布局由 Yoga 计算。显式 `display:flex` 的容器使用浏览器默认的 `flex-direction: row`；未显式设置 `display` 的旧写法保持原有默认纵向排布。
+
+文本叶节点显式设置 `width:auto` / `height:auto` 时，与省略对应尺寸一致，使用文本固有尺寸参与布局；最终背景框会同时包含文本、padding 和 border。宽高均为固定值时不再执行固有尺寸测量。
+
+`z-index` 按同级子树排序，数值越大越晚绘制并优先接收鼠标事件；`auto` 等同于默认层级 `0`，相同层级保持 DOM 顺序。当前实现把每个直接子节点及其后代作为一个整体排序，不实现浏览器完整的跨层叠上下文提升；需要覆盖另一个父节点下的元素时，应把层级设置在两边参与比较的同级祖先上。
 
 显隐语义：
 

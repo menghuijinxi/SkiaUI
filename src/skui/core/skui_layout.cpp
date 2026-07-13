@@ -231,6 +231,10 @@ TextareaScrollMetrics textareaScrollMetrics(const Node& node) {
     };
 }
 
+bool needsIntrinsicMeasure(const std::optional<Length>& dimension) {
+    return !dimension || dimension->unit == LengthUnit::Auto;
+}
+
 void setOptional(YGNodeRef node,
                  void (*setter)(YGNodeRef, float),
                  void (*percentSetter)(YGNodeRef, float),
@@ -439,8 +443,12 @@ void LayoutEngine::buildYoga(Node& node, YGNodeRef yogaNode, bool isRoot) {
     setEdge(yogaNode, YGNodeStyleSetPosition, YGNodeStyleSetPositionPercent, YGNodeStyleSetPositionAuto, YGEdgeRight, s.inset.right);
     setEdge(yogaNode, YGNodeStyleSetPosition, YGNodeStyleSetPositionPercent, YGNodeStyleSetPositionAuto, YGEdgeBottom, s.inset.bottom);
 
-    const bool hasText = !node.text.empty() || !node.value.empty() || (node.tag == "input" && !node.placeholder.empty());
-    if (node.children.empty() && hasText && !s.width && !s.height) {
+    const bool hasText = !node.text.empty() ||
+                         !node.value.empty() ||
+                         (node.tag == "input" && !node.placeholder.empty());
+    const bool needsTextMeasure = needsIntrinsicMeasure(s.width) ||
+                                  needsIntrinsicMeasure(s.height);
+    if (node.children.empty() && hasText && needsTextMeasure) {
         YGNodeSetMeasureFunc(yogaNode, measureTextNode);
     }
 

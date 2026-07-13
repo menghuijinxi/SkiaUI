@@ -74,6 +74,13 @@ const UiFontResources& uiFontResources() {
     return resources;
 }
 
+template <typename NodePointer>
+void sortChildrenByZIndex(std::vector<NodePointer>& children) {
+    std::stable_sort(children.begin(), children.end(), [](NodePointer lhs, NodePointer rhs) {
+        return lhs->style.zIndex < rhs->style.zIndex;
+    });
+}
+
 } // namespace
 
 Theme Theme::dark() {
@@ -209,6 +216,32 @@ float stickyVisualOffsetY(const Node& node) {
         }
     }
     return 0.0f;
+}
+
+bool requiresZIndexOrdering(const Node& node) {
+    return std::any_of(node.children.begin(), node.children.end(), [](const auto& child) {
+        return child->style.zIndex != 0;
+    });
+}
+
+std::vector<const Node*> childrenInPaintOrder(const Node& node) {
+    std::vector<const Node*> children;
+    children.reserve(node.children.size());
+    for (const auto& child : node.children) {
+        children.push_back(child.get());
+    }
+    sortChildrenByZIndex(children);
+    return children;
+}
+
+std::vector<Node*> childrenInPaintOrder(Node& node) {
+    std::vector<Node*> children;
+    children.reserve(node.children.size());
+    for (auto& child : node.children) {
+        children.push_back(child.get());
+    }
+    sortChildrenByZIndex(children);
+    return children;
 }
 
 std::filesystem::path pathFromUtf8(std::string_view text) {

@@ -276,6 +276,7 @@ struct Style {
         bool display = false;
         bool visibility = false;
         bool position = false;
+        bool zIndex = false;
         bool flexDirection = false;
         bool flexWrap = false;
         bool rowGap = false;
@@ -337,6 +338,7 @@ struct Style {
     bool displayFlex = false;
     Visibility visibility = Visibility::Visible;
     Position position = Position::Relative;
+    int zIndex = 0;
     YGFlexDirection flexDirection = YGFlexDirectionColumn;
     YGWrap flexWrap = YGWrapNoWrap;
     std::optional<Length> rowGap;
@@ -713,6 +715,9 @@ bool shouldShowScrollbarX(const Node& node);
 bool shouldShowScrollbarY(const Node& node);
 Rect scrollContentClipRect(const Node& node);
 float stickyVisualOffsetY(const Node& node);
+bool requiresZIndexOrdering(const Node& node);
+std::vector<const Node*> childrenInPaintOrder(const Node& node);
+std::vector<Node*> childrenInPaintOrder(Node& node);
 std::filesystem::path pathFromUtf8(std::string_view text);
 std::string pathToUtf8(const std::filesystem::path& path);
 void parseInlineStyle(std::string_view declarations, Style& style);

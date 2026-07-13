@@ -52,9 +52,18 @@ Node* hitTest(Node& node, float x, float y) {
     }
     const float childX = x + node.scrollX;
     const float childY = y + node.scrollY - stickyOffsetY;
-    for (auto it = node.children.rbegin(); it != node.children.rend(); ++it) {
-        if (Node* hit = hitTest(**it, childX, childY)) {
-            return hit;
+    if (requiresZIndexOrdering(node)) {
+        const std::vector<Node*> orderedChildren = childrenInPaintOrder(node);
+        for (auto it = orderedChildren.rbegin(); it != orderedChildren.rend(); ++it) {
+            if (Node* hit = hitTest(**it, childX, childY)) {
+                return hit;
+            }
+        }
+    } else {
+        for (auto it = node.children.rbegin(); it != node.children.rend(); ++it) {
+            if (Node* hit = hitTest(**it, childX, childY)) {
+                return hit;
+            }
         }
     }
     return node.style.pointerEvents == PointerEvents::None ? nullptr : &node;
@@ -383,9 +392,18 @@ std::optional<ScrollbarHit> scrollbarHitTest(Node& node, float x, float y) {
 
     const float childX = x + node.scrollX;
     const float childY = y + node.scrollY;
-    for (auto it = node.children.rbegin(); it != node.children.rend(); ++it) {
-        if (std::optional<ScrollbarHit> hit = scrollbarHitTest(**it, childX, childY)) {
-            return hit;
+    if (requiresZIndexOrdering(node)) {
+        const std::vector<Node*> orderedChildren = childrenInPaintOrder(node);
+        for (auto it = orderedChildren.rbegin(); it != orderedChildren.rend(); ++it) {
+            if (std::optional<ScrollbarHit> hit = scrollbarHitTest(**it, childX, childY)) {
+                return hit;
+            }
+        }
+    } else {
+        for (auto it = node.children.rbegin(); it != node.children.rend(); ++it) {
+            if (std::optional<ScrollbarHit> hit = scrollbarHitTest(**it, childX, childY)) {
+                return hit;
+            }
         }
     }
     return std::nullopt;

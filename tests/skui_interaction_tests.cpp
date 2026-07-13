@@ -633,6 +633,103 @@ int main() {
         ok = expect(actionMoves == 1, "mouse move should be emitted for data-action elements") && ok;
     }
 
+    constexpr std::string_view zIndexHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      position: relative;
+      width: 140px;
+      height: 90px;
+      background-color: #000000;
+    }
+    .layer {
+      position: absolute;
+      top: 10px;
+      width: 40px;
+      height: 40px;
+    }
+    .higher {
+      left: 10px;
+      z-index: 2;
+      background-color: #ff0000;
+    }
+    .lower {
+      left: 10px;
+      z-index: -1;
+      background-color: #0000ff;
+    }
+    .tie-first {
+      left: 70px;
+      z-index: auto;
+      background-color: #00ff00;
+    }
+    .tie-last {
+      left: 70px;
+      background-color: #ffff00;
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <div id="higher" class="layer higher" data-action="higher"></div>
+    <div id="lower" class="layer lower" data-action="lower"></div>
+    <div id="tie-first" class="layer tie-first" data-action="tie-first"></div>
+    <div id="tie-last" class="layer tie-last" data-action="tie-last"></div>
+  </div>
+</body>
+</html>
+)html";
+    {
+        skui::Runtime zIndexRuntime(options);
+        zIndexRuntime.resize(kWidth, kHeight, 1.0f);
+        if (!zIndexRuntime.loadDocumentFromString(zIndexHtml, "")) {
+            std::cerr << "z-index document load failed: "
+                      << zIndexRuntime.lastError() << "\n";
+            return 1;
+        }
+
+        std::string clickedAction;
+        zIndexRuntime.setElementEventCallback([&](const skui::ElementEvent& event) {
+            if (event.type == skui::ElementEventType::Click) {
+                clickedAction = event.action;
+            }
+        });
+
+        uint32_t higherPixel = 0;
+        uint32_t tiePixel = 0;
+        ok = renderPixel(zIndexRuntime, 20, 20, higherPixel) && ok;
+        ok = renderPixel(zIndexRuntime, 80, 20, tiePixel) && ok;
+        ok = expect(higherPixel == solidColor(0xFF, 0x00, 0x00),
+                    "larger z-index should paint above a later sibling") && ok;
+        ok = expect(tiePixel == solidColor(0xFF, 0xFF, 0x00),
+                    "equal z-index should preserve DOM paint order") && ok;
+
+        sendMouse(zIndexRuntime, skui::EventType::MouseDown, 20.0f, 20.0f);
+        sendMouse(zIndexRuntime, skui::EventType::MouseUp, 20.0f, 20.0f);
+        ok = expect(clickedAction == "higher",
+                    "hit testing should follow z-index paint order") && ok;
+
+        ok = zIndexRuntime.setStyleById("higher", "z-index:-2;") && ok;
+        uint32_t updatedPixel = 0;
+        ok = renderPixel(zIndexRuntime, 20, 20, updatedPixel) && ok;
+        ok = expect(updatedPixel == solidColor(0x00, 0x00, 0xFF),
+                    "runtime z-index changes should update paint order") && ok;
+
+        clickedAction.clear();
+        sendMouse(zIndexRuntime, skui::EventType::MouseDown, 20.0f, 20.0f);
+        sendMouse(zIndexRuntime, skui::EventType::MouseUp, 20.0f, 20.0f);
+        ok = expect(clickedAction == "lower",
+                    "runtime z-index changes should update hit testing") && ok;
+
+        ok = zIndexRuntime.setStyleById("higher", "z-index:auto;") && ok;
+        uint32_t autoPixel = 0;
+        ok = renderPixel(zIndexRuntime, 20, 20, autoPixel) && ok;
+        ok = expect(autoPixel == solidColor(0xFF, 0x00, 0x00),
+                    "z-index:auto should restore the default zero layer") && ok;
+    }
+
     constexpr std::string_view eventMutationTransitionHtml = R"html(
 <!doctype html>
 <html>
@@ -1229,6 +1326,7 @@ int main() {
       position: absolute;
       left: 10px;
       top: 10px;
+      width: auto;
       padding: 10px;
       background-color: #ff0000;
       color: #ffffff;
