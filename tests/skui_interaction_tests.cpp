@@ -6,9 +6,11 @@
 #include "skui_win32_event_adapter.h"
 #endif
 
+#include "include/core/SkColorSpace.h"
 #include "include/core/SkData.h"
 #include "include/core/SkImageInfo.h"
 #include "include/core/SkPixmap.h"
+#include "include/core/SkSurface.h"
 #include "include/encode/SkJpegEncoder.h"
 #include "include/encode/SkPngEncoder.h"
 #include "include/encode/SkWebpEncoder.h"
@@ -123,6 +125,40 @@ bool renderPixel(skui::Runtime& runtime, int x, int y, uint32_t& out) {
     }
     out = pixelAt(pixels, x, y);
     return true;
+}
+
+bool renderPixelWithColorSpace(skui::Runtime& runtime,
+                               int x,
+                               int y,
+                               const sk_sp<SkColorSpace>& colorSpace,
+                               uint32_t& out) {
+    std::vector<uint32_t> pixels;
+    pixels.assign(static_cast<size_t>(kWidth) * kHeight, 0);
+    const SkImageInfo info = SkImageInfo::Make(kWidth,
+                                               kHeight,
+                                               kBGRA_8888_SkColorType,
+                                               kPremul_SkAlphaType,
+                                               colorSpace);
+    const sk_sp<SkSurface> surface = SkSurfaces::WrapPixels(
+        info,
+        pixels.data(),
+        static_cast<size_t>(kWidth) * sizeof(uint32_t));
+    if (!surface) {
+        std::cerr << "linear render surface creation failed\n";
+        return false;
+    }
+
+    runtime.render(*surface->getCanvas());
+    out = pixelAt(pixels, x, y);
+    return true;
+}
+
+bool renderLinearPixel(skui::Runtime& runtime, int x, int y, uint32_t& out) {
+    return renderPixelWithColorSpace(runtime, x, y, SkColorSpace::MakeSRGBLinear(), out);
+}
+
+bool renderSrgbPixel(skui::Runtime& runtime, int x, int y, uint32_t& out) {
+    return renderPixelWithColorSpace(runtime, x, y, SkColorSpace::MakeSRGB(), out);
 }
 
 bool renderPixelAt(skui::Runtime& runtime, int width, int height, int x, int y, uint32_t& out) {
@@ -292,6 +328,21 @@ bool writeSolidPngFixture(const std::filesystem::path& path,
 
 bool writeBluePngFixture(const std::filesystem::path& path) {
     return writeSolidPngFixture(path, 0x00, 0x00, 0xFF);
+}
+
+bool writeSemiTransparentSrgbPngFixture(const std::filesystem::path& path) {
+    static constexpr std::array<unsigned char, 16> kRgba = {
+        166, 255, 253, 128, 166, 255, 253, 128,
+        166, 255, 253, 128, 166, 255, 253, 128,
+    };
+    const SkImageInfo info = SkImageInfo::Make(2,
+                                               2,
+                                               kRGBA_8888_SkColorType,
+                                               kUnpremul_SkAlphaType,
+                                               SkColorSpace::MakeSRGB());
+    const SkPixmap pixmap(info, kRgba.data(), 2u * 4u);
+    SkPngEncoder::Options options;
+    return writeSkDataFixture(path, SkPngEncoder::Encode(pixmap, options));
 }
 
 bool writeSpritePngFixture(const std::filesystem::path& path) {
@@ -3070,6 +3121,65 @@ int main() {
                     std::string("async bitmap image load should request redraw: ") + fixture.fileName) && ok;
         ok = expect(isMostlyRed(imageAfter),
                     std::string("async bitmap image should render after loading: ") + fixture.fileName) && ok;
+    }
+
+    {
+        const std::filesystem::path fixturePath =
+            imageFixtureDir / "semi-transparent-srgb.png";
+        ok = expect(writeSemiTransparentSrgbPngFixture(fixturePath),
+                    "semi-transparent sRGB fixture should be written") && ok;
+
+        skui::RuntimeOptions linearImageOptions = options;
+        linearImageOptions.clearColor = SK_ColorTRANSPARENT;
+        skui::Runtime linearImageRuntime(linearImageOptions);
+        linearImageRuntime.resize(kWidth, kHeight, 1.0f);
+        const std::string imageHtml = imageHtmlForSource(
+            "semi-transparent-srgb.png");
+        if (!linearImageRuntime.loadDocumentFromString(
+                imageHtml,
+                imageFixtureDir.string())) {
+            std::cerr << "linear image load failed: "
+                      << linearImageRuntime.lastError() << "\n";
+            return 1;
+        }
+
+        uint32_t pendingPixel = 0;
+        uint32_t linearPixel = 0;
+        uint32_t srgbPixel = 0;
+        ok = renderLinearPixel(linearImageRuntime, 20, 20, pendingPixel) && ok;
+        waitForDirty(linearImageRuntime);
+        ok = renderLinearPixel(linearImageRuntime, 20, 20, linearPixel) && ok;
+        ok = renderSrgbPixel(linearImageRuntime, 20, 20, srgbPixel) && ok;
+
+        const unsigned alpha = (linearPixel >> 24u) & 0xFFu;
+        const unsigned red = (linearPixel >> 16u) & 0xFFu;
+        const unsigned green = (linearPixel >> 8u) & 0xFFu;
+        const unsigned blue = linearPixel & 0xFFu;
+        const bool colorMatched = alpha >= 253u && alpha <= 255u &&
+                                  red >= 47u && red <= 52u &&
+                                  green >= 126u && green <= 130u &&
+                                  blue >= 124u && blue <= 129u;
+        ok = expect(colorMatched,
+                    std::string("sRGB bitmap should convert to linear premultiplied pixels; actual=") +
+                        std::to_string(red) + "," +
+                        std::to_string(green) + "," +
+                        std::to_string(blue) + "," +
+                        std::to_string(alpha)) && ok;
+
+        const unsigned srgbAlpha = (srgbPixel >> 24u) & 0xFFu;
+        const unsigned srgbRed = (srgbPixel >> 16u) & 0xFFu;
+        const unsigned srgbGreen = (srgbPixel >> 8u) & 0xFFu;
+        const unsigned srgbBlue = srgbPixel & 0xFFu;
+        const bool srgbColorMatched = srgbAlpha >= 253u && srgbAlpha <= 255u &&
+                                      srgbRed >= 81u && srgbRed <= 85u &&
+                                      srgbGreen >= 126u && srgbGreen <= 130u &&
+                                      srgbBlue >= 125u && srgbBlue <= 129u;
+        ok = expect(srgbColorMatched,
+                    std::string("sRGB bitmap should preserve browser-style sRGB compositing; actual=") +
+                        std::to_string(srgbRed) + "," +
+                        std::to_string(srgbGreen) + "," +
+                        std::to_string(srgbBlue) + "," +
+                        std::to_string(srgbAlpha)) && ok;
     }
 
     {

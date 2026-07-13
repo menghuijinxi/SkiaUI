@@ -3,6 +3,7 @@
 #include "perf_trace.h"
 
 #include "include/core/SkCanvas.h"
+#include "include/core/SkColorSpace.h"
 #include "include/core/SkData.h"
 #include "include/core/SkImage.h"
 #include "include/core/SkImageInfo.h"
@@ -1044,8 +1045,11 @@ sk_sp<SkImage> SkiaRenderer::bitmapImageForEntry(const std::string& path, const 
         return nullptr;
     }
 
-    const SkImageInfo info =
-        SkImageInfo::Make(entry.width, entry.height, kBGRA_8888_SkColorType, kPremul_SkAlphaType);
+    const SkImageInfo info = SkImageInfo::Make(entry.width,
+                                               entry.height,
+                                               kBGRA_8888_SkColorType,
+                                               kPremul_SkAlphaType,
+                                               SkColorSpace::MakeSRGB());
     SkPixmap pixmap(info, entry.pixels->data(), entry.rowBytes);
     sk_sp<SkImage> image = SkImages::RasterFromPixmapCopy(pixmap);
     if (!image || !bitmapState_) {
@@ -1338,7 +1342,11 @@ SkiaRenderer::BitmapImageEntry SkiaRenderer::loadBitmapImage(const std::string& 
         return entry;
     }
 
-    const SkImageInfo targetInfo = SkImageInfo::Make(width, height, kBGRA_8888_SkColorType, kPremul_SkAlphaType);
+    const SkImageInfo targetInfo = SkImageInfo::Make(width,
+                                                     height,
+                                                     kBGRA_8888_SkColorType,
+                                                     kPremul_SkAlphaType,
+                                                     SkColorSpace::MakeSRGB());
     const SkCodec::Result result = codec->getPixels(targetInfo, pixels->data(), rowBytes);
     if (result != SkCodec::kSuccess && result != SkCodec::kIncompleteInput) {
         return entry;

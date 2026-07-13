@@ -50,3 +50,16 @@
 - 最终方案：滚轮在滚动偏移发生变化、命中滚动条或命中 `data-action`、输入控件、`selectable` 等可交互目标时返回 `true`。普通非交互元素仍只在实际推动可滚动祖先时消费滚轮。
 - 验证方式：`SkuiInteractionTests` 分别覆盖透明空白、普通装饰节点、`data-action`、运行时关闭和恢复 `pointer-events`，并断言未发生滚动位移时的返回值。
 - 可复用经验：事件消费不能只等同于视觉或布局状态是否变化。叠层 UI 的交互边界本身就是宿主输入路由契约，尤其要覆盖“无可滚动内容”和“到达边界”这两类零位移情况。
+
+## UE 中半透明图片颜色明显变暗
+
+- 现象：同一张带 sRGB 配置和半透明通道的 PNG，在 UE 原生 UI 中呈亮青色，在 SkiaUI 中却偏灰、偏暗；不透明图片差异相对不明显。
+- 根因：图片按 sRGB 数值解码后，在没有颜色空间信息的情况下先进行预乘；输出纹理又被 UE 标记为 sRGB，采样时再次执行 sRGB 到线性的转换，等价于在错误的空间中预乘透明度。
+- 处理方式：位图解码和缓存图片显式标记 `SkColorSpace::MakeSRGB()`。若目标是匹配浏览器和 UE Slate 的 UI 观感，UE GPU surface 使用 `SkColorSpace::MakeSRGB()`，承载 surface 的 RHI 纹理不设置 `TexCreate_SRGB`，Slate Viewport 同时设置 `ESlateDrawEffect::PreMultipliedAlpha | ESlateDrawEffect::NoGamma`。这样既不会重复乘透明度，也不会把已经编码为 sRGB 的预乘像素再次做 Gamma 转换。
+- 回归验证：把 sRGB 像素 `(166, 255, 253, 128)` 绘制到黑色背景时，线性 surface 的结果应接近 `(48, 128, 126, 255)`，sRGB UI surface 的结果应接近浏览器合成值 `(83, 128, 127, 255)`。两种输出必须分别测试，不能用线性结果推断 Slate UI 的最终观感。
+- 排查清单：
+  - PNG 是否携带 sRGB、gAMA 或 ICC 信息，解码目标是否保留明确的颜色空间。
+  - Skia surface 的颜色空间是否和宿主纹理的采样及 Gamma 转换语义一致。
+  - 透明像素是否在与最终混合一致的线性空间中预乘。
+  - RHI 纹理的 `TexCreate_SRGB` 是否造成额外一次解码。
+  - Slate 的混合状态是否与 Skia Surface 的 `kPremul_SkAlphaType` 约定一致。
