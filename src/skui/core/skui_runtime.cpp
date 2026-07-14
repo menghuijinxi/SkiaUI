@@ -278,6 +278,60 @@ bool canScrollY(const Node& node) {
     return shouldShowScrollbarY(node) && scrollMaxY(node) > 0.0f;
 }
 
+bool allowsProgrammaticScrollX(const Node& node) {
+    return node.tag == "textarea" ||
+           node.style.overflowX == Overflow::Auto ||
+           node.style.overflowX == Overflow::Scroll;
+}
+
+bool allowsProgrammaticScrollY(const Node& node) {
+    return node.tag == "textarea" ||
+           node.style.overflowY == Overflow::Auto ||
+           node.style.overflowY == Overflow::Scroll;
+}
+
+bool isProgrammaticScrollContainer(const Node& node) {
+    return allowsProgrammaticScrollX(node) || allowsProgrammaticScrollY(node);
+}
+
+ScrollState scrollStateForNode(const Node& node) {
+    return {
+        node.scrollX,
+        node.scrollY,
+        scrollMaxX(node),
+        scrollMaxY(node),
+        scrollViewportWidth(node),
+        scrollViewportHeight(node),
+        node.scrollContentWidth,
+        node.scrollContentHeight,
+    };
+}
+
+bool setNodeScrollOffset(Node& node, float scrollX, float scrollY) {
+    const float nextX = allowsProgrammaticScrollX(node)
+                            ? clampf(scrollX, 0.0f, scrollMaxX(node))
+                            : node.scrollX;
+    const float nextY = allowsProgrammaticScrollY(node)
+                            ? clampf(scrollY, 0.0f, scrollMaxY(node))
+                            : node.scrollY;
+    const bool changed = nextX != node.scrollX || nextY != node.scrollY;
+    node.scrollX = nextX;
+    node.scrollY = nextY;
+    return changed;
+}
+
+float nearestVisibilityDelta(float start,
+                             float end,
+                             float viewportStart,
+                             float viewportEnd) {
+    const bool before = start < viewportStart;
+    const bool after = end > viewportEnd;
+    if (before == after) {
+        return 0.0f;
+    }
+    return before ? start - viewportStart : end - viewportEnd;
+}
+
 enum class ScrollbarAxis {
     None,
     Horizontal,
@@ -2120,6 +2174,65 @@ public:
         return false;
     }
 
+    void finishProgrammaticScroll(const std::vector<Node*>& scrolledNodes) {
+        if (scrolledNodes.empty()) {
+            return;
+        }
+
+        dirty = true;
+        if (!options.onElementEvent) {
+            return;
+        }
+
+        std::vector<ElementEvent> events;
+        events.reserve(scrolledNodes.size());
+        const Event source;
+        for (const Node* node : scrolledNodes) {
+            events.push_back(makeElementEvent(
+                ElementEventType::Scroll,
+                *node,
+                source,
+                0.0f,
+                0.0f));
+        }
+        for (const ElementEvent& event : events) {
+            options.onElementEvent(event);
+        }
+    }
+
+    void scrollElementIntoView(Node& target, std::vector<Node*>& scrolledNodes) {
+        for (Node* ancestor = target.parent; ancestor; ancestor = ancestor->parent) {
+            if (!isProgrammaticScrollContainer(*ancestor)) {
+                continue;
+            }
+
+            const float targetLeft = visualX(target);
+            const float targetTop = visualY(target);
+            const float viewportLeft = visualX(*ancestor);
+            const float viewportTop = visualY(*ancestor);
+            const float deltaX = allowsProgrammaticScrollX(*ancestor)
+                                     ? nearestVisibilityDelta(
+                                           targetLeft,
+                                           targetLeft + target.layout.w,
+                                           viewportLeft,
+                                           viewportLeft + scrollViewportWidth(*ancestor))
+                                     : 0.0f;
+            const float deltaY = allowsProgrammaticScrollY(*ancestor)
+                                     ? nearestVisibilityDelta(
+                                           targetTop,
+                                           targetTop + target.layout.h,
+                                           viewportTop,
+                                           viewportTop + scrollViewportHeight(*ancestor))
+                                     : 0.0f;
+            if (setNodeScrollOffset(
+                    *ancestor,
+                    ancestor->scrollX + deltaX,
+                    ancestor->scrollY + deltaY)) {
+                scrolledNodes.push_back(ancestor);
+            }
+        }
+    }
+
     bool advanceAnimations() {
         if ((activeAnimations.empty() && keyframeAnimations.empty()) ||
             !document.root) {
@@ -3407,6 +3520,71 @@ bool Runtime::setConsumesEventsById(std::string_view id, bool consumesEvents) {
     impl_->lastError.clear();
     impl_->finishDocumentMutation();
     return true;
+}
+
+bool Runtime::setScrollOffsetById(std::string_view id, float scrollX, float scrollY) {
+    if (!impl_->hasDocument || !impl_->document.root || id.empty() ||
+        !std::isfinite(scrollX) || !std::isfinite(scrollY)) {
+        return false;
+    }
+    Node* node = findById(*impl_->document.root, id);
+    if (!node || !isProgrammaticScrollContainer(*node)) {
+        return false;
+    }
+
+    std::vector<Node*> scrolledNodes;
+    if (setNodeScrollOffset(*node, scrollX, scrollY)) {
+        scrolledNodes.push_back(node);
+    }
+    impl_->finishProgrammaticScroll(scrolledNodes);
+    return true;
+}
+
+bool Runtime::scrollById(std::string_view id, float deltaX, float deltaY) {
+    if (!impl_->hasDocument || !impl_->document.root || id.empty() ||
+        !std::isfinite(deltaX) || !std::isfinite(deltaY)) {
+        return false;
+    }
+    Node* node = findById(*impl_->document.root, id);
+    if (!node || !isProgrammaticScrollContainer(*node)) {
+        return false;
+    }
+
+    std::vector<Node*> scrolledNodes;
+    if (setNodeScrollOffset(
+            *node,
+            node->scrollX + deltaX,
+            node->scrollY + deltaY)) {
+        scrolledNodes.push_back(node);
+    }
+    impl_->finishProgrammaticScroll(scrolledNodes);
+    return true;
+}
+
+bool Runtime::scrollIntoViewById(std::string_view id) {
+    if (!impl_->hasDocument || !impl_->document.root || id.empty()) {
+        return false;
+    }
+    Node* node = findById(*impl_->document.root, id);
+    if (!node) {
+        return false;
+    }
+
+    std::vector<Node*> scrolledNodes;
+    impl_->scrollElementIntoView(*node, scrolledNodes);
+    impl_->finishProgrammaticScroll(scrolledNodes);
+    return true;
+}
+
+std::optional<ScrollState> Runtime::scrollStateById(std::string_view id) const {
+    if (!impl_->hasDocument || !impl_->document.root || id.empty()) {
+        return std::nullopt;
+    }
+    const Node* node = findById(*impl_->document.root, id);
+    if (!node || !isProgrammaticScrollContainer(*node)) {
+        return std::nullopt;
+    }
+    return scrollStateForNode(*node);
 }
 
 bool Runtime::hasClassById(std::string_view id, std::string_view className) const {

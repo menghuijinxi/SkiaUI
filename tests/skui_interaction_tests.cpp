@@ -33,6 +33,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -4606,11 +4607,11 @@ int main() {
 </head>
 <body>
   <div class="root">
-    <div class="vertical">
-      <div class="top"></div>
-      <div class="bottom"></div>
+    <div id="vertical" class="vertical" data-action="vertical-scroll">
+      <div id="top" class="top"></div>
+      <div id="bottom" class="bottom"></div>
     </div>
-    <div class="horizontal">
+    <div id="horizontal" class="horizontal" data-action="horizontal-scroll">
       <div class="wide"></div>
     </div>
   </div>
@@ -4668,6 +4669,132 @@ int main() {
     ok = expect(horizontalInitial == solidColor(0x11, 0x11, 0x11), "overflow-x container should clip horizontal children before scrolling") && ok;
     ok = expect(horizontalScrolled == solidColor(0x77, 0x88, 0x99), "Shift+mouse wheel should scroll horizontal overflow content") && ok;
     ok = expect(verticalTrackScrolled == solidColor(0xAB, 0xCD, 0xEF), "clicking vertical scrollbar track should update scroll position") && ok;
+
+    std::vector<skui::ElementEvent> programmaticScrollEvents;
+    skui::RuntimeOptions programmaticScrollOptions = options;
+    programmaticScrollOptions.onElementEvent = [&](const skui::ElementEvent& event) {
+        if (event.type == skui::ElementEventType::Scroll) {
+            programmaticScrollEvents.push_back(event);
+        }
+    };
+    skui::Runtime programmaticScrollRuntime(programmaticScrollOptions);
+    programmaticScrollRuntime.resize(kWidth, kHeight, 1.0f);
+    if (!programmaticScrollRuntime.loadDocumentFromString(scrollHtml, "")) {
+        std::cerr << "programmatic scroll load failed: "
+                  << programmaticScrollRuntime.lastError() << "\n";
+        return 1;
+    }
+
+    const std::optional<skui::ScrollState> initialVerticalState =
+        programmaticScrollRuntime.scrollStateById("vertical");
+    ok = expect(initialVerticalState.has_value(),
+                "scrollStateById should expose scroll containers") && ok;
+    if (initialVerticalState) {
+        ok = expect(initialVerticalState->scrollY == 0.0f &&
+                        initialVerticalState->maxScrollY == 60.0f &&
+                        initialVerticalState->viewportHeight == 40.0f &&
+                        initialVerticalState->contentHeight == 100.0f,
+                    "scroll state should include offsets, range, viewport, and content") && ok;
+    }
+    ok = expect(!programmaticScrollRuntime.scrollStateById("top").has_value(),
+                "scrollStateById should reject non-scroll containers") && ok;
+    ok = expect(!programmaticScrollRuntime.scrollStateById("missing").has_value(),
+                "scrollStateById should reject missing ids") && ok;
+
+    ok = expect(programmaticScrollRuntime.setScrollOffsetById("vertical", 0.0f, 1000.0f),
+                "setScrollOffsetById should accept a scroll container") && ok;
+    const std::optional<skui::ScrollState> clampedVerticalState =
+        programmaticScrollRuntime.scrollStateById("vertical");
+    ok = expect(clampedVerticalState && clampedVerticalState->scrollY == 60.0f,
+                "setScrollOffsetById should clamp to the maximum range") && ok;
+    ok = expect(programmaticScrollEvents.size() == 1 &&
+                    programmaticScrollEvents.back().id == "vertical" &&
+                    programmaticScrollEvents.back().scrollY == 60.0f,
+                "programmatic offset changes should emit a Scroll event") && ok;
+
+    ok = expect(programmaticScrollRuntime.setScrollOffsetById("vertical", 0.0f, 60.0f),
+                "setting the current scroll offset should still succeed") && ok;
+    ok = expect(programmaticScrollEvents.size() == 1,
+                "unchanged programmatic offsets should not emit Scroll events") && ok;
+
+    ok = expect(programmaticScrollRuntime.scrollById("vertical", 0.0f, -15.0f),
+                "scrollById should accept relative offsets") && ok;
+    const std::optional<skui::ScrollState> relativeVerticalState =
+        programmaticScrollRuntime.scrollStateById("vertical");
+    ok = expect(relativeVerticalState && relativeVerticalState->scrollY == 45.0f,
+                "scrollById should update the current offset") && ok;
+    ok = expect(!programmaticScrollRuntime.setScrollOffsetById(
+                    "vertical",
+                    std::numeric_limits<float>::infinity(),
+                    0.0f),
+                "programmatic scrolling should reject non-finite offsets") && ok;
+    ok = expect(!programmaticScrollRuntime.scrollById("top", 0.0f, 10.0f),
+                "scrollById should reject non-scroll containers") && ok;
+
+    ok = programmaticScrollRuntime.setScrollOffsetById("vertical", 0.0f, 0.0f) && ok;
+    const size_t eventsBeforeIntoView = programmaticScrollEvents.size();
+    ok = expect(programmaticScrollRuntime.scrollIntoViewById("bottom"),
+                "scrollIntoViewById should accept an existing element") && ok;
+    const std::optional<skui::ScrollState> intoViewState =
+        programmaticScrollRuntime.scrollStateById("vertical");
+    ok = expect(intoViewState && intoViewState->scrollY == 60.0f,
+                "scrollIntoViewById should reveal an element using nearest alignment") && ok;
+    ok = expect(programmaticScrollEvents.size() == eventsBeforeIntoView + 1,
+                "scrollIntoViewById should emit Scroll for the changed ancestor") && ok;
+    ok = expect(programmaticScrollRuntime.scrollIntoViewById("bottom"),
+                "scrollIntoViewById should succeed when the element is already visible") && ok;
+    ok = expect(programmaticScrollEvents.size() == eventsBeforeIntoView + 1,
+                "already visible elements should not emit duplicate Scroll events") && ok;
+    ok = expect(!programmaticScrollRuntime.scrollIntoViewById("missing"),
+                "scrollIntoViewById should reject missing ids") && ok;
+
+    constexpr std::string_view nestedScrollHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root { position:relative; width:140px; height:120px; background-color:#000000; }
+    .outer { position:absolute; left:10px; top:10px; width:80px; height:60px; overflow:auto; }
+    .inner { position:absolute; left:0px; top:80px; width:60px; height:40px; overflow:auto; }
+    .target { position:absolute; left:0px; top:70px; width:20px; height:20px; }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <div id="outer" class="outer" data-action="outer-scroll">
+      <div id="inner" class="inner" data-action="inner-scroll">
+        <div id="nested-target" class="target"></div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
+)html";
+    std::vector<std::string> nestedScrollEventIds;
+    skui::RuntimeOptions nestedScrollOptions = options;
+    nestedScrollOptions.onElementEvent = [&](const skui::ElementEvent& event) {
+        if (event.type == skui::ElementEventType::Scroll) {
+            nestedScrollEventIds.push_back(event.id);
+        }
+    };
+    skui::Runtime nestedScrollRuntime(nestedScrollOptions);
+    nestedScrollRuntime.resize(kWidth, 120, 1.0f);
+    if (!nestedScrollRuntime.loadDocumentFromString(nestedScrollHtml, "")) {
+        std::cerr << "nested programmatic scroll load failed: "
+                  << nestedScrollRuntime.lastError() << "\n";
+        return 1;
+    }
+    ok = expect(nestedScrollRuntime.scrollIntoViewById("nested-target"),
+                "scrollIntoViewById should handle nested scroll containers") && ok;
+    const std::optional<skui::ScrollState> innerScrollState =
+        nestedScrollRuntime.scrollStateById("inner");
+    const std::optional<skui::ScrollState> outerScrollState =
+        nestedScrollRuntime.scrollStateById("outer");
+    ok = expect(innerScrollState && innerScrollState->scrollY == 50.0f &&
+                    outerScrollState && outerScrollState->scrollY == 60.0f,
+                "scrollIntoViewById should adjust every scrollable ancestor") && ok;
+    ok = expect(nestedScrollEventIds == std::vector<std::string>{"inner", "outer"},
+                "nested scroll events should follow inner-to-outer order") && ok;
 
     std::vector<float> continuousScrollOffsets;
     skui::RuntimeOptions continuousScrollOptions = options;

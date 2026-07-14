@@ -518,6 +518,32 @@ SkUI 支持浏览器常见的窗口化思路：滚动范围按完整数据尺寸
 }
 ```
 
+### 程序化滚动定位
+
+可以通过元素 id 直接设置或查询滚动位置：
+
+```cpp
+ui.setScrollOffsetById("table", 320.0f, 1200.0f);
+ui.scrollById("table", 0.0f, 40.0f);
+ui.scrollIntoViewById("row-120");
+
+if (const std::optional<skui::ScrollState> state =
+        ui.scrollStateById("table")) {
+    const float progress = state->maxScrollY > 0.0f
+        ? state->scrollY / state->maxScrollY
+        : 0.0f;
+}
+```
+
+`setScrollOffsetById` 会把坐标裁剪到有效范围；`scrollById` 使用当前偏移增加相对距离；`scrollIntoViewById` 使用 nearest 对齐，并依次调整目标元素的所有可滚动祖先。位置没有变化时不会重复派发 `Scroll` 事件。
+
+在 `USkiaUiLuauWidget` 中对应的 Blueprint/Luau 接口为：
+
+- `SetSkiaUiScrollOffsetById`
+- `ScrollSkiaUiById`
+- `ScrollSkiaUiIntoViewById`
+- `GetSkiaUiScrollStateById`
+
 这个模式适合聊天记录、大表格、大列表。不要为几十万行真实创建几十万个 DOM 节点。
 
 ### 单维列表和聊天记录

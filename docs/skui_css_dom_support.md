@@ -232,6 +232,22 @@ runtime.render(canvas);
 - 虚拟滚动通过 `data-virtual-width` / `data-virtual-height` 设置内容尺寸，实际 DOM 可以只保留可见池化节点。
 - 设置虚拟尺寸后，滚动范围以 `data-virtual-width` / `data-virtual-height` 为准，不会被池化节点临时移动到很远位置撑大。
 - 滚动发生时会向 `data-action` 节点发出 `Scroll` 事件，事件中包含 `scrollX` / `scrollY`。
+- 运行时可按元素 id 读取滚动状态、设置绝对偏移、相对滚动，或把后代元素滚入所有可滚动祖先的可视区域。
+
+程序化定位接口：
+
+```cpp
+runtime.setScrollOffsetById("message-list", 0.0f, 240.0f);
+runtime.scrollById("message-list", 0.0f, 40.0f);
+runtime.scrollIntoViewById("message-120");
+
+if (const std::optional<skui::ScrollState> state =
+        runtime.scrollStateById("message-list")) {
+    // state->scrollY / state->maxScrollY / state->viewportHeight / state->contentHeight
+}
+```
+
+偏移会限制在有效滚动范围内。只有位置实际变化时才会重绘并派发 `Scroll` 事件；`scrollIntoViewById` 使用 nearest 对齐，并按从内到外的顺序处理嵌套滚动容器。
 
 虚拟滚动推荐分两层使用：
 

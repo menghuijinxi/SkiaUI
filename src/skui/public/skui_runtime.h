@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -107,6 +108,17 @@ struct RuntimeUpdates {
     std::vector<AttributeUpdate> attributes;
 };
 
+struct ScrollState {
+    float scrollX = 0.0f;
+    float scrollY = 0.0f;
+    float maxScrollX = 0.0f;
+    float maxScrollY = 0.0f;
+    float viewportWidth = 0.0f;
+    float viewportHeight = 0.0f;
+    float contentWidth = 0.0f;
+    float contentHeight = 0.0f;
+};
+
 struct RuntimeOptions {
     std::string assetRoot;
     float scale = 1.0f;
@@ -173,6 +185,10 @@ public:
     bool removeElementById(std::string_view id);
     bool setVisibleById(std::string_view id, bool visible);
     bool setConsumesEventsById(std::string_view id, bool consumesEvents);
+    bool setScrollOffsetById(std::string_view id, float scrollX, float scrollY);
+    bool scrollById(std::string_view id, float deltaX, float deltaY);
+    bool scrollIntoViewById(std::string_view id);
+    [[nodiscard]] std::optional<ScrollState> scrollStateById(std::string_view id) const;
     [[nodiscard]] bool hasClassById(std::string_view id, std::string_view className) const;
     void setElementEventCallback(ElementEventCallback callback);
 

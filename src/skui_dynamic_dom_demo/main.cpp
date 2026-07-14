@@ -288,6 +288,13 @@ void toggleFade(skui::Runtime& runtime, DemoState& state) {
     refreshDemoStatus(runtime, state);
 }
 
+void scrollToMessage8(skui::Runtime& runtime) {
+    const bool found = runtime.scrollIntoViewById("message-8");
+    runtime.setTextById("demo-status",
+                        found ? "Scrolled message-viewport to Message 8."
+                              : "Message 8 is unavailable.");
+}
+
 void installInteractions(skui::Runtime& runtime, DemoState& state) {
     runtime.setElementEventCallback([&runtime, &state](const skui::ElementEvent& event) {
         if (event.type != skui::ElementEventType::Click || event.action.empty()) {
@@ -313,6 +320,8 @@ void installInteractions(skui::Runtime& runtime, DemoState& state) {
             toggleMotion(runtime, state);
         } else if (event.action == "toggle-fade") {
             toggleFade(runtime, state);
+        } else if (event.action == "scroll-to-message-8") {
+            scrollToMessage8(runtime);
         }
     });
 }
