@@ -33,6 +33,8 @@ struct DemoState {
     bool messageVisibilityHidden = false;
     bool motionEnabled = false;
     bool fadeDimmed = false;
+    bool gradientFullOpacity = false;
+    bool disabledSample = true;
     int nextMessageId = 9;
     std::vector<int> messageIds = {1, 2, 3, 4, 5, 6, 7, 8};
 };
@@ -295,6 +297,32 @@ void scrollToMessage8(skui::Runtime& runtime) {
                               : "Message 8 is unavailable.");
 }
 
+void toggleGradientOpacity(skui::Runtime& runtime, DemoState& state) {
+    state.gradientFullOpacity = !state.gradientFullOpacity;
+    const std::string_view opacity = state.gradientFullOpacity ? "1" : "0.1";
+    runtime.setStyleById("gradient-opacity-face", "opacity:" + std::string(opacity) + ";");
+    runtime.setTextById("gradient-opacity-label", "Gradient Opacity: " + std::string(opacity));
+    runtime.setTextById("demo-status", "Gradient sample opacity: " + std::string(opacity) + ".");
+}
+
+void toggleDisabledSample(skui::Runtime& runtime, DemoState& state) {
+    state.disabledSample = !state.disabledSample;
+    if (state.disabledSample) {
+        runtime.setAttributeById("disabled-filter-sample", "disabled", "disabled");
+    } else {
+        runtime.removeAttributeById("disabled-filter-sample", "disabled");
+    }
+    runtime.setTextById(
+        "disabled-toggle-label",
+        state.disabledSample ? "Enable Disabled Sample" : "Disable Filter Sample");
+    runtime.setTextById(
+        "disabled-filter-sample-label",
+        state.disabledSample ? "Disabled: filtered" : "Enabled: click me");
+    runtime.setTextById(
+        "demo-status",
+        state.disabledSample ? "Disabled sample blocks clicks." : "Filter sample enabled.");
+}
+
 void installInteractions(skui::Runtime& runtime, DemoState& state) {
     runtime.setElementEventCallback([&runtime, &state](const skui::ElementEvent& event) {
         if (event.type != skui::ElementEventType::Click || event.action.empty()) {
@@ -322,6 +350,12 @@ void installInteractions(skui::Runtime& runtime, DemoState& state) {
             toggleFade(runtime, state);
         } else if (event.action == "scroll-to-message-8") {
             scrollToMessage8(runtime);
+        } else if (event.action == "toggle-gradient-opacity") {
+            toggleGradientOpacity(runtime, state);
+        } else if (event.action == "toggle-disabled-sample") {
+            toggleDisabledSample(runtime, state);
+        } else if (event.action == "disabled-filter-sample") {
+            runtime.setTextById("demo-status", "Enabled filter sample clicked.");
         }
     });
 }

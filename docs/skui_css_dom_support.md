@@ -41,9 +41,10 @@
 | `placeholder` | 输入框占位文本 |
 | `href` | `selectable` 内 `<a>` 的链接目标；点击时转换为 `open-url:` 动作 |
 | `src` | `img` 的资源路径 |
+| `disabled` | 禁用当前节点及其子树的指针、文本选择和输入交互，并应用默认灰度降亮度效果 |
 | `data-virtual-width` / `data-virtual-height` | 虚拟滚动内容尺寸，不需要真实子元素撑开 |
 
-布尔属性如 `disabled`、`checked`、`selected` 当前主要用于 CSS 伪类匹配，不等同于完整浏览器控件状态。
+`disabled` 同时参与 `:disabled` 伪类匹配和实际交互禁用；`checked`、`selected` 当前主要用于 CSS 伪类匹配，不等同于完整浏览器控件状态。
 
 ## CSS 选择器
 
@@ -144,6 +145,15 @@
 | `border-top-left-radius` / `border-top-right-radius` / `border-bottom-right-radius` / `border-bottom-left-radius` | 数字或 `px` |
 | `font-size` | 数字或 `px` |
 | `font-weight` | `bold`、`600`、`700` 为粗体；其他为常规 |
+| `filter` | `none`，或按顺序组合 `grayscale(...)`、`brightness(...)`；参数支持非负数字和百分比 |
+
+`filter` 会在节点及其完整子树绘制完成后统一处理，因此背景、图片、文字、边框和不规则透明区域会一起变色，不会额外生成矩形遮罩。当前只实现颜色矩阵类滤镜，不支持模糊、阴影和滤镜动画。例如：
+
+```css
+.disabled-look {
+  filter: grayscale(100%) brightness(72%);
+}
+```
 
 颜色支持：
 
@@ -262,6 +272,8 @@ if (const std::optional<skui::ScrollState> state =
 | `cursor` | `auto`、`default`、`pointer`、`text`、`ew-resize`、`col-resize`、`e-resize`、`w-resize`、`ns-resize`、`row-resize`、`n-resize`、`s-resize`、`move`、`crosshair`、`not-allowed` |
 
 `cursor` 会继承。Win32 宿主会把 `skui::Cursor` 映射到系统鼠标光标。
+
+带 `disabled` 属性的节点会禁用整棵子树：不进入 `:hover` / `:active`，不派发鼠标和点击事件，也不能编辑或选择文字。命中禁用节点时事件仍由 UI 消费，不会穿透到其下方的 UI 或 3D 场景。默认外观为 `grayscale(100%) brightness(72%)`，可以通过普通规则或 `:disabled` 规则覆盖，例如 `button:disabled { filter: none; }`。
 
 ### 指针事件与输入透传
 

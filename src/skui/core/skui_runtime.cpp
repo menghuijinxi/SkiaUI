@@ -80,6 +80,19 @@ bool containsNode(const std::vector<Node*>& nodes, const Node& node) {
     return std::find(nodes.begin(), nodes.end(), &node) != nodes.end();
 }
 
+bool isNodeDisabled(const Node& node) {
+    return node.attributes.contains("disabled");
+}
+
+Node* disabledTarget(Node* leaf) {
+    for (Node* current = leaf; current; current = current->parent) {
+        if (isNodeDisabled(*current)) {
+            return current;
+        }
+    }
+    return nullptr;
+}
+
 bool hasClass(const Node& node, std::string_view className) {
     return std::find(node.classes.begin(), node.classes.end(), className) != node.classes.end();
 }
@@ -150,10 +163,14 @@ std::optional<size_t> childIndex(Node& parent, const Node& child) {
     return std::nullopt;
 }
 
-bool updateStateTree(Node& node, const std::vector<Node*>& hovered, const std::vector<Node*>& active) {
+bool updateStateTree(Node& node,
+                     const std::vector<Node*>& hovered,
+                     const std::vector<Node*>& active,
+                     bool ancestorDisabled = false) {
     bool changed = false;
-    const bool nextHovered = containsNode(hovered, node);
-    const bool nextActive = containsNode(active, node);
+    const bool disabled = ancestorDisabled || isNodeDisabled(node);
+    const bool nextHovered = !disabled && containsNode(hovered, node);
+    const bool nextActive = !disabled && containsNode(active, node);
     if (node.hovered != nextHovered) {
         node.hovered = nextHovered;
         changed = true;
@@ -163,7 +180,7 @@ bool updateStateTree(Node& node, const std::vector<Node*>& hovered, const std::v
         changed = true;
     }
     for (auto& child : node.children) {
-        changed = updateStateTree(*child, hovered, active) || changed;
+        changed = updateStateTree(*child, hovered, active, disabled) || changed;
     }
     return changed;
 }
@@ -190,6 +207,9 @@ bool isTextareaNode(const Node* node) {
 }
 
 Node* inputTarget(Node* leaf) {
+    if (disabledTarget(leaf)) {
+        return nullptr;
+    }
     for (Node* current = leaf; current; current = current->parent) {
         if (isEditableNode(current)) {
             return current;
@@ -199,6 +219,9 @@ Node* inputTarget(Node* leaf) {
 }
 
 Node* selectableTextTarget(Node* leaf) {
+    if (disabledTarget(leaf)) {
+        return nullptr;
+    }
     for (Node* current = leaf; current; current = current->parent) {
         if (isSelectableTextNode(current)) {
             return current;
@@ -208,6 +231,9 @@ Node* selectableTextTarget(Node* leaf) {
 }
 
 Node* actionTarget(Node* leaf) {
+    if (disabledTarget(leaf)) {
+        return nullptr;
+    }
     for (Node* current = leaf; current; current = current->parent) {
         if (!current->action.empty()) {
             return current;
@@ -217,6 +243,9 @@ Node* actionTarget(Node* leaf) {
 }
 
 Node* mouseEventTarget(Node* leaf) {
+    if (disabledTarget(leaf)) {
+        return nullptr;
+    }
     if (Node* target = actionTarget(leaf)) {
         return target;
     }
@@ -230,7 +259,8 @@ Node* mouseEventTarget(Node* leaf) {
 }
 
 bool isPointerConsumingTarget(Node* leaf) {
-    return actionTarget(leaf) ||
+    return disabledTarget(leaf) ||
+           actionTarget(leaf) ||
            inputTarget(leaf) ||
            selectableTextTarget(leaf);
 }
@@ -2479,6 +2509,42 @@ public:
         }
     }
 
+    void clearInteractionForDisabledSubtree(const Node& subtree) {
+        if (containsNode(subtree, focusedNode)) {
+            setFocusedNode(nullptr);
+        }
+        if (containsNode(subtree, hoveredLeaf)) {
+            hoveredLeaf = nullptr;
+            currentCursor = Cursor::Default;
+        }
+        if (containsNode(subtree, pressedLeaf)) {
+            pressedLeaf = nullptr;
+            mousePressed = false;
+            pressedButton = MouseButton::None;
+        }
+        if (containsNode(subtree, selectingInput)) {
+            selectingInput = nullptr;
+        }
+        if (containsNode(subtree, selectingText)) {
+            selectingText = nullptr;
+        }
+        if (containsNode(subtree, selectedText)) {
+            selectedText = nullptr;
+        }
+        if (containsNode(subtree, scrollingNode)) {
+            scrollingNode = nullptr;
+            scrollingAxis = ScrollbarAxis::None;
+            scrollbarDragOffset = 0.0f;
+        }
+        if (document.root) {
+            std::vector<Node*> hovered;
+            std::vector<Node*> active;
+            collectChain(hoveredLeaf, hovered);
+            collectChain(pressedLeaf, active);
+            updateStateTree(*document.root, hovered, active);
+        }
+    }
+
     void finishDocumentMutation() {
         renderer.clearNodeCaches();
         editableLineCache.clear();
@@ -3300,6 +3366,9 @@ bool Runtime::setAttributeById(std::string_view id, std::string_view name, std::
     }
     node->attributes[normalizedName] = std::string(value);
     syncNodeAttribute(*node, normalizedName);
+    if (normalizedName == "disabled") {
+        impl_->clearInteractionForDisabledSubtree(*node);
+    }
     impl_->requestLayout();
     return true;
 }
@@ -3356,6 +3425,9 @@ bool Runtime::applyUpdates(const RuntimeUpdates& updates) {
         }
         node->attributes[normalizedName] = update.value;
         syncNodeAttribute(*node, normalizedName);
+        if (normalizedName == "disabled") {
+            impl_->clearInteractionForDisabledSubtree(*node);
+        }
         changed = true;
     }
     if (!changed) {

@@ -1184,6 +1184,108 @@ std::optional<Transform> parseTransform(std::string_view raw) {
     return transform;
 }
 
+std::optional<float> parseFilterAmount(std::string_view raw, float defaultValue) {
+    std::string value = trim(raw);
+    if (value.empty()) {
+        return defaultValue;
+    }
+
+    const bool percentage = value.ends_with('%');
+    if (percentage) {
+        value.pop_back();
+    }
+    std::optional<float> amount = parseUnitlessFloat(value);
+    if (!amount || !std::isfinite(*amount) || *amount < 0.0f) {
+        return std::nullopt;
+    }
+    return percentage ? *amount / 100.0f : *amount;
+}
+
+bool parseFilterFunction(std::string_view name,
+                         std::string_view rawArguments,
+                         Filter& filter) {
+    const std::string function = lower(trim(name));
+    if (function == "grayscale") {
+        std::optional<float> amount = parseFilterAmount(rawArguments, 1.0f);
+        if (!amount) {
+            return false;
+        }
+        filter.operations.push_back({
+            FilterOperationKind::Grayscale,
+            clampf(*amount, 0.0f, 1.0f),
+        });
+        return true;
+    }
+    if (function == "brightness") {
+        std::optional<float> amount = parseFilterAmount(rawArguments, 1.0f);
+        if (!amount) {
+            return false;
+        }
+        filter.operations.push_back({
+            FilterOperationKind::Brightness,
+            *amount,
+        });
+        return true;
+    }
+    return false;
+}
+
+std::optional<Filter> parseFilter(std::string_view raw) {
+    const std::string value = lower(trim(raw));
+    if (value.empty()) {
+        return std::nullopt;
+    }
+    if (value == "none") {
+        return Filter{};
+    }
+
+    Filter filter;
+    size_t pos = 0;
+    while (pos < raw.size()) {
+        while (pos < raw.size() &&
+               std::isspace(static_cast<unsigned char>(raw[pos])) != 0) {
+            ++pos;
+        }
+        if (pos >= raw.size()) {
+            break;
+        }
+        const size_t nameStart = pos;
+        while (pos < raw.size() && raw[pos] != '(') {
+            ++pos;
+        }
+        if (pos >= raw.size()) {
+            return std::nullopt;
+        }
+        const std::string_view name = raw.substr(nameStart, pos - nameStart);
+        ++pos;
+        const size_t argumentStart = pos;
+        int depth = 1;
+        while (pos < raw.size() && depth > 0) {
+            if (raw[pos] == '(') {
+                ++depth;
+            } else if (raw[pos] == ')') {
+                --depth;
+                if (depth == 0) {
+                    break;
+                }
+            }
+            ++pos;
+        }
+        if (pos >= raw.size() || depth != 0) {
+            return std::nullopt;
+        }
+        if (!parseFilterFunction(
+                name,
+                raw.substr(argumentStart, pos - argumentStart),
+                filter)) {
+            return std::nullopt;
+        }
+        ++pos;
+    }
+    return filter.operations.empty() ? std::nullopt
+                                     : std::optional<Filter>{std::move(filter)};
+}
+
 void mergeStyle(Style& target, const Style& source) {
     const Style::Flags& f = source.flags;
     if (f.display) {
@@ -1391,6 +1493,10 @@ void mergeStyle(Style& target, const Style& source) {
         target.transformOrigin = source.transformOrigin;
         target.flags.transformOrigin = true;
     }
+    if (f.filter) {
+        target.filter = source.filter;
+        target.flags.filter = true;
+    }
     if (f.transition) {
         target.transitions = source.transitions;
         target.flags.transition = true;
@@ -1427,6 +1533,13 @@ Style defaultStyleForNode(const Node& node) {
         style.flexDirection = YGFlexDirectionColumn;
         style.alignItems = YGAlignStretch;
         style.flexGrow = 1.0f;
+    }
+    if (node.attributes.contains("disabled")) {
+        style.filter.operations = {
+            {FilterOperationKind::Grayscale, 1.0f},
+            {FilterOperationKind::Brightness, 0.72f},
+        };
+        style.cursor = Cursor::Default;
     }
     return style;
 }
@@ -1687,8 +1800,8 @@ void parseGradient(std::string_view raw, Style& style) {
         value = value.substr(18, value.size() - 19);
     } else if (valueLower.rfind("linear-gradient(", 0) == 0 && value.back() == ')') {
         gradient.kind = GradientKind::LinearY;
-        value = value.substr(16, value.size() - 17);
-        std::string argsLower = lower(trim(value));
+        value = trim(std::string_view(value).substr(16, value.size() - 17));
+        const std::string argsLower = lower(value);
         if (argsLower.rfind("to right,", 0) == 0) {
             gradient.kind = GradientKind::LinearX;
             value = trim(std::string_view(value).substr(9));
@@ -2066,6 +2179,11 @@ void applyDeclaration(Style& style, std::string_view rawName, std::string_view r
         if (std::optional<TransformOrigin> origin = parseTransformOrigin(value)) {
             style.transformOrigin = *origin;
             style.flags.transformOrigin = true;
+        }
+    } else if (name == "filter") {
+        if (std::optional<Filter> filter = parseFilter(value)) {
+            style.filter = std::move(*filter);
+            style.flags.filter = true;
         }
     } else if (name == "transition") {
         parseTransition(value, style);

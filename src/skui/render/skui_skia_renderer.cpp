@@ -3,6 +3,7 @@
 #include "perf_trace.h"
 
 #include "include/core/SkCanvas.h"
+#include "include/core/SkColorFilter.h"
 #include "include/core/SkColorSpace.h"
 #include "include/core/SkData.h"
 #include "include/core/SkImage.h"
@@ -17,6 +18,7 @@
 #include "include/core/SkStream.h"
 #include "include/codec/SkCodec.h"
 #include "include/effects/SkGradient.h"
+#include "include/effects/SkColorMatrix.h"
 #include "modules/svg/include/SkSVGDOM.h"
 
 #include <algorithm>
@@ -43,6 +45,23 @@ std::vector<SkColor4f> gradientColors(const std::vector<SkColor>& colors) {
         stops.push_back(SkColor4f::FromColor(color));
     }
     return stops;
+}
+
+sk_sp<SkColorFilter> makeColorFilter(const Filter& filter) {
+    sk_sp<SkColorFilter> result;
+    for (const FilterOperation& operation : filter.operations) {
+        SkColorMatrix matrix;
+        if (operation.kind == FilterOperationKind::Grayscale) {
+            matrix.setSaturation(1.0f - clampf(operation.amount, 0.0f, 1.0f));
+        } else if (operation.kind == FilterOperationKind::Brightness) {
+            const float amount = std::max(0.0f, operation.amount);
+            matrix.setScale(amount, amount, amount);
+        }
+        result = SkColorFilters::Compose(
+            SkColorFilters::Matrix(matrix),
+            std::move(result));
+    }
+    return result;
 }
 
 struct ResolvedBackgroundSize {
@@ -604,9 +623,13 @@ void SkiaRenderer::drawNode(SkCanvas& canvas, const Document& document, const No
         canvas.restoreToCount(saveCount);
         return;
     }
-    if (opacity < 1.0f) {
+    const bool hasFilter = !node.style.filter.isIdentity();
+    if (opacity < 1.0f || hasFilter) {
         SkPaint paint;
         paint.setAlphaf(opacity);
+        if (hasFilter) {
+            paint.setColorFilter(makeColorFilter(node.style.filter));
+        }
         canvas.saveLayer(nullptr, &paint);
     }
     if (traceRender_) {

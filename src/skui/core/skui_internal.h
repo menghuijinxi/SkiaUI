@@ -246,6 +246,34 @@ struct TransformOrigin {
     Length y = {50.0f, LengthUnit::Percent};
 };
 
+enum class FilterOperationKind {
+    Grayscale,
+    Brightness
+};
+
+struct FilterOperation {
+    FilterOperationKind kind = FilterOperationKind::Grayscale;
+    float amount = 0.0f;
+};
+
+struct Filter {
+    std::vector<FilterOperation> operations;
+
+    [[nodiscard]] bool isIdentity() const {
+        for (const FilterOperation& operation : operations) {
+            if (operation.kind == FilterOperationKind::Grayscale &&
+                operation.amount != 0.0f) {
+                return false;
+            }
+            if (operation.kind == FilterOperationKind::Brightness &&
+                operation.amount != 1.0f) {
+                return false;
+            }
+        }
+        return true;
+    }
+};
+
 struct TransitionDefinition {
     TransitionProperty property = TransitionProperty::All;
     float durationSeconds = 0.0f;
@@ -324,6 +352,7 @@ struct Style {
         bool opacity = false;
         bool transform = false;
         bool transformOrigin = false;
+        bool filter = false;
         bool transition = false;
         bool animation = false;
         bool overflowX = false;
@@ -374,6 +403,7 @@ struct Style {
     float opacity = 1.0f;
     Transform transform;
     TransformOrigin transformOrigin;
+    Filter filter;
     std::vector<TransitionDefinition> transitions;
     std::vector<AnimationDefinition> animations;
     Overflow overflowX = Overflow::Visible;

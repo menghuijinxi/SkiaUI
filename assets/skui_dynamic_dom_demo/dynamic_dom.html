@@ -145,7 +145,7 @@
       position: absolute;
       left: 22px;
       width: 316px;
-      height: 44px;
+      height: 35px;
       border-radius: 7px;
       border-width: 1px;
       border-style: solid;
@@ -174,7 +174,7 @@
     }
     .button-label {
       width: 316px;
-      height: 44px;
+      height: 35px;
       align-items: center;
       justify-content: center;
     }
@@ -183,6 +183,45 @@
     }
     .button-danger:hover {
       background-color: #ffe4e4;
+    }
+    .gradient-opacity-button {
+      background-color: transparent;
+      border-width: 0px;
+      color: #121212;
+      overflow: hidden;
+    }
+    .gradient-opacity-button:hover {
+      background-color: transparent;
+    }
+    .gradient-opacity-face,
+    .gradient-opacity-frame {
+      position: absolute;
+      left: 0px;
+      top: 0px;
+      width: 316px;
+      height: 35px;
+      border-radius: 7px;
+      pointer-events: none;
+    }
+    .gradient-opacity-face {
+      background: linear-gradient(
+        to bottom,
+        #dbfffb,
+        #bafffd,
+        #98fffe
+      );
+      opacity: 0.1;
+    }
+    .gradient-opacity-frame {
+      border-color: #e2bd72;
+      border-width: 1px;
+      border-style: solid;
+      background-color: transparent;
+    }
+    .gradient-opacity-label {
+      position: relative;
+      color: #121212;
+      pointer-events: none;
     }
     .counter {
       position: absolute;
@@ -227,10 +266,37 @@
       position: absolute;
       left: 24px;
       top: 54px;
-      width: 700px;
+      width: 390px;
       height: 22px;
       color: #657285;
       font-size: 14px;
+    }
+    .disabled-filter-sample {
+      position: absolute;
+      right: 24px;
+      top: 14px;
+      width: 220px;
+      height: 60px;
+      background: linear-gradient(to bottom, #2ad8c8, #116f82);
+      border-color: #f0d28a;
+      border-width: 2px;
+      border-style: solid;
+      border-radius: 12px;
+      color: #ffffff;
+      cursor: pointer;
+      align-items: center;
+      justify-content: center;
+    }
+    .disabled-filter-sample:hover {
+      background: linear-gradient(to bottom, #4ef0df, #178da2);
+    }
+    .disabled-filter-sample-label {
+      width: 180px;
+      height: 28px;
+      align-items: center;
+      justify-content: center;
+      font-size: 15px;
+      font-weight: bold;
     }
     .stage-content {
       position: absolute;
@@ -531,14 +597,20 @@
     <div class="toolbar">
       <selectable class="toolbar-title">Operations</selectable>
       <button class="button button-primary" style="top:58px" data-action="toggle-notice"><selectable class="button-label">Show / Hide Notice</selectable></button>
-      <button class="button button-secondary" style="top:108px" data-action="toggle-display"><selectable class="button-label">Toggle Message 2 display:none</selectable></button>
-      <button class="button button-secondary" style="top:158px" data-action="toggle-visibility"><selectable class="button-label">Toggle Message 3 visibility:hidden</selectable></button>
-      <button class="button button-secondary" style="top:208px" data-action="add-message"><selectable class="button-label">Add Message</selectable></button>
-      <button class="button button-secondary" style="top:258px" data-action="replace-message"><selectable class="button-label">Replace First Message</selectable></button>
-      <button class="button button-danger" style="top:308px" data-action="remove-message"><selectable class="button-label">Delete Latest Message</selectable></button>
-      <button class="button button-secondary" style="top:358px" data-action="toggle-motion"><selectable class="button-label">Move / Rotate / Scale</selectable></button>
-      <button class="button button-secondary" style="top:408px" data-action="toggle-fade"><selectable class="button-label">Fade In / Out</selectable></button>
-      <button class="button button-secondary" style="top:458px" data-action="scroll-to-message-8"><selectable class="button-label">Scroll To Message 8</selectable></button>
+      <button class="button button-secondary" style="top:98px" data-action="toggle-display"><selectable class="button-label">Toggle Message 2 display:none</selectable></button>
+      <button class="button button-secondary" style="top:138px" data-action="toggle-visibility"><selectable class="button-label">Toggle Message 3 visibility:hidden</selectable></button>
+      <button class="button button-secondary" style="top:178px" data-action="add-message"><selectable class="button-label">Add Message</selectable></button>
+      <button class="button button-secondary" style="top:218px" data-action="replace-message"><selectable class="button-label">Replace First Message</selectable></button>
+      <button class="button button-danger" style="top:258px" data-action="remove-message"><selectable class="button-label">Delete Latest Message</selectable></button>
+      <button class="button button-secondary" style="top:298px" data-action="toggle-motion"><selectable class="button-label">Move / Rotate / Scale</selectable></button>
+      <button class="button button-secondary" style="top:338px" data-action="toggle-fade"><selectable class="button-label">Fade In / Out</selectable></button>
+      <button class="button button-secondary" style="top:378px" data-action="scroll-to-message-8"><selectable class="button-label">Scroll To Message 8</selectable></button>
+      <button class="button gradient-opacity-button" style="top:418px" data-action="toggle-gradient-opacity">
+        <span id="gradient-opacity-face" class="gradient-opacity-face"></span>
+        <span class="gradient-opacity-frame"></span>
+        <selectable id="gradient-opacity-label" class="button-label gradient-opacity-label">Gradient Opacity: 0.1</selectable>
+      </button>
+      <button class="button button-secondary" style="top:458px" data-action="toggle-disabled-sample"><selectable id="disabled-toggle-label" class="button-label">Enable Disabled Sample</selectable></button>
       <selectable id="message-count" class="counter">Messages: 8</selectable>
       <selectable id="demo-status" class="status">Message 2 affects layout. Message 3 keeps its slot. Motion off, fade visible.</selectable>
     </div>
@@ -546,6 +618,12 @@
     <div class="stage">
       <selectable class="stage-title">Live area</selectable>
       <selectable class="stage-note">The list below uses normal column layout; the blue card uses CSS transition.</selectable>
+      <button id="disabled-filter-sample"
+              class="disabled-filter-sample"
+              data-action="disabled-filter-sample"
+              disabled="disabled">
+        <selectable id="disabled-filter-sample-label" class="disabled-filter-sample-label">Disabled: filtered</selectable>
+      </button>
       <div class="stage-content">
         <div class="card-row">
           <div id="notice-card" class="notice-card">

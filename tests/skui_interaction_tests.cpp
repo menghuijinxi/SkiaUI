@@ -862,6 +862,154 @@ int main() {
         ok = expect(buttonClicks == 2, "double-click press should also emit a button click") && ok;
     }
 
+    constexpr std::string_view disabledFilterHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      position: relative;
+      width: 140px;
+      height: 90px;
+      background-color: transparent;
+    }
+    .disabled-button {
+      position: absolute;
+      left: 10px;
+      top: 10px;
+      width: 60px;
+      height: 40px;
+      background-color: #ff0000;
+      cursor: pointer;
+    }
+    .disabled-button:hover {
+      background-color: #00ff00;
+    }
+    .disabled-label {
+      position: absolute;
+      left: 8px;
+      top: 8px;
+      width: 44px;
+      height: 20px;
+    }
+    .filter-host {
+      position: absolute;
+      left: 90px;
+      top: 10px;
+      width: 40px;
+      height: 40px;
+      filter: grayscale(100%) brightness(50%);
+    }
+    .filter-shape {
+      position: absolute;
+      left: 0px;
+      top: 0px;
+      width: 20px;
+      height: 20px;
+      border-radius: 10px;
+      background-color: #00ff00;
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <button id="disabled-button"
+            class="disabled-button"
+            data-action="disabled-click"
+            disabled="disabled">
+      <span class="disabled-label">Disabled</span>
+    </button>
+    <div class="filter-host">
+      <div class="filter-shape"></div>
+    </div>
+  </div>
+</body>
+</html>
+)html";
+    skui::RuntimeOptions disabledFilterOptions = options;
+    disabledFilterOptions.clearColor = SK_ColorTRANSPARENT;
+    skui::Runtime disabledFilterRuntime(disabledFilterOptions);
+    disabledFilterRuntime.resize(kWidth, kHeight, 1.0f);
+    ok = expect(disabledFilterRuntime.loadDocumentFromString(disabledFilterHtml),
+                "disabled filter document should load") && ok;
+    int disabledClicks = 0;
+    int disabledPointerEvents = 0;
+    disabledFilterRuntime.setElementEventCallback([&](const skui::ElementEvent& event) {
+        if (event.action != "disabled-click") {
+            return;
+        }
+        if (event.type == skui::ElementEventType::Click) {
+            ++disabledClicks;
+        } else if (event.type == skui::ElementEventType::MouseDown ||
+                   event.type == skui::ElementEventType::MouseUp) {
+            ++disabledPointerEvents;
+        }
+    });
+
+    uint32_t disabledColor = 0;
+    uint32_t disabledHoverColor = 0;
+    uint32_t filteredShapeColor = 0;
+    uint32_t filteredTransparentColor = 0;
+    ok = renderPixel(disabledFilterRuntime, 65, 45, disabledColor) && ok;
+    sendMouse(disabledFilterRuntime, skui::EventType::MouseMove, 20.0f, 20.0f);
+    ok = renderPixel(disabledFilterRuntime, 65, 45, disabledHoverColor) && ok;
+    ok = renderPixel(disabledFilterRuntime, 100, 20, filteredShapeColor) && ok;
+    ok = renderPixel(disabledFilterRuntime, 120, 30, filteredTransparentColor) && ok;
+    const auto colorChannel = [](uint32_t color, unsigned shift) {
+        return (color >> shift) & 0xFFu;
+    };
+    const unsigned disabledRed = colorChannel(disabledColor, 16u);
+    const unsigned disabledGreen = colorChannel(disabledColor, 8u);
+    const unsigned disabledBlue = colorChannel(disabledColor, 0u);
+    ok = expect(disabledRed == disabledGreen &&
+                    disabledGreen == disabledBlue &&
+                    disabledRed < 100u,
+                "disabled controls should use the default grayscale brightness filter") && ok;
+    ok = expect(disabledHoverColor == disabledColor,
+                "disabled controls should not enter hover state") && ok;
+    ok = expect(colorChannel(filteredShapeColor, 24u) == 255u &&
+                    colorChannel(filteredShapeColor, 16u) ==
+                        colorChannel(filteredShapeColor, 8u) &&
+                    colorChannel(filteredShapeColor, 8u) ==
+                        colorChannel(filteredShapeColor, 0u),
+                "grayscale and brightness filters should compose across a subtree") && ok;
+    ok = expect(colorChannel(filteredTransparentColor, 24u) == 0u,
+                "color filters should preserve transparent pixels outside irregular content") && ok;
+
+    skui::Event disabledDown;
+    disabledDown.type = skui::EventType::MouseDown;
+    disabledDown.button = skui::MouseButton::Left;
+    disabledDown.x = 20.0f;
+    disabledDown.y = 20.0f;
+    skui::Event disabledUp = disabledDown;
+    disabledUp.type = skui::EventType::MouseUp;
+    ok = expect(disabledFilterRuntime.handleEvent(disabledDown) &&
+                    disabledFilterRuntime.handleEvent(disabledUp),
+                "disabled controls should consume pointer input") && ok;
+    ok = expect(disabledPointerEvents == 0 && disabledClicks == 0,
+                "disabled controls should not dispatch pointer or click events") && ok;
+
+    ok = expect(disabledFilterRuntime.removeAttributeById("disabled-button", "disabled"),
+                "removing disabled should re-enable a control") && ok;
+    sendMouse(disabledFilterRuntime, skui::EventType::MouseDown, 20.0f, 20.0f);
+    sendMouse(disabledFilterRuntime, skui::EventType::MouseUp, 20.0f, 20.0f);
+    ok = expect(disabledPointerEvents == 2 && disabledClicks == 1,
+                "re-enabled controls should dispatch pointer and click events") && ok;
+    sendMouse(disabledFilterRuntime, skui::EventType::MouseMove, 20.0f, 20.0f);
+    sendMouse(disabledFilterRuntime, skui::EventType::MouseDown, 20.0f, 20.0f);
+    ok = expect(disabledFilterRuntime.setAttributeById(
+                    "disabled-button",
+                    "disabled",
+                    "disabled"),
+                "setting disabled should disable a control at runtime") && ok;
+    uint32_t runtimeDisabledColor = 0;
+    ok = renderPixel(disabledFilterRuntime, 65, 45, runtimeDisabledColor) && ok;
+    sendMouse(disabledFilterRuntime, skui::EventType::MouseUp, 20.0f, 20.0f);
+    ok = expect(runtimeDisabledColor == disabledColor,
+                "runtime disabling should immediately clear hover and active styles") && ok;
+    ok = expect(disabledPointerEvents == 3 && disabledClicks == 1,
+                "runtime disabling during a press should suppress mouse up and click") && ok;
+
     constexpr std::string_view mouseDownTargetHtml = R"html(
 <!doctype html>
 <html>
@@ -2515,6 +2663,111 @@ int main() {
     }
     ok = expect(repeatedDevicePixelPairs < 20,
                 "gradients should be rasterized at device resolution instead of repeating cached pixels") && ok;
+
+    constexpr std::string_view gradientOpacityHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      position: relative;
+      width: 140px;
+      height: 90px;
+      background-color: transparent;
+    }
+    .gradient-opacity {
+      position: absolute;
+      left: 20px;
+      top: 20px;
+      width: 100px;
+      height: 40px;
+      background: linear-gradient(to right, #ff0000, #0000ff);
+      opacity: 0.5;
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <div class="gradient-opacity"></div>
+  </div>
+</body>
+</html>
+)html";
+    skui::RuntimeOptions gradientOpacityOptions = options;
+    gradientOpacityOptions.clearColor = SK_ColorTRANSPARENT;
+    skui::Runtime gradientOpacityRuntime(gradientOpacityOptions);
+    if (!gradientOpacityRuntime.loadDocumentFromString(gradientOpacityHtml, "")) {
+        std::cerr << "gradient opacity load failed: "
+                  << gradientOpacityRuntime.lastError() << "\n";
+        return 1;
+    }
+    uint32_t gradientOpacityStart = 0;
+    uint32_t gradientOpacityEnd = 0;
+    ok = renderPixel(gradientOpacityRuntime, 20, 40, gradientOpacityStart) && ok;
+    ok = renderPixel(gradientOpacityRuntime, 119, 40, gradientOpacityEnd) && ok;
+    const auto channelNear = [](unsigned actual, unsigned expected) {
+        const unsigned difference = actual > expected ? actual - expected : expected - actual;
+        return difference <= 3u;
+    };
+    ok = expect(channelNear((gradientOpacityStart >> 24u) & 0xFFu, 128u) &&
+                    channelNear((gradientOpacityStart >> 16u) & 0xFFu, 128u) &&
+                    channelNear((gradientOpacityStart >> 8u) & 0xFFu, 0u) &&
+                    channelNear(gradientOpacityStart & 0xFFu, 0u),
+                "gradient opacity should uniformly premultiply the first gradient color") && ok;
+    ok = expect(channelNear((gradientOpacityEnd >> 24u) & 0xFFu, 128u) &&
+                    channelNear((gradientOpacityEnd >> 16u) & 0xFFu, 0u) &&
+                    channelNear((gradientOpacityEnd >> 8u) & 0xFFu, 0u) &&
+                    channelNear(gradientOpacityEnd & 0xFFu, 128u),
+                "gradient opacity should uniformly premultiply the last gradient color") && ok;
+
+    constexpr std::string_view rgbaGradientHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      position: relative;
+      width: 140px;
+      height: 90px;
+      background-color: transparent;
+    }
+    .rgba-gradient {
+      position: absolute;
+      left: 20px;
+      top: 10px;
+      width: 100px;
+      height: 60px;
+      background: linear-gradient(
+        to bottom,
+        rgba(219, 255, 251, 0.78),
+        rgba(186, 255, 253, 0.78),
+        rgba(152, 255, 254, 0.78)
+      );
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <div class="rgba-gradient"></div>
+  </div>
+</body>
+</html>
+)html";
+    skui::Runtime rgbaGradientRuntime(gradientOpacityOptions);
+    if (!rgbaGradientRuntime.loadDocumentFromString(rgbaGradientHtml, "")) {
+        std::cerr << "rgba gradient load failed: " << rgbaGradientRuntime.lastError() << "\n";
+        return 1;
+    }
+    uint32_t rgbaGradientTop = 0;
+    uint32_t rgbaGradientMiddle = 0;
+    uint32_t rgbaGradientBottom = 0;
+    ok = renderPixel(rgbaGradientRuntime, 40, 10, rgbaGradientTop) && ok;
+    ok = renderPixel(rgbaGradientRuntime, 40, 40, rgbaGradientMiddle) && ok;
+    ok = renderPixel(rgbaGradientRuntime, 40, 69, rgbaGradientBottom) && ok;
+    ok = expect(channelNear((rgbaGradientTop >> 24u) & 0xFFu, 199u) &&
+                    channelNear((rgbaGradientMiddle >> 24u) & 0xFFu, 199u) &&
+                    channelNear((rgbaGradientBottom >> 24u) & 0xFFu, 199u),
+                "rgba gradient stops should preserve uniform alpha across the gradient") && ok;
 
     constexpr std::string_view dynamicDomHtml = R"html(
 <!doctype html>
