@@ -3476,6 +3476,161 @@ int main() {
     }
 
     {
+        constexpr std::string_view parentOpacityImageHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      position: relative;
+      width: 140px;
+      height: 90px;
+      background-color: transparent;
+    }
+    .opacity-group {
+      position: absolute;
+      left: 10px;
+      top: 10px;
+      width: 40px;
+      height: 20px;
+      background-color: #0000ff;
+      opacity: 0.5;
+    }
+    .opacity-image {
+      position: absolute;
+      left: 0px;
+      top: 0px;
+      width: 20px;
+      height: 20px;
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <div class="opacity-group">
+      <img class="opacity-image" src="red.png">
+    </div>
+  </div>
+</body>
+</html>
+)html";
+        skui::RuntimeOptions parentOpacityOptions = options;
+        parentOpacityOptions.clearColor = SK_ColorTRANSPARENT;
+        skui::Runtime parentOpacityRuntime(parentOpacityOptions);
+        parentOpacityRuntime.resize(kWidth, kHeight, 1.0f);
+        if (!parentOpacityRuntime.loadDocumentFromString(
+                parentOpacityImageHtml,
+                imageFixtureDir.string())) {
+            std::cerr << "parent opacity image load failed: "
+                      << parentOpacityRuntime.lastError() << "\n";
+            return 1;
+        }
+
+        uint32_t imagePixel = 0;
+        uint32_t backgroundPixel = 0;
+        ok = renderPixel(parentOpacityRuntime, 15, 15, imagePixel) && ok;
+        waitForDirty(parentOpacityRuntime);
+        ok = renderPixel(parentOpacityRuntime, 15, 15, imagePixel) && ok;
+        ok = renderPixel(parentOpacityRuntime, 45, 15, backgroundPixel) && ok;
+        ok = expect(channelNear(colorChannel(imagePixel, 24u), 128u) &&
+                        channelNear(colorChannel(imagePixel, 16u), 128u) &&
+                        channelNear(colorChannel(imagePixel, 8u), 0u) &&
+                        channelNear(colorChannel(imagePixel, 0u), 0u),
+                    "parent opacity should composite bitmap children as one group") && ok;
+        ok = expect(channelNear(colorChannel(backgroundPixel, 24u), 128u) &&
+                        channelNear(colorChannel(backgroundPixel, 16u), 0u) &&
+                        channelNear(colorChannel(backgroundPixel, 8u), 0u) &&
+                        channelNear(colorChannel(backgroundPixel, 0u), 128u),
+                    "parent opacity should apply uniformly to its own background") && ok;
+    }
+
+    {
+        constexpr std::string_view imageOpacityTransitionHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      position: relative;
+      width: 140px;
+      height: 90px;
+      background-color: transparent;
+    }
+    .photo {
+      position: absolute;
+      left: 10px;
+      top: 10px;
+      width: 20px;
+      height: 20px;
+      opacity: 1;
+      visibility: visible;
+      transition: opacity 100ms linear;
+    }
+    .photo.hidden {
+      opacity: 0;
+      visibility: hidden;
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <img id="transition-photo" class="photo hidden" src="red.png">
+  </div>
+</body>
+</html>
+)html";
+        skui::RuntimeOptions imageTransitionOptions = options;
+        imageTransitionOptions.clearColor = SK_ColorTRANSPARENT;
+        skui::Runtime imageTransitionRuntime(imageTransitionOptions);
+        imageTransitionRuntime.resize(kWidth, kHeight, 1.0f);
+        if (!imageTransitionRuntime.loadDocumentFromString(
+                imageOpacityTransitionHtml,
+                imageFixtureDir.string())) {
+            std::cerr << "image opacity transition load failed: "
+                      << imageTransitionRuntime.lastError() << "\n";
+            return 1;
+        }
+
+        uint32_t transitionPixel = 0;
+        ok = renderPixel(imageTransitionRuntime, 15, 15, transitionPixel) && ok;
+        waitForDirty(imageTransitionRuntime);
+        ok = renderPixel(imageTransitionRuntime, 15, 15, transitionPixel) && ok;
+        ok = expect(colorChannel(transitionPixel, 24u) == 0u,
+                    "hidden transition image should remain transparent after decoding") && ok;
+        ok = expect(imageTransitionRuntime.removeClassById(
+                        "transition-photo",
+                        "hidden"),
+                    "image fade hidden class should be removed") && ok;
+        ok = renderPixel(imageTransitionRuntime, 15, 15, transitionPixel) && ok;
+        ok = expect(colorChannel(transitionPixel, 24u) == 0u,
+                    "image opacity transition should render its old value before the first tick") && ok;
+        (void)imageTransitionRuntime.tick(0.05f);
+        ok = renderPixel(imageTransitionRuntime, 15, 15, transitionPixel) && ok;
+        ok = expect(channelNear(colorChannel(transitionPixel, 24u), 128u) &&
+                        channelNear(colorChannel(transitionPixel, 16u), 128u),
+                    "image opacity transition should render half opacity at its midpoint") && ok;
+        imageTransitionRuntime.beginUpdate();
+        ok = expect(imageTransitionRuntime.addClassById(
+                        "transition-photo",
+                        "hidden"),
+                    "batched refresh should apply its intermediate hidden class") && ok;
+        ok = expect(imageTransitionRuntime.removeClassById(
+                        "transition-photo",
+                        "hidden"),
+                    "batched refresh should restore its final visible class") && ok;
+        imageTransitionRuntime.endUpdate();
+        ok = renderPixel(imageTransitionRuntime, 15, 15, transitionPixel) && ok;
+        ok = expect(channelNear(colorChannel(transitionPixel, 24u), 128u) &&
+                        channelNear(colorChannel(transitionPixel, 16u), 128u),
+                    "batched no-op refresh should preserve transition progress") && ok;
+        (void)imageTransitionRuntime.tick(0.05f);
+        ok = renderPixel(imageTransitionRuntime, 15, 15, transitionPixel) && ok;
+        ok = expect(colorChannel(transitionPixel, 24u) == 255u &&
+                        colorChannel(transitionPixel, 16u) == 255u,
+                    "image opacity transition should finish fully visible") && ok;
+    }
+
+    {
         const std::filesystem::path fixturePath =
             imageFixtureDir / "semi-transparent-srgb.png";
         ok = expect(writeSemiTransparentSrgbPngFixture(fixturePath),

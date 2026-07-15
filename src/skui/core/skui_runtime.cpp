@@ -2090,6 +2090,12 @@ public:
     void startHeightTransition(Node& node, const StyleSnapshot& snapshot) {
         const std::optional<Length>& nextHeight = node.style.height;
         if (sameOptionalLength(snapshot.targetHeight, nextHeight)) {
+            if (snapshot.renderedHeight &&
+                activeAnimationFor(activeAnimations,
+                                   &node,
+                                   TransitionProperty::Height)) {
+                writeAnimatedHeight(node, *snapshot.renderedHeight);
+            }
             return;
         }
 
@@ -2120,6 +2126,11 @@ public:
     void startOpacityTransition(Node& node, const StyleSnapshot& snapshot) {
         const float nextOpacity = node.style.opacity;
         if (nearlyEqual(snapshot.targetOpacity, nextOpacity)) {
+            if (activeAnimationFor(activeAnimations,
+                                   &node,
+                                   TransitionProperty::Opacity)) {
+                writeAnimatedOpacity(node, snapshot.renderedOpacity);
+            }
             return;
         }
 
@@ -2146,6 +2157,11 @@ public:
     void startTransformTransition(Node& node, const StyleSnapshot& snapshot) {
         const Transform nextTransform = node.style.transform;
         if (sameTransform(snapshot.targetTransform, nextTransform)) {
+            if (activeAnimationFor(activeAnimations,
+                                   &node,
+                                   TransitionProperty::Transform)) {
+                writeAnimatedTransform(node, snapshot.renderedTransform);
+            }
             return;
         }
 
