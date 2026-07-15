@@ -41,7 +41,7 @@
 | `placeholder` | 输入框占位文本 |
 | `href` | `selectable` 内 `<a>` 的链接目标；点击时转换为 `open-url:` 动作 |
 | `src` | `img` 的资源路径 |
-| `disabled` | 禁用当前节点及其子树的指针、文本选择和输入交互，并应用默认灰度降亮度效果 |
+| `disabled` | 禁用当前节点及其子树的指针、文本选择和输入交互；不自带灰显外观 |
 | `data-virtual-width` / `data-virtual-height` | 虚拟滚动内容尺寸，不需要真实子元素撑开 |
 
 `disabled` 同时参与 `:disabled` 伪类匹配和实际交互禁用；`checked`、`selected` 当前主要用于 CSS 伪类匹配，不等同于完整浏览器控件状态。
@@ -116,6 +116,8 @@
 | `justify-content` | `flex-start`、`center`、`flex-end`、`space-between` |
 
 布局由 Yoga 计算。显式 `display:flex` 的容器使用浏览器默认的 `flex-direction: row`；未显式设置 `display` 的旧写法保持原有默认纵向排布。
+
+`align-items` 和 `justify-content` 只按浏览器语义影响显式 `display:flex` 的内容对齐；没有显式 `display:flex` 的普通文本或 `selectable` 不会因为这些属性而居中。
 
 文本叶节点显式设置 `width:auto` / `height:auto` 时，与省略对应尺寸一致，使用文本固有尺寸参与布局；最终背景框会同时包含文本、padding 和 border。宽高均为固定值时不再执行固有尺寸测量。
 
@@ -273,7 +275,7 @@ if (const std::optional<skui::ScrollState> state =
 
 `cursor` 会继承。Win32 宿主会把 `skui::Cursor` 映射到系统鼠标光标。
 
-带 `disabled` 属性的节点会禁用整棵子树：不进入 `:hover` / `:active`，不派发鼠标和点击事件，也不能编辑或选择文字。命中禁用节点时事件仍由 UI 消费，不会穿透到其下方的 UI 或 3D 场景。默认外观为 `grayscale(100%) brightness(72%)`，可以通过普通规则或 `:disabled` 规则覆盖，例如 `button:disabled { filter: none; }`。
+带 `disabled` 属性的节点会禁用整棵子树：不进入 `:hover` / `:active`，不派发鼠标和点击事件，也不能编辑或选择文字。命中禁用节点时事件仍由 UI 消费，不会穿透到其下方的 UI 或 3D 场景。`disabled` 本身不改变视觉外观；如果需要灰显，应像浏览器页面一样通过 CSS 显式设置，例如 `button:disabled { filter: grayscale(100%) brightness(72%); }`。
 
 ### 指针事件与输入透传
 

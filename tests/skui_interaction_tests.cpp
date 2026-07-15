@@ -961,10 +961,8 @@ int main() {
     const unsigned disabledRed = colorChannel(disabledColor, 16u);
     const unsigned disabledGreen = colorChannel(disabledColor, 8u);
     const unsigned disabledBlue = colorChannel(disabledColor, 0u);
-    ok = expect(disabledRed == disabledGreen &&
-                    disabledGreen == disabledBlue &&
-                    disabledRed < 100u,
-                "disabled controls should use the default grayscale brightness filter") && ok;
+    ok = expect(disabledRed > 200u && disabledGreen < 50u && disabledBlue < 50u,
+                "disabled controls should not apply an implicit visual filter") && ok;
     ok = expect(disabledHoverColor == disabledColor,
                 "disabled controls should not enter hover state") && ok;
     ok = expect(colorChannel(filteredShapeColor, 24u) == 255u &&
@@ -4955,6 +4953,67 @@ int main() {
                 "second flex child should appear after gap") && ok;
     ok = expect(thirdGapProbe == solidColor(0x00, 0x00, 0xFF),
                 "third flex child should appear after second gap") && ok;
+
+    constexpr std::string_view textAlignmentHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      position: relative;
+      width: 140px;
+      height: 90px;
+      background-color: #000000;
+    }
+    selectable {
+      position: absolute;
+      left: 10px;
+      width: 100px;
+      height: 32px;
+      color: #ffffff;
+      font-size: 16px;
+      font-weight: bold;
+      align-items: center;
+      justify-content: center;
+    }
+    .normal {
+      top: 8px;
+    }
+    .flex {
+      top: 48px;
+      display: flex;
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <selectable class="normal">Hi</selectable>
+    <selectable class="flex">Hi</selectable>
+  </div>
+</body>
+</html>
+)html";
+
+    skui::Runtime textAlignmentRuntime(options);
+    textAlignmentRuntime.resize(kWidth, kHeight, 1.0f);
+    if (!textAlignmentRuntime.loadDocumentFromString(textAlignmentHtml, "")) {
+        std::cerr << "text alignment load failed: " << textAlignmentRuntime.lastError() << "\n";
+        return 1;
+    }
+    std::vector<uint32_t> textAlignmentPixels;
+    ok = renderPixels(textAlignmentRuntime, textAlignmentPixels) && ok;
+    const int normalLeftText =
+        countBrightPixels(textAlignmentPixels, 10, 8, 38, 24);
+    const int normalCenteredText =
+        countBrightPixels(textAlignmentPixels, 50, 20, 82, 36);
+    const int flexLeftText =
+        countBrightPixels(textAlignmentPixels, 10, 48, 38, 64);
+    const int flexCenteredText =
+        countBrightPixels(textAlignmentPixels, 50, 60, 82, 84);
+    ok = expect(normalLeftText > 8 && normalCenteredText == 0,
+                "align-items and justify-content should not align ordinary text without display:flex") && ok;
+    ok = expect(flexCenteredText > 8 && flexLeftText == 0,
+                "display:flex should align own text content") && ok;
 
     constexpr std::string_view scrollHtml = R"html(
 <!doctype html>

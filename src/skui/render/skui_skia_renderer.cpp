@@ -265,8 +265,16 @@ float lineHeightForNode(const Node& node) {
     return std::max(12.0f, node.style.fontSize * 1.38f);
 }
 
-float selectableLineTop(const SkRect& content, float lineHeight, size_t lineCount, size_t lineIndex) {
-    if (lineCount <= 1) {
+bool usesFlexTextAlignment(const Node& node) {
+    return node.style.display == Display::Flex && node.style.displayFlex;
+}
+
+float selectableLineTop(const SkRect& content,
+                        float lineHeight,
+                        size_t lineCount,
+                        size_t lineIndex,
+                        bool useFlexAlignment) {
+    if (useFlexAlignment && lineCount <= 1) {
         return content.top() + (content.height() - lineHeight) * 0.5f;
     }
     return content.top() + static_cast<float>(lineIndex) * lineHeight;
@@ -1575,7 +1583,11 @@ void SkiaRenderer::drawSelectableSelection(SkCanvas& canvas, const Node& node) {
             continue;
         }
 
-        const float y = selectableLineTop(content, lineHeight, lines.size(), lineIndex);
+        const float y = selectableLineTop(content,
+                                          lineHeight,
+                                          lines.size(),
+                                          lineIndex,
+                                          usesFlexTextAlignment(node));
         addLineSelectionRect(selectionPath, x, y, right - x, lineHeight);
     }
     if (!selectionPath.isEmpty()) {
@@ -1670,7 +1682,11 @@ void SkiaRenderer::drawText(SkCanvas& canvas, const Node& node) {
             }
             const std::string_view lineText(value->data() + line.start, line.end - line.start);
             const TextEntry& entry = textEntry(lineText, node.style.fontSize, node.style.fontBold);
-            const float baseline = selectableLineTop(content, lineHeight, lines.size(), i) +
+            const float baseline = selectableLineTop(content,
+                                                     lineHeight,
+                                                     lines.size(),
+                                                     i,
+                                                     usesFlexTextAlignment(node)) +
                                    lineHeight * 0.5f -
                                    (entry.metrics.fAscent + entry.metrics.fDescent) * 0.5f;
             const float lineX = textStartX(node, lineText);
@@ -1716,7 +1732,8 @@ void SkiaRenderer::drawText(SkCanvas& canvas, const Node& node) {
 
     const TextEntry& entry = textEntry(*value, node.style.fontSize, node.style.fontBold);
     const float x = textStartX(node, *value);
-    const float y = content.top() + content.height() * 0.5f - (entry.metrics.fAscent + entry.metrics.fDescent) * 0.5f;
+    const float y = content.top() + content.height() * 0.5f -
+                    (entry.metrics.fAscent + entry.metrics.fDescent) * 0.5f;
     if (editable) {
         canvas.save();
         canvas.clipRect(node.layout.sk(), SkClipOp::kIntersect, true);
@@ -1965,9 +1982,9 @@ float SkiaRenderer::textStartX(const Node& node, std::string_view value) {
     const float availableWidth = std::max(0.0f, content.width());
     const float width = textWidth(value, node.style.fontSize, node.style.fontBold);
     float x = content.left();
-    if (node.style.justifyContent == YGJustifyCenter) {
+    if (usesFlexTextAlignment(node) && node.style.justifyContent == YGJustifyCenter) {
         x = content.left() + (availableWidth - width) * 0.5f;
-    } else if (node.style.justifyContent == YGJustifyFlexEnd) {
+    } else if (usesFlexTextAlignment(node) && node.style.justifyContent == YGJustifyFlexEnd) {
         x = content.right() - width;
     }
     return std::max(content.left(), x);
@@ -1985,7 +2002,11 @@ size_t SkiaRenderer::textIndexAtPoint(const Node& node, const std::string& value
 
     const SkRect content = contentRectForText(node);
     const float lineHeight = lineHeightForNode(node);
-    const float relativeY = std::max(0.0f, y - content.top());
+    float firstLineTop = content.top();
+    if (usesFlexTextAlignment(node) && lines.size() <= 1) {
+        firstLineTop = content.top() + (content.height() - lineHeight) * 0.5f;
+    }
+    const float relativeY = std::max(0.0f, y - firstLineTop);
     const size_t lineIndex = std::min(lines.size() - 1,
                                       static_cast<size_t>(relativeY / std::max(1.0f, lineHeight)));
     const TextLine line = lines[lineIndex];
