@@ -1535,10 +1535,6 @@ Style defaultStyleForNode(const Node& node) {
         style.flexGrow = 1.0f;
     }
     if (node.attributes.contains("disabled")) {
-        style.filter.operations = {
-            {FilterOperationKind::Grayscale, 1.0f},
-            {FilterOperationKind::Brightness, 0.72f},
-        };
         style.cursor = Cursor::Default;
     }
     return style;
