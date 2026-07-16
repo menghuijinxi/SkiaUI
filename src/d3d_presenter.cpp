@@ -33,7 +33,6 @@ using Microsoft::WRL::ComPtr;
 namespace {
 
 constexpr int kSwapBufferCount = 2;
-constexpr int kTransitionFrameCount = 3;
 constexpr DXGI_FORMAT kSwapFormat = DXGI_FORMAT_B8G8R8A8_UNORM;
 
 constexpr UINT alignTo(UINT value, UINT alignment) {
@@ -131,20 +130,18 @@ struct D3DRenderer::Impl {
     ComPtr<ID3D12Device> device;
     ComPtr<ID3D12CommandQueue> queue;
     ComPtr<IDXGISwapChain3> swapChain;
-    ComPtr<ID3D12CommandAllocator> commandAllocator;
-    ComPtr<ID3D12GraphicsCommandList> commandList;
-    struct TransitionFrame {
+    struct FrameResource {
         ComPtr<ID3D12CommandAllocator> allocator;
         ComPtr<ID3D12GraphicsCommandList> commandList;
+        ComPtr<ID3D12Resource> backBuffer;
+        ComPtr<ID3D12Resource> uploadBuffer;
+        UINT uploadRowPitch = 0;
+        uint64_t uploadBufferSize = 0;
+        uint8_t* uploadMapped = nullptr;
         UINT64 fenceValue = 0;
     };
-    std::array<TransitionFrame, kTransitionFrameCount> transitionFrames;
-    size_t transitionFrameIndex = 0;
+    std::array<FrameResource, kSwapBufferCount> frames;
     ComPtr<ID3D12Fence> fence;
-    ComPtr<ID3D12Resource> uploadBuffer;
-    UINT uploadRowPitch = 0;
-    uint64_t uploadBufferSize = 0;
-    uint8_t* uploadMapped = nullptr;
     UINT64 fenceValue = 0;
     HANDLE fenceEvent = nullptr;
 #if defined(SKIATEST_USE_SKIA_D3D) && SKIATEST_USE_SKIA_D3D
@@ -175,23 +172,7 @@ struct D3DRenderer::Impl {
             dxgiAdapter = findAdapterForDevice(*dxgiFactory.Get(), *device.Get());
         }
 
-        if (FAILED(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
-                                                  IID_PPV_ARGS(&commandAllocator)))) {
-            releaseResources();
-            return false;
-        }
-
-        if (FAILED(device->CreateCommandList(0,
-                                             D3D12_COMMAND_LIST_TYPE_DIRECT,
-                                             commandAllocator.Get(),
-                                             nullptr,
-                                             IID_PPV_ARGS(&commandList)))) {
-            releaseResources();
-            return false;
-        }
-        commandList->Close();
-
-        for (TransitionFrame& frame : transitionFrames) {
+        for (FrameResource& frame : frames) {
             if (FAILED(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
                                                       IID_PPV_ARGS(&frame.allocator)))) {
                 releaseResources();
@@ -209,7 +190,6 @@ struct D3DRenderer::Impl {
             frame.commandList->Close();
             frame.fenceValue = 0;
         }
-        transitionFrameIndex = 0;
 
         if (FAILED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence)))) {
             releaseResources();
@@ -251,18 +231,6 @@ struct D3DRenderer::Impl {
             releaseResources();
             return false;
         }
-#if defined(SKIATEST_USE_SKIA_D3D) && SKIATEST_USE_SKIA_D3D
-        if (!grContext && !createUploadBuffer(width, height)) {
-            releaseResources();
-            return false;
-        }
-#else
-        if (!createUploadBuffer(width, height)) {
-            releaseResources();
-            return false;
-        }
-#endif
-
         perf::Trace::write("d3d", "create_swap_chain", width, height, perf::Trace::elapsedMs(traceStart));
         return true;
     }
@@ -275,7 +243,6 @@ struct D3DRenderer::Impl {
         }
 #endif
         waitForGpu();
-        releaseUploadBuffer();
 #if defined(SKIATEST_USE_SKIA_D3D) && SKIATEST_USE_SKIA_D3D
         lastGaneshFrame.reset();
         lastGaneshWidth = 0;
@@ -286,15 +253,14 @@ struct D3DRenderer::Impl {
         grContext.reset();
         allocator.reset();
 #endif
-        swapChain.Reset();
-        for (TransitionFrame& frame : transitionFrames) {
+        for (FrameResource& frame : frames) {
+            releaseUploadBuffer(frame);
+            frame.backBuffer.Reset();
             frame.commandList.Reset();
             frame.allocator.Reset();
             frame.fenceValue = 0;
         }
-        transitionFrameIndex = 0;
-        commandList.Reset();
-        commandAllocator.Reset();
+        swapChain.Reset();
         fence.Reset();
         queue.Reset();
         device.Reset();
@@ -339,27 +305,53 @@ struct D3DRenderer::Impl {
         return true;
     }
 
-    void releaseUploadBuffer() {
-        if (uploadBuffer && uploadMapped) {
-            uploadBuffer->Unmap(0, nullptr);
+    bool waitForFrame(FrameResource& frame) {
+        if (frame.fenceValue == 0) {
+            return true;
         }
-        uploadMapped = nullptr;
-        uploadBuffer.Reset();
-        uploadRowPitch = 0;
-        uploadBufferSize = 0;
+        if (!fence || !fenceEvent) {
+            return false;
+        }
+        if (fence->GetCompletedValue() >= frame.fenceValue) {
+            return true;
+        }
+        if (FAILED(fence->SetEventOnCompletion(frame.fenceValue, fenceEvent))) {
+            return false;
+        }
+        return WaitForSingleObject(fenceEvent, INFINITE) == WAIT_OBJECT_0;
     }
 
-    bool createUploadBuffer(int width, int height) {
+    bool signalFrame(FrameResource& frame) {
+        const UINT64 value = ++fenceValue;
+        if (!queue || !fence || FAILED(queue->Signal(fence.Get(), value))) {
+            return false;
+        }
+        frame.fenceValue = value;
+        return true;
+    }
+
+    void releaseUploadBuffer(FrameResource& frame) {
+        if (frame.uploadBuffer && frame.uploadMapped) {
+            frame.uploadBuffer->Unmap(0, nullptr);
+        }
+        frame.uploadMapped = nullptr;
+        frame.uploadBuffer.Reset();
+        frame.uploadRowPitch = 0;
+        frame.uploadBufferSize = 0;
+    }
+
+    bool createUploadBuffer(FrameResource& frame, int width, int height) {
         width = std::max(1, width);
         height = std::max(1, height);
         const UINT rowPitch = alignTo(static_cast<UINT>(width) * sizeof(uint32_t),
                                       D3D12_TEXTURE_DATA_PITCH_ALIGNMENT);
         const uint64_t uploadSize = static_cast<uint64_t>(rowPitch) * static_cast<uint64_t>(height);
-        if (uploadBuffer && uploadMapped && uploadRowPitch == rowPitch && uploadBufferSize >= uploadSize) {
+        if (frame.uploadBuffer && frame.uploadMapped && frame.uploadRowPitch == rowPitch &&
+            frame.uploadBufferSize >= uploadSize) {
             return true;
         }
 
-        releaseUploadBuffer();
+        releaseUploadBuffer(frame);
 
         D3D12_HEAP_PROPERTIES heapProps{};
         heapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
@@ -386,20 +378,20 @@ struct D3DRenderer::Impl {
                                                    &desc,
                                                    D3D12_RESOURCE_STATE_GENERIC_READ,
                                                    nullptr,
-                                                   IID_PPV_ARGS(&uploadBuffer)))) {
+                                                   IID_PPV_ARGS(&frame.uploadBuffer)))) {
             return false;
         }
 
         D3D12_RANGE noRead{0, 0};
         void* mapped = nullptr;
-        if (FAILED(uploadBuffer->Map(0, &noRead, &mapped))) {
-            releaseUploadBuffer();
+        if (FAILED(frame.uploadBuffer->Map(0, &noRead, &mapped))) {
+            releaseUploadBuffer(frame);
             return false;
         }
 
-        uploadMapped = static_cast<uint8_t*>(mapped);
-        uploadRowPitch = rowPitch;
-        uploadBufferSize = uploadSize;
+        frame.uploadMapped = static_cast<uint8_t*>(mapped);
+        frame.uploadRowPitch = rowPitch;
+        frame.uploadBufferSize = uploadSize;
         return true;
     }
 
@@ -411,6 +403,30 @@ struct D3DRenderer::Impl {
             1.0f,
         };
         swapChain->SetBackgroundColor(&background);
+    }
+
+    void releaseBackBuffers() {
+        for (FrameResource& frame : frames) {
+            frame.backBuffer.Reset();
+        }
+    }
+
+    bool acquireBackBuffers() {
+        releaseBackBuffers();
+        for (UINT bufferIndex = 0; bufferIndex < static_cast<UINT>(frames.size()); ++bufferIndex) {
+            FrameResource& frame = frames[bufferIndex];
+            if (FAILED(swapChain->GetBuffer(bufferIndex, IID_PPV_ARGS(&frame.backBuffer)))) {
+                releaseBackBuffers();
+                return false;
+            }
+            frame.fenceValue = 0;
+        }
+        return true;
+    }
+
+    FrameResource& currentFrame(UINT& bufferIndex) {
+        bufferIndex = swapChain->GetCurrentBackBufferIndex();
+        return frames[bufferIndex];
     }
 
     bool createSwapChain(HWND hwnd, int width, int height) {
@@ -440,6 +456,10 @@ struct D3DRenderer::Impl {
                                                                nullptr,
                                                                &swapChain1);
         if (FAILED(hr) || FAILED(swapChain1.As(&swapChain))) {
+            return false;
+        }
+        if (!acquireBackBuffers()) {
+            swapChain.Reset();
             return false;
         }
 
@@ -472,7 +492,10 @@ struct D3DRenderer::Impl {
         const auto waitStart = perf::Trace::now();
         waitForGpu();
         perf::Trace::write("d3d", "resize_wait", width, height, perf::Trace::elapsedMs(waitStart));
-        releaseUploadBuffer();
+        releaseBackBuffers();
+        for (FrameResource& frame : frames) {
+            releaseUploadBuffer(frame);
+        }
 
         const auto resizeBuffersStart = perf::Trace::now();
         const HRESULT hr = swapChain->ResizeBuffers(kSwapBufferCount,
@@ -482,6 +505,10 @@ struct D3DRenderer::Impl {
                                                     0);
         perf::Trace::write("d3d", "resize_buffers", width, height, perf::Trace::elapsedMs(resizeBuffersStart));
         if (FAILED(hr)) {
+            reset();
+            return false;
+        }
+        if (!acquireBackBuffers()) {
             reset();
             return false;
         }
@@ -544,25 +571,14 @@ struct D3DRenderer::Impl {
         lastGaneshHeight = std::max(1, height);
     }
 
-    bool transitionToPresent(ID3D12Resource* resource) {
-        if (!device || !queue || !resource) {
+    bool transitionToPresent(FrameResource& frame) {
+        if (!device || !queue || !frame.backBuffer) {
+            return false;
+        }
+        if (!frame.allocator || !frame.commandList) {
             return false;
         }
 
-        TransitionFrame& frame = transitionFrames[transitionFrameIndex];
-        if (!frame.allocator || !frame.commandList || !fence || !fenceEvent) {
-            return false;
-        }
-
-        // A command allocator cannot be reset until the GPU has consumed the
-        // previous command list that used it. Rotate a few tiny transition lists
-        // and only wait when rapid resize/present traffic laps the GPU.
-        if (frame.fenceValue != 0 && fence->GetCompletedValue() < frame.fenceValue) {
-            if (FAILED(fence->SetEventOnCompletion(frame.fenceValue, fenceEvent))) {
-                return false;
-            }
-            WaitForSingleObject(fenceEvent, INFINITE);
-        }
         if (FAILED(frame.allocator->Reset()) ||
             FAILED(frame.commandList->Reset(frame.allocator.Get(), nullptr))) {
             return false;
@@ -571,7 +587,7 @@ struct D3DRenderer::Impl {
         D3D12_RESOURCE_BARRIER barrier{};
         barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
         barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-        barrier.Transition.pResource = resource;
+        barrier.Transition.pResource = frame.backBuffer.Get();
         barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
         barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
         barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
@@ -583,32 +599,27 @@ struct D3DRenderer::Impl {
 
         ID3D12CommandList* lists[] = {frame.commandList.Get()};
         queue->ExecuteCommandLists(1, lists);
-        const UINT64 value = ++fenceValue;
-        if (FAILED(queue->Signal(fence.Get(), value))) {
-            return false;
-        }
-        frame.fenceValue = value;
-        transitionFrameIndex = (transitionFrameIndex + 1) % transitionFrames.size();
         return true;
     }
 
     sk_sp<SkSurface> wrapCurrentBackBuffer(int width,
                                            int height,
-                                           ComPtr<ID3D12Resource>& backBuffer,
+                                           UINT& bufferIndex,
                                            GrBackendRenderTarget& backendTarget) {
         if (!swapChain || !grContext) {
             return nullptr;
         }
 
-        const UINT bufferIndex = swapChain->GetCurrentBackBufferIndex();
-        if (FAILED(swapChain->GetBuffer(bufferIndex, IID_PPV_ARGS(&backBuffer)))) {
+        FrameResource& frame = currentFrame(bufferIndex);
+        // 同一 back buffer 再次轮到 CPU 使用前，确保它上一帧的 GPU 工作已经完成。
+        if (!frame.backBuffer || !waitForFrame(frame)) {
             return nullptr;
         }
 
         GrD3DTextureResourceInfo textureInfo;
         // gr_cp(T*) adopts a COM reference. Keep the swap-chain ComPtr's
         // reference separate and give Skia its own retained reference.
-        textureInfo.fResource.retain(backBuffer.Get());
+        textureInfo.fResource.retain(frame.backBuffer.Get());
         textureInfo.fResourceState = D3D12_RESOURCE_STATE_PRESENT;
         textureInfo.fFormat = kSwapFormat;
         textureInfo.fSampleCount = 1;
@@ -624,10 +635,11 @@ struct D3DRenderer::Impl {
     }
 
     bool presentGaneshSurface(sk_sp<SkSurface> surface,
-                              ID3D12Resource* backBuffer,
+                              UINT bufferIndex,
                               GrBackendRenderTarget& backendTarget) {
         const auto traceStart = perf::Trace::now();
-        if (!surface || !backBuffer || !grContext) {
+        FrameResource& frame = frames[bufferIndex];
+        if (!surface || !frame.backBuffer || !grContext) {
             return false;
         }
 
@@ -637,14 +649,15 @@ struct D3DRenderer::Impl {
         surface.reset();
 
         const auto transitionStart = perf::Trace::now();
-        if (!transitionToPresent(backBuffer)) {
+        if (!transitionToPresent(frame)) {
             return false;
         }
         perf::Trace::write("d3d", "transition_present", swapWidth, swapHeight, perf::Trace::elapsedMs(transitionStart));
         GrBackendRenderTargets::SetD3DResourceState(&backendTarget, D3D12_RESOURCE_STATE_PRESENT);
-        const bool ok = presentSwapChain();
+        const bool presented = presentSwapChain();
+        const bool signaled = signalFrame(frame);
         perf::Trace::write("d3d", "present_ganesh_total", swapWidth, swapHeight, perf::Trace::elapsedMs(traceStart));
-        return ok;
+        return presented && signaled;
     }
 
     bool renderPreparedGaneshFrameToSwapChain(int width, int height, sk_sp<SkImage> preparedFrame) {
@@ -652,15 +665,15 @@ struct D3DRenderer::Impl {
             return false;
         }
 
-        ComPtr<ID3D12Resource> backBuffer;
+        UINT bufferIndex = 0;
         GrBackendRenderTarget backendTarget;
-        sk_sp<SkSurface> surface = wrapCurrentBackBuffer(width, height, backBuffer, backendTarget);
+        sk_sp<SkSurface> surface = wrapCurrentBackBuffer(width, height, bufferIndex, backendTarget);
         if (!surface) {
             return false;
         }
 
         surface->getCanvas()->drawImage(preparedFrame, 0.0f, 0.0f);
-        if (!presentGaneshSurface(surface, backBuffer.Get(), backendTarget)) {
+        if (!presentGaneshSurface(surface, bufferIndex, backendTarget)) {
             return false;
         }
         rememberGaneshFrame(std::move(preparedFrame), width, height);
@@ -672,9 +685,9 @@ struct D3DRenderer::Impl {
             return false;
         }
 
-        ComPtr<ID3D12Resource> backBuffer;
+        UINT bufferIndex = 0;
         GrBackendRenderTarget backendTarget;
-        sk_sp<SkSurface> surface = wrapCurrentBackBuffer(width, height, backBuffer, backendTarget);
+        sk_sp<SkSurface> surface = wrapCurrentBackBuffer(width, height, bufferIndex, backendTarget);
         if (!surface) {
             return false;
         }
@@ -693,7 +706,7 @@ struct D3DRenderer::Impl {
                                   nullptr,
                                   SkCanvas::kStrict_SrcRectConstraint);
         }
-        return presentGaneshSurface(surface, backBuffer.Get(), backendTarget);
+        return presentGaneshSurface(surface, bufferIndex, backendTarget);
     }
 
     bool renderRetainedThenPreparedGaneshFrame(int width,
@@ -711,10 +724,10 @@ struct D3DRenderer::Impl {
 
     bool renderDirectGaneshFrame(int width, int height, const D3DRenderer::GaneshDrawCallback& drawGanesh) {
         const auto traceStart = perf::Trace::now();
-        ComPtr<ID3D12Resource> backBuffer;
+        UINT bufferIndex = 0;
         GrBackendRenderTarget backendTarget;
         const auto wrapStart = perf::Trace::now();
-        sk_sp<SkSurface> surface = wrapCurrentBackBuffer(width, height, backBuffer, backendTarget);
+        sk_sp<SkSurface> surface = wrapCurrentBackBuffer(width, height, bufferIndex, backendTarget);
         perf::Trace::write("d3d", "wrap_backbuffer", width, height, perf::Trace::elapsedMs(wrapStart));
         if (!surface) {
             return false;
@@ -723,7 +736,7 @@ struct D3DRenderer::Impl {
         const auto drawStart = perf::Trace::now();
         drawGanesh(*surface->getCanvas(), width, height);
         perf::Trace::write("d3d", "draw_ganesh_callback", width, height, perf::Trace::elapsedMs(drawStart));
-        const bool ok = presentGaneshSurface(surface, backBuffer.Get(), backendTarget);
+        const bool ok = presentGaneshSurface(surface, bufferIndex, backendTarget);
         perf::Trace::write("d3d", "render_direct_ganesh_total", width, height, perf::Trace::elapsedMs(traceStart));
         return ok;
     }
@@ -777,74 +790,79 @@ struct D3DRenderer::Impl {
     }
 #endif
 
-    bool copyCpuSurfaceToUpload(int width, int height, const D3DRenderer::CpuDrawCallback& drawCpu) {
-        if (!uploadMapped || !drawCpu) {
+    bool copyCpuSurfaceToUpload(FrameResource& frame,
+                                int width,
+                                int height,
+                                const D3DRenderer::CpuDrawCallback& drawCpu) {
+        if (!frame.uploadMapped || !drawCpu) {
             return false;
         }
-        if (!drawCpu(reinterpret_cast<uint32_t*>(uploadMapped), width, height, uploadRowPitch)) {
+        if (!drawCpu(reinterpret_cast<uint32_t*>(frame.uploadMapped),
+                     width,
+                     height,
+                     frame.uploadRowPitch)) {
             return false;
         }
         return true;
     }
 
     bool renderCpuUpload(int width, int height, const D3DRenderer::CpuDrawCallback& drawCpu) {
-        if (!createUploadBuffer(width, height) || !copyCpuSurfaceToUpload(width, height, drawCpu)) {
+        UINT bufferIndex = 0;
+        FrameResource& frame = currentFrame(bufferIndex);
+        // upload buffer 和命令分配器均随 back buffer 轮转，只在复用该帧时等待。
+        if (!waitForFrame(frame) || !createUploadBuffer(frame, width, height) ||
+            !copyCpuSurfaceToUpload(frame, width, height, drawCpu)) {
             return false;
         }
 
-        ComPtr<ID3D12Resource> backBuffer;
-        const UINT bufferIndex = swapChain->GetCurrentBackBufferIndex();
-        if (FAILED(swapChain->GetBuffer(bufferIndex, IID_PPV_ARGS(&backBuffer)))) {
+        if (!frame.backBuffer) {
             return false;
         }
 
-        if (FAILED(commandAllocator->Reset()) ||
-            FAILED(commandList->Reset(commandAllocator.Get(), nullptr))) {
+        if (FAILED(frame.allocator->Reset()) ||
+            FAILED(frame.commandList->Reset(frame.allocator.Get(), nullptr))) {
             return false;
         }
 
         D3D12_RESOURCE_BARRIER toCopy{};
         toCopy.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
         toCopy.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-        toCopy.Transition.pResource = backBuffer.Get();
+        toCopy.Transition.pResource = frame.backBuffer.Get();
         toCopy.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
         toCopy.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
         toCopy.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
-        commandList->ResourceBarrier(1, &toCopy);
+        frame.commandList->ResourceBarrier(1, &toCopy);
 
         D3D12_TEXTURE_COPY_LOCATION dst{};
-        dst.pResource = backBuffer.Get();
+        dst.pResource = frame.backBuffer.Get();
         dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
         dst.SubresourceIndex = 0;
 
         D3D12_TEXTURE_COPY_LOCATION src{};
-        src.pResource = uploadBuffer.Get();
+        src.pResource = frame.uploadBuffer.Get();
         src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
         src.PlacedFootprint.Offset = 0;
         src.PlacedFootprint.Footprint.Format = kSwapFormat;
         src.PlacedFootprint.Footprint.Width = static_cast<UINT>(width);
         src.PlacedFootprint.Footprint.Height = static_cast<UINT>(height);
         src.PlacedFootprint.Footprint.Depth = 1;
-        src.PlacedFootprint.Footprint.RowPitch = uploadRowPitch;
-        commandList->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+        src.PlacedFootprint.Footprint.RowPitch = frame.uploadRowPitch;
+        frame.commandList->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
 
         D3D12_RESOURCE_BARRIER toPresent = toCopy;
         toPresent.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
         toPresent.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
-        commandList->ResourceBarrier(1, &toPresent);
+        frame.commandList->ResourceBarrier(1, &toPresent);
 
-        if (FAILED(commandList->Close())) {
+        if (FAILED(frame.commandList->Close())) {
             return false;
         }
 
-        ID3D12CommandList* lists[] = {commandList.Get()};
+        ID3D12CommandList* lists[] = {frame.commandList.Get()};
         queue->ExecuteCommandLists(1, lists);
-        if (!waitForGpu()) {
-            reset();
-            return false;
-        }
-
-        if (!presentSwapChain()) {
+        const bool presented = presentSwapChain();
+        const bool signaled = signalFrame(frame);
+        if (!presented || !signaled) {
             reset();
             return false;
         }
