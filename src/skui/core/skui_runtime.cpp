@@ -2420,11 +2420,17 @@ public:
         return renderer.textIndexAtOffset(input.value, input.style.fontSize, input.style.fontBold, x - textStart);
     }
 
-    size_t selectableIndexAtPoint(const Node& node, float x, float y) {
+    SkiaRenderer::TextHitResult selectableHitAtPoint(const Node& node,
+                                                     float x,
+                                                     float y) {
         const std::string& value = selectableTextValue(node);
         const float layoutX = x - visualX(node) + node.layout.x;
         const float layoutY = y - visualY(node) + node.layout.y;
-        return renderer.textIndexAtPoint(node, value, layoutX, layoutY);
+        return renderer.textHitAtPoint(node, value, layoutX, layoutY);
+    }
+
+    size_t selectableIndexAtPoint(const Node& node, float x, float y) {
+        return selectableHitAtPoint(node, x, y).index;
     }
 
     size_t editableIndexAtPoint(const Node& input, float x, float y) {
@@ -2904,8 +2910,13 @@ bool Runtime::handleEvent(const Event& event) {
                 stateChanged = clearSelectableSelection(*impl_->selectedText) || stateChanged;
                 layoutNeeded = true;
             }
-            const size_t index = impl_->selectableIndexAtPoint(*selectable, x, y);
-            selectSelectableWordAt(*selectable, index);
+            const SkiaRenderer::TextHitResult textHit =
+                impl_->selectableHitAtPoint(*selectable, x, y);
+            if (textHit.insideText) {
+                selectSelectableWordAt(*selectable, textHit.index);
+            } else {
+                selectAllSelectable(*selectable);
+            }
             impl_->selectingInput = nullptr;
             impl_->selectingText = nullptr;
             impl_->selectedText = selectable;

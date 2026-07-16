@@ -1990,14 +1990,17 @@ float SkiaRenderer::textStartX(const Node& node, std::string_view value) {
     return std::max(content.left(), x);
 }
 
-size_t SkiaRenderer::textIndexAtPoint(const Node& node, const std::string& value, float x, float y) {
+SkiaRenderer::TextHitResult SkiaRenderer::textHitAtPoint(const Node& node,
+                                                         const std::string& value,
+                                                         float x,
+                                                         float y) {
     if (value.empty()) {
-        return 0;
+        return {};
     }
 
     const std::vector<TextLine>& lines = textLines(node, value);
     if (lines.empty()) {
-        return 0;
+        return {};
     }
 
     const SkRect content = contentRectForText(node);
@@ -2012,10 +2015,19 @@ size_t SkiaRenderer::textIndexAtPoint(const Node& node, const std::string& value
     const TextLine line = lines[lineIndex];
     const std::string_view lineText(value.data() + line.start, line.end - line.start);
     const float lineX = textStartX(node, lineText);
-    return line.start + textIndexAtOffset(lineText,
-                                          node.style.fontSize,
-                                          node.style.fontBold,
-                                          x - lineX);
+    const float lineWidth = textWidth(lineText,
+                                      node.style.fontSize,
+                                      node.style.fontBold);
+    TextHitResult result;
+    result.index = line.start + textIndexAtOffset(lineText,
+                                                  node.style.fontSize,
+                                                  node.style.fontBold,
+                                                  x - lineX);
+    result.insideText = y >= firstLineTop &&
+                        y < firstLineTop + lines.size() * lineHeight &&
+                        x >= lineX &&
+                        x <= lineX + lineWidth;
+    return result;
 }
 
 size_t SkiaRenderer::textIndexAtOffset(std::string_view value, float size, bool bold, float offset) {

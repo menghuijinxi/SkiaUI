@@ -568,6 +568,11 @@ private:
 
 class SkiaRenderer {
 public:
+    struct TextHitResult {
+        size_t index = 0;
+        bool insideText = false;
+    };
+
     explicit SkiaRenderer(RuntimeOptions options);
     ~SkiaRenderer();
     void draw(Document& document, SkCanvas& canvas, int width, int height, float dpiScale);
@@ -575,7 +580,10 @@ public:
     void clearNodeCaches();
     void shutdownCaches();
     size_t textIndexAtOffset(std::string_view value, float size, bool bold, float offset);
-    size_t textIndexAtPoint(const Node& node, const std::string& value, float x, float y);
+    TextHitResult textHitAtPoint(const Node& node,
+                                 const std::string& value,
+                                 float x,
+                                 float y);
     float textStartX(const Node& node, std::string_view value);
     [[nodiscard]] bool consumeImageDirty();
     void requestBitmapImages(const Document& document);

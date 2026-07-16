@@ -2095,6 +2095,10 @@ int main() {
     sendMouse(selectableRuntime, skui::EventType::MouseDoubleClick, 78.0f, 78.0f);
     sendKey(selectableRuntime, 'C', false, true);
     ok = expect(selectableClipboard == "新", "selectable hit testing should account for text padding") && ok;
+    sendMouse(selectableRuntime, skui::EventType::MouseDoubleClick, 126.0f, 78.0f);
+    sendKey(selectableRuntime, 'C', false, true);
+    ok = expect(selectableClipboard == "能把最新的",
+                "double-clicking selectable line-end whitespace should select all text") && ok;
 
     constexpr std::string_view selectableOverflowHtml = R"html(
 <!doctype html>
