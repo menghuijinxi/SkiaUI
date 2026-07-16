@@ -3,11 +3,14 @@
 #include "perf_trace.h"
 
 #include "include/core/SkCanvas.h"
+#include "include/core/SkBlendMode.h"
+#include "include/core/SkBlurTypes.h"
 #include "include/core/SkColorFilter.h"
 #include "include/core/SkColorSpace.h"
 #include "include/core/SkData.h"
 #include "include/core/SkImage.h"
 #include "include/core/SkImageInfo.h"
+#include "include/core/SkMaskFilter.h"
 #include "include/core/SkPaint.h"
 #include "include/core/SkPath.h"
 #include "include/core/SkPathBuilder.h"
@@ -19,6 +22,7 @@
 #include "include/codec/SkCodec.h"
 #include "include/effects/SkGradient.h"
 #include "include/effects/SkColorMatrix.h"
+#include "include/effects/SkImageFilters.h"
 #include "modules/svg/include/SkSVGDOM.h"
 
 #include <algorithm>
@@ -50,6 +54,9 @@ std::vector<SkColor4f> gradientColors(const std::vector<SkColor>& colors) {
 sk_sp<SkColorFilter> makeColorFilter(const Filter& filter) {
     sk_sp<SkColorFilter> result;
     for (const FilterOperation& operation : filter.operations) {
+        if (operation.kind == FilterOperationKind::DropShadow) {
+            continue;
+        }
         SkColorMatrix matrix;
         if (operation.kind == FilterOperationKind::Grayscale) {
             matrix.setSaturation(1.0f - clampf(operation.amount, 0.0f, 1.0f));
@@ -59,6 +66,55 @@ sk_sp<SkColorFilter> makeColorFilter(const Filter& filter) {
         }
         result = SkColorFilters::Compose(
             SkColorFilters::Matrix(matrix),
+            std::move(result));
+    }
+    return result;
+}
+
+SkColor shadowColor(const Shadow& shadow, const Style& style) {
+    return shadow.usesCurrentColor ? style.color : shadow.color;
+}
+
+float resolvedBorderWidth(const BorderSide& side) {
+    return side.style.value_or(BorderStyle::None) == BorderStyle::Solid
+        ? std::max(0.0f, side.width.value_or(0.0f))
+        : 0.0f;
+}
+
+SkColor resolvedBorderColor(const BorderSide& side, const Style& style) {
+    return side.color.value_or(style.color);
+}
+
+bool hasVisibleBorder(const BorderSide& side, const Style& style) {
+    return resolvedBorderWidth(side) > 0.0f &&
+           SkColorGetA(resolvedBorderColor(side, style)) > 0;
+}
+
+bool bordersMatch(const BorderSide& lhs,
+                  const BorderSide& rhs,
+                  const Style& style) {
+    return resolvedBorderWidth(lhs) == resolvedBorderWidth(rhs) &&
+           resolvedBorderColor(lhs, style) == resolvedBorderColor(rhs, style);
+}
+
+float shadowSigma(float blurRadius) {
+    return std::max(0.0f, blurRadius) * 0.5f;
+}
+
+sk_sp<SkImageFilter> makeImageFilter(const Filter& filter,
+                                     const Style& style) {
+    sk_sp<SkImageFilter> result;
+    for (const FilterOperation& operation : filter.operations) {
+        if (operation.kind != FilterOperationKind::DropShadow) {
+            continue;
+        }
+        const float sigma = shadowSigma(operation.shadow.blurRadius);
+        result = SkImageFilters::DropShadow(
+            operation.shadow.offsetX,
+            operation.shadow.offsetY,
+            sigma,
+            sigma,
+            shadowColor(operation.shadow, style),
             std::move(result));
     }
     return result;
@@ -87,6 +143,49 @@ float resolveTransformLength(const Length& length, float reference) {
         return length.value;
     }
     return 0.0f;
+}
+
+std::optional<Rect> resolvePseudoElementRect(const Node& node,
+                                             const Style& style) {
+    if (style.position != Position::Absolute) {
+        return std::nullopt;
+    }
+
+    const auto resolveEdge = [](const std::optional<Length>& value,
+                                float reference) {
+        return value ? resolveTransformLength(*value, reference) : 0.0f;
+    };
+    const float left = resolveEdge(style.inset.left, node.layout.w);
+    const float top = resolveEdge(style.inset.top, node.layout.h);
+    const float right = resolveEdge(style.inset.right, node.layout.w);
+    const float bottom = resolveEdge(style.inset.bottom, node.layout.h);
+
+    float width = style.width
+                      ? resolveTransformLength(*style.width, node.layout.w)
+                      : 0.0f;
+    float height = style.height
+                       ? resolveTransformLength(*style.height, node.layout.h)
+                       : 0.0f;
+    if (!style.width && style.flags.insetLeft && style.flags.insetRight) {
+        width = std::max(0.0f, node.layout.w - left - right);
+    }
+    if (!style.height && style.flags.insetTop && style.flags.insetBottom) {
+        height = std::max(0.0f, node.layout.h - top - bottom);
+    }
+
+    float x = node.layout.x;
+    float y = node.layout.y;
+    if (style.flags.insetLeft) {
+        x += left;
+    } else if (style.flags.insetRight) {
+        x += node.layout.w - right - width;
+    }
+    if (style.flags.insetTop) {
+        y += top;
+    } else if (style.flags.insetBottom) {
+        y += node.layout.h - bottom - height;
+    }
+    return Rect{x, y, width, height};
 }
 
 void applyTransformOperation(SkCanvas& canvas,
@@ -514,6 +613,7 @@ SkFont SkiaRenderer::font(float size, bool bold) const {
 SkPaint SkiaRenderer::fill(SkColor color) const {
     SkPaint p;
     p.setAntiAlias(true);
+    p.setDither(true);
     p.setStyle(SkPaint::kFill_Style);
     p.setColor(color);
     return p;
@@ -530,29 +630,147 @@ SkPaint SkiaRenderer::stroke(SkColor color, float width) const {
     return p;
 }
 
-SkPaint SkiaRenderer::backgroundPaint(const Node& node, const Rect& rect) const {
-    if (node.style.backgroundGradient.kind == GradientKind::None || node.style.backgroundGradient.colors.empty()) {
-        return fill(node.style.backgroundColor);
-    }
-
+SkPaint SkiaRenderer::gradientPaint(const Gradient& gradient,
+                                    const Style& style,
+                                    const Rect& rect) const {
     SkPaint p;
     p.setAntiAlias(true);
+    p.setDither(true);
     p.setStyle(SkPaint::kFill_Style);
-    std::vector<SkColor4f> colors = gradientColors(node.style.backgroundGradient.colors);
-    const SkGradient gradient(SkGradient::Colors(colors, {}, SkTileMode::kClamp), {});
-    if (node.style.backgroundGradient.kind == GradientKind::Radial) {
-        p.setShader(SkShaders::RadialGradient(SkPoint::Make(rect.x + rect.w * 0.5f,
-                                                             rect.y + rect.h * 0.5f),
-                                              std::max(rect.w, rect.h) * 0.62f,
-                                              gradient));
+
+    Rect gradientRect = rect;
+    const bool hasExplicitWidth =
+        style.backgroundSize.width.unit != LengthUnit::Auto;
+    const bool hasExplicitHeight =
+        style.backgroundSize.height.unit != LengthUnit::Auto;
+    if (hasExplicitWidth) {
+        gradientRect.w = resolveBackgroundDimension(
+            style.backgroundSize.width,
+            rect.w);
+    }
+    if (hasExplicitHeight) {
+        gradientRect.h = resolveBackgroundDimension(
+            style.backgroundSize.height,
+            rect.h);
+    }
+    gradientRect.w = std::max(1.0f, gradientRect.w);
+    gradientRect.h = std::max(1.0f, gradientRect.h);
+    gradientRect.x += resolveBackgroundOffset(
+        style.backgroundPosition.x,
+        rect.w,
+        gradientRect.w);
+    gradientRect.y += resolveBackgroundOffset(
+        style.backgroundPosition.y,
+        rect.h,
+        gradientRect.h);
+
+    std::vector<SkColor4f> colors = gradientColors(gradient.colors);
+    const auto makeColorStops = [&](float extent,
+                                    SkTileMode tileMode) {
+        std::vector<std::optional<float>> parsedPositions;
+        parsedPositions.reserve(gradient.stopPositions.size());
+        for (const std::optional<Length>& position :
+             gradient.stopPositions) {
+            if (!position) {
+                parsedPositions.push_back(std::nullopt);
+            } else if (position->unit == LengthUnit::Percent) {
+                parsedPositions.push_back(clampf(
+                    position->value / 100.0f,
+                    0.0f,
+                    1.0f));
+            } else {
+                parsedPositions.push_back(clampf(
+                    position->value / std::max(1.0f, extent),
+                    0.0f,
+                    1.0f));
+            }
+        }
+        if (parsedPositions.empty()) {
+            parsedPositions.resize(colors.size());
+        }
+        parsedPositions.front() = parsedPositions.front().value_or(0.0f);
+        parsedPositions.back() = parsedPositions.back().value_or(1.0f);
+        size_t previousKnown = 0;
+        for (size_t index = 1; index < parsedPositions.size(); ++index) {
+            if (!parsedPositions[index]) {
+                continue;
+            }
+            const float start = *parsedPositions[previousKnown];
+            const float end = std::max(start, *parsedPositions[index]);
+            parsedPositions[index] = end;
+            const size_t interval = index - previousKnown;
+            for (size_t fill = previousKnown + 1;
+                 fill < index;
+                 ++fill) {
+                const float t =
+                    static_cast<float>(fill - previousKnown) /
+                    static_cast<float>(interval);
+                parsedPositions[fill] = start + (end - start) * t;
+            }
+            previousKnown = index;
+        }
+
+        std::vector<float> positions;
+        positions.reserve(parsedPositions.size());
+        for (const std::optional<float>& position : parsedPositions) {
+            positions.push_back(position.value_or(0.0f));
+        }
+        SkGradient::Interpolation interpolation;
+        interpolation.fColorSpace =
+            SkGradient::Interpolation::ColorSpace::kSRGB;
+        return SkGradient(
+            SkGradient::Colors(colors, positions, tileMode),
+            interpolation);
+    };
+    if (gradient.kind == GradientKind::Radial) {
+        const float centerX = gradientRect.x +
+            resolveTransformLength(gradient.centerX, gradientRect.w);
+        const float centerY = gradientRect.y +
+            resolveTransformLength(gradient.centerY, gradientRect.h);
+        const float radiusX = std::max(
+            std::abs(centerX - gradientRect.x),
+            std::abs(gradientRect.x + gradientRect.w - centerX));
+        const float radiusY = std::max(
+            std::abs(centerY - gradientRect.y),
+            std::abs(gradientRect.y + gradientRect.h - centerY));
+        const float radius = std::sqrt(
+            radiusX * radiusX + radiusY * radiusY);
+        p.setShader(SkShaders::RadialGradient(
+            SkPoint::Make(centerX, centerY),
+            radius,
+            makeColorStops(radius, SkTileMode::kClamp)));
     } else {
+        float angleDegrees = gradient.angleDegrees;
+        if (gradient.kind == GradientKind::LinearX) {
+            angleDegrees = 90.0f;
+        } else if (gradient.kind == GradientKind::LinearY) {
+            angleDegrees = 180.0f;
+        }
+        const float radians = angleDegrees *
+            3.14159265358979323846f / 180.0f;
+        const float directionX = std::sin(radians);
+        const float directionY = -std::cos(radians);
+        const float halfLength =
+            std::abs(directionX) * gradientRect.w * 0.5f +
+            std::abs(directionY) * gradientRect.h * 0.5f;
+        const float centerX = gradientRect.x + gradientRect.w * 0.5f;
+        const float centerY = gradientRect.y + gradientRect.h * 0.5f;
         const SkPoint points[2] = {
-            SkPoint::Make(rect.x, rect.y),
-            node.style.backgroundGradient.kind == GradientKind::LinearY
-                ? SkPoint::Make(rect.x, rect.y + rect.h)
-                : SkPoint::Make(rect.x + rect.w, rect.y),
+            SkPoint::Make(
+                centerX - directionX * halfLength,
+                centerY - directionY * halfLength),
+            SkPoint::Make(
+                centerX + directionX * halfLength,
+                centerY + directionY * halfLength),
         };
-        p.setShader(SkShaders::LinearGradient(points, gradient));
+        const bool repeats =
+            (hasExplicitWidth || hasExplicitHeight) &&
+            style.backgroundRepeat != BackgroundRepeat::NoRepeat;
+        p.setShader(SkShaders::LinearGradient(
+            points,
+            makeColorStops(
+                halfLength * 2.0f,
+                repeats ? SkTileMode::kRepeat : SkTileMode::kClamp)));
     }
     return p;
 }
@@ -637,6 +855,9 @@ void SkiaRenderer::drawNode(SkCanvas& canvas, const Document& document, const No
         paint.setAlphaf(opacity);
         if (hasFilter) {
             paint.setColorFilter(makeColorFilter(node.style.filter));
+            paint.setImageFilter(makeImageFilter(
+                node.style.filter,
+                node.style));
         }
         canvas.saveLayer(nullptr, &paint);
     }
@@ -657,10 +878,22 @@ void SkiaRenderer::drawNode(SkCanvas& canvas, const Document& document, const No
         return;
     }
 
+    const bool hasMask = node.style.maskGradient.has_value();
+    if (hasMask) {
+        canvas.saveLayer(node.layout.sk(), nullptr);
+    }
+
     const bool drawsSelf = node.style.visibility != Visibility::Hidden;
     if (!rejected && drawsSelf) {
         auto start = traceRender_ ? perf::Trace::now() : perf::Trace::Clock::time_point{};
         drawBox(canvas, document, node);
+        if (node.hasBeforeStyle) {
+            drawPseudoElement(
+                canvas,
+                document,
+                node,
+                node.beforeStyle);
+        }
         if (traceRender_) {
             traceBoxMs_ += perf::Trace::elapsedMs(start);
             start = perf::Trace::now();
@@ -718,6 +951,9 @@ void SkiaRenderer::drawNode(SkCanvas& canvas, const Document& document, const No
             drawNode(canvas, document, *child);
         }
     }
+    if (drawsSelf && node.hasAfterStyle) {
+        drawPseudoElement(canvas, document, node, node.afterStyle);
+    }
     if (clipsChildren) {
         canvas.restore();
     }
@@ -725,6 +961,16 @@ void SkiaRenderer::drawNode(SkCanvas& canvas, const Document& document, const No
     drawScrollbars(canvas, node);
     if (traceRender_) {
         traceScrollbarMs_ += perf::Trace::elapsedMs(scrollbarStart);
+    }
+    if (hasMask) {
+        Style maskStyle;
+        SkPaint maskPaint = gradientPaint(
+            *node.style.maskGradient,
+            maskStyle,
+            node.layout);
+        maskPaint.setBlendMode(SkBlendMode::kDstIn);
+        canvas.drawRect(node.layout.sk(), maskPaint);
+        canvas.restore();
     }
     canvas.restoreToCount(saveCount);
 }
@@ -738,13 +984,15 @@ void SkiaRenderer::drawBox(SkCanvas& canvas,
     }
 
     const bool hasBackground = SkColorGetA(node.style.backgroundColor) > 0 ||
-                               node.style.backgroundGradient.kind != GradientKind::None ||
+                               !node.style.backgroundGradients.empty() ||
                                !node.style.backgroundImage.empty();
-    const SkColor borderColor = node.style.flags.borderColor ? node.style.borderColor : node.style.color;
-    const bool hasBorder = node.style.borderStyle == BorderStyle::Solid &&
-                           node.style.borderWidth > 0.0f &&
-                           SkColorGetA(borderColor) > 0;
-    if (!hasBackground && !hasBorder) {
+    const bool hasShadow = !node.style.boxShadows.empty();
+    const bool hasBorder =
+        hasVisibleBorder(node.style.borders.left, node.style) ||
+        hasVisibleBorder(node.style.borders.top, node.style) ||
+        hasVisibleBorder(node.style.borders.right, node.style) ||
+        hasVisibleBorder(node.style.borders.bottom, node.style);
+    if (!hasBackground && !hasBorder && !hasShadow) {
         return;
     }
 
@@ -756,48 +1004,184 @@ void SkiaRenderer::drawBoxDirect(SkCanvas& canvas,
                                  const Node& node,
                                  const Rect& rect) {
     const Rect r = rect;
-    if (SkColorGetA(node.style.backgroundColor) > 0 || node.style.backgroundGradient.kind != GradientKind::None) {
-        SkPaint paint = backgroundPaint(node, r);
+    drawBoxShadows(canvas, node, r, false);
+    const auto drawBackgroundPaint = [&](const SkPaint& paint) {
         if (node.style.borderRadius.any()) {
             canvas.drawRRect(makeRRect(r, node.style.borderRadius), paint);
         } else {
-            paint.setAntiAlias(false);
             canvas.drawRect(r.sk(), paint);
         }
+    };
+    if (SkColorGetA(node.style.backgroundColor) > 0) {
+        SkPaint paint = fill(node.style.backgroundColor);
+        paint.setAntiAlias(node.style.borderRadius.any());
+        drawBackgroundPaint(paint);
+    }
+    for (auto gradient = node.style.backgroundGradients.rbegin();
+         gradient != node.style.backgroundGradients.rend();
+         ++gradient) {
+        drawBackgroundPaint(gradientPaint(*gradient, node.style, r));
     }
 
     drawBackgroundImage(canvas, document, node, r);
+    drawBoxShadows(canvas, node, r, true);
 
-    const SkColor borderColor = node.style.flags.borderColor ? node.style.borderColor : node.style.color;
-    if (node.style.borderStyle == BorderStyle::Solid &&
-        node.style.borderWidth > 0.0f &&
-        SkColorGetA(borderColor) > 0) {
-        if (node.style.borderRadius.any()) {
-            const float half = node.style.borderWidth * 0.5f;
-            const SkRect border = SkRect::MakeXYWH(r.x + half,
-                                                   r.y + half,
-                                                   std::max(0.0f, r.w - node.style.borderWidth),
-                                                   std::max(0.0f, r.h - node.style.borderWidth));
-            canvas.drawRRect(makeInsetRRect({border.x(), border.y(), border.width(), border.height()},
-                                            node.style.borderRadius,
-                                            half),
-                             stroke(borderColor, node.style.borderWidth));
-        } else {
-            SkPaint borderPaint = fill(borderColor);
-            borderPaint.setAntiAlias(false);
-            const float bw = std::min(node.style.borderWidth, std::min(r.w, r.h) * 0.5f);
-            if (bw > 0.0f) {
-                canvas.drawRect(SkRect::MakeXYWH(r.x, r.y, r.w, bw), borderPaint);
-                canvas.drawRect(SkRect::MakeXYWH(r.x, r.y + r.h - bw, r.w, bw), borderPaint);
-                canvas.drawRect(SkRect::MakeXYWH(r.x, r.y + bw, bw, std::max(0.0f, r.h - bw * 2.0f)), borderPaint);
-                canvas.drawRect(SkRect::MakeXYWH(r.x + r.w - bw,
-                                                 r.y + bw,
-                                                 bw,
-                                                 std::max(0.0f, r.h - bw * 2.0f)),
-                                borderPaint);
-            }
-        }
+    const BorderSide& left = node.style.borders.left;
+    const BorderSide& top = node.style.borders.top;
+    const BorderSide& right = node.style.borders.right;
+    const BorderSide& bottom = node.style.borders.bottom;
+    const bool uniformBorder = bordersMatch(left, top, node.style) &&
+                               bordersMatch(top, right, node.style) &&
+                               bordersMatch(right, bottom, node.style);
+    if (uniformBorder && hasVisibleBorder(top, node.style) &&
+        node.style.borderRadius.any()) {
+        const float width = resolvedBorderWidth(top);
+        const float half = width * 0.5f;
+        const SkRect border = SkRect::MakeXYWH(
+            r.x + half,
+            r.y + half,
+            std::max(0.0f, r.w - width),
+            std::max(0.0f, r.h - width));
+        canvas.drawRRect(
+            makeInsetRRect(
+                {border.x(), border.y(), border.width(), border.height()},
+                node.style.borderRadius,
+                half),
+            stroke(resolvedBorderColor(top, node.style), width));
+        return;
     }
+
+    const auto drawHorizontalBorder = [&](const BorderSide& side,
+                                          bool atBottom) {
+        if (!hasVisibleBorder(side, node.style)) {
+            return;
+        }
+        const float width = std::min(resolvedBorderWidth(side), r.h);
+        const float y = atBottom ? r.y + r.h - width : r.y;
+        SkPaint paint = fill(resolvedBorderColor(side, node.style));
+        paint.setAntiAlias(false);
+        canvas.drawRect(SkRect::MakeXYWH(r.x, y, r.w, width), paint);
+    };
+    const auto drawVerticalBorder = [&](const BorderSide& side,
+                                        bool atRight) {
+        if (!hasVisibleBorder(side, node.style)) {
+            return;
+        }
+        const float width = std::min(resolvedBorderWidth(side), r.w);
+        const float x = atRight ? r.x + r.w - width : r.x;
+        SkPaint paint = fill(resolvedBorderColor(side, node.style));
+        paint.setAntiAlias(false);
+        canvas.drawRect(SkRect::MakeXYWH(x, r.y, width, r.h), paint);
+    };
+
+    if (node.style.borderRadius.any()) {
+        canvas.save();
+        canvas.clipRRect(
+            makeRRect(r, node.style.borderRadius),
+            SkClipOp::kIntersect,
+            true);
+    }
+    drawHorizontalBorder(top, false);
+    drawHorizontalBorder(bottom, true);
+    drawVerticalBorder(left, false);
+    drawVerticalBorder(right, true);
+    if (node.style.borderRadius.any()) {
+        canvas.restore();
+    }
+}
+
+void SkiaRenderer::drawBoxShadows(SkCanvas& canvas,
+                                  const Node& node,
+                                  const Rect& rect,
+                                  bool inset) {
+    for (const Shadow& shadow : node.style.boxShadows) {
+        if (shadow.inset != inset) {
+            continue;
+        }
+        const SkColor color = shadowColor(shadow, node.style);
+        if (SkColorGetA(color) == 0) {
+            continue;
+        }
+        SkPaint paint = fill(color);
+        const float sigma = shadowSigma(shadow.blurRadius);
+        if (sigma > 0.0f) {
+            paint.setMaskFilter(SkMaskFilter::MakeBlur(
+                kNormal_SkBlurStyle,
+                sigma));
+        }
+
+        Rect shadowRect = rect;
+        shadowRect.x += shadow.offsetX;
+        shadowRect.y += shadow.offsetY;
+        if (!inset) {
+            shadowRect.x -= shadow.spreadRadius;
+            shadowRect.y -= shadow.spreadRadius;
+            shadowRect.w += shadow.spreadRadius * 2.0f;
+            shadowRect.h += shadow.spreadRadius * 2.0f;
+            canvas.save();
+            canvas.clipRRect(
+                makeRRect(rect, node.style.borderRadius),
+                SkClipOp::kDifference,
+                true);
+            canvas.drawRRect(
+                makeInsetRRect(
+                    shadowRect,
+                    node.style.borderRadius,
+                    -shadow.spreadRadius),
+                paint);
+            canvas.restore();
+            continue;
+        }
+
+        canvas.save();
+        canvas.clipRRect(
+            makeRRect(rect, node.style.borderRadius),
+            SkClipOp::kIntersect,
+            true);
+        const float margin = std::max(
+            1.0f,
+            shadow.blurRadius * 2.0f +
+                std::abs(shadow.offsetX) +
+                std::abs(shadow.offsetY) +
+                std::abs(shadow.spreadRadius));
+        const Rect outer = {
+            rect.x - margin,
+            rect.y - margin,
+            rect.w + margin * 2.0f,
+            rect.h + margin * 2.0f};
+        Rect hole = {
+            rect.x + shadow.offsetX + shadow.spreadRadius,
+            rect.y + shadow.offsetY + shadow.spreadRadius,
+            std::max(0.0f, rect.w - shadow.spreadRadius * 2.0f),
+            std::max(0.0f, rect.h - shadow.spreadRadius * 2.0f)};
+        SkPathBuilder shadowPath;
+        shadowPath.setFillType(SkPathFillType::kEvenOdd);
+        shadowPath.addRect(outer.sk());
+        if (hole.w > 0.0f && hole.h > 0.0f) {
+            shadowPath.addRRect(makeInsetRRect(
+                hole,
+                node.style.borderRadius,
+                shadow.spreadRadius));
+        }
+        canvas.drawPath(shadowPath.detach(), paint);
+        canvas.restore();
+    }
+}
+
+void SkiaRenderer::drawPseudoElement(SkCanvas& canvas,
+                                     const Document& document,
+                                     const Node& node,
+                                     const Style& style) {
+    std::optional<Rect> rect = resolvePseudoElementRect(node, style);
+    if (!rect || rect->w <= 0.0f || rect->h <= 0.0f) {
+        return;
+    }
+
+    Node pseudo;
+    pseudo.tag = "pseudo";
+    pseudo.style = style;
+    pseudo.layout = *rect;
+    drawNode(canvas, document, pseudo);
 }
 
 void SkiaRenderer::drawBackgroundImage(SkCanvas& canvas,
@@ -1656,7 +2040,13 @@ void SkiaRenderer::drawText(SkCanvas& canvas, const Node& node) {
                                    static_cast<float>(i) * lineHeight +
                                    lineHeight * 0.5f -
                                    (entry.metrics.fAscent + entry.metrics.fDescent) * 0.5f;
-            canvas.drawTextBlob(entry.blob, content.left() - node.scrollX, baseline, fill(textColor));
+            drawStyledTextBlob(
+                canvas,
+                node,
+                entry.blob,
+                content.left() - node.scrollX,
+                baseline,
+                textColor);
         }
         canvas.restore();
         return;
@@ -1701,14 +2091,26 @@ void SkiaRenderer::drawText(SkCanvas& canvas, const Node& node) {
                 if (segmentStart < linkStart) {
                     const std::string_view plain(value->data() + segmentStart, linkStart - segmentStart);
                     const TextEntry& plainEntry = textEntry(plain, node.style.fontSize, node.style.fontBold);
-                    canvas.drawTextBlob(plainEntry.blob, segmentX, baseline, fill(textColor));
+                    drawStyledTextBlob(
+                        canvas,
+                        node,
+                        plainEntry.blob,
+                        segmentX,
+                        baseline,
+                        textColor);
                     segmentX += plainEntry.width;
                 }
                 if (linkStart < linkEnd) {
                     const std::string_view linked(value->data() + linkStart, linkEnd - linkStart);
                     const TextEntry& linkedEntry = textEntry(linked, node.style.fontSize, node.style.fontBold);
                     const SkColor linkColor = SkColorSetRGB(11, 105, 183);
-                    canvas.drawTextBlob(linkedEntry.blob, segmentX, baseline, fill(linkColor));
+                    drawStyledTextBlob(
+                        canvas,
+                        node,
+                        linkedEntry.blob,
+                        segmentX,
+                        baseline,
+                        linkColor);
                     canvas.drawLine(segmentX,
                                     baseline + 2.0f,
                                     segmentX + linkedEntry.width,
@@ -1721,7 +2123,13 @@ void SkiaRenderer::drawText(SkCanvas& canvas, const Node& node) {
             if (segmentStart < line.end) {
                 const std::string_view plain(value->data() + segmentStart, line.end - segmentStart);
                 const TextEntry& plainEntry = textEntry(plain, node.style.fontSize, node.style.fontBold);
-                canvas.drawTextBlob(plainEntry.blob, segmentX, baseline, fill(textColor));
+                drawStyledTextBlob(
+                    canvas,
+                    node,
+                    plainEntry.blob,
+                    segmentX,
+                    baseline,
+                    textColor);
             }
         }
         if (clipsOverflow) {
@@ -1737,11 +2145,39 @@ void SkiaRenderer::drawText(SkCanvas& canvas, const Node& node) {
     if (editable) {
         canvas.save();
         canvas.clipRect(node.layout.sk(), SkClipOp::kIntersect, true);
-        canvas.drawTextBlob(entry.blob, x, y, fill(textColor));
+        drawStyledTextBlob(canvas, node, entry.blob, x, y, textColor);
         canvas.restore();
     } else {
-        canvas.drawTextBlob(entry.blob, x, y, fill(textColor));
+        drawStyledTextBlob(canvas, node, entry.blob, x, y, textColor);
     }
+}
+
+void SkiaRenderer::drawStyledTextBlob(
+    SkCanvas& canvas,
+    const Node& node,
+    const sk_sp<SkTextBlob>& blob,
+    float x,
+    float y,
+    SkColor color) {
+    for (const Shadow& shadow : node.style.textShadows) {
+        const SkColor colorValue = shadowColor(shadow, node.style);
+        if (SkColorGetA(colorValue) == 0) {
+            continue;
+        }
+        SkPaint paint = fill(colorValue);
+        const float sigma = shadowSigma(shadow.blurRadius);
+        if (sigma > 0.0f) {
+            paint.setMaskFilter(SkMaskFilter::MakeBlur(
+                kNormal_SkBlurStyle,
+                sigma));
+        }
+        canvas.drawTextBlob(
+            blob,
+            x + shadow.offsetX,
+            y + shadow.offsetY,
+            paint);
+    }
+    canvas.drawTextBlob(blob, x, y, fill(color));
 }
 
 void SkiaRenderer::drawInputCompositionUnderline(SkCanvas& canvas, const Node& node) {

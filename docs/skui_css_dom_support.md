@@ -60,14 +60,16 @@
 - 选择器列表：`.a, .b`
 - 属性选择器：`[data-state]`、`[data-state=selected]`
 - 伪类：`:hover`、`:active`、`:focus`、`:disabled`、`:checked`、`:selected`
-- 结构伪类：`:first-child`、`:last-child`、`:nth-child(n)`、`:nth-child(odd)`、`:nth-child(even)`
+- 结构伪类：`:first-child`、`:last-child`、`:nth-child(An+B)`、`:nth-child(odd)`、`:nth-child(even)`
+- 否定伪类：`:not(...)`，参数支持单个复合选择器
+- 装饰伪元素：`::before`、`::after`；由 `content` 创建，支持绝对定位盒绘制
 
 优先级规则接近浏览器：id 高于 class / 属性 / 伪类，高于 tag；同优先级按源码顺序覆盖；内联 `style` 最后覆盖。
 
 暂不支持：
 
 - 兄弟选择器 `+` / `~`
-- `:not()`、`:has()`、`:is()`
+- `:has()`、`:is()`，以及 `:not()` 内的选择器列表或复杂选择器
 - CSS 变量
 - 完整 CSS Animation 标准；当前提供面向雪碧图的 `@keyframes` / `animation` 子集
 - 远程 CSS（`http://` / `https://`）和 `data:` stylesheet
@@ -110,11 +112,12 @@
 
 | 属性 | 值 |
 | --- | --- |
-| `display` | `flex`、`none` |
+| `display` | `flex`、`inline-flex`、`grid`、`inline-grid`、`none` |
 | `visibility` | `visible`、`hidden` |
 | `position` | `relative`、`absolute` |
 | `z-index` | `auto`、正负整数 |
 | `left` / `top` / `right` / `bottom` | `px`、`%`、`auto` |
+| `inset` | 1-4 值，`px` / `%` / `auto` |
 | `width` / `height` | `px`、`%`、`auto` |
 | `min-width` / `min-height` | `px`、`%` |
 | `max-width` / `max-height` | `px`、`%` |
@@ -124,10 +127,15 @@
 | `flex-wrap` | `nowrap`、`wrap` |
 | `gap` / `row-gap` / `column-gap` | `px` / `%`，用于 flex 容器 |
 | `flex-grow` / `flex-shrink` | 数字 |
+| `flex` / `flex-basis` | 常用 1-3 值 shorthand；basis 支持 `px` / `%` / `auto` |
+| `grid-template-columns` | `repeat(N, track)` 或轨道列表；支持 `px`、`%`、`fr`、`auto`、`minmax(0, track)` |
+| `grid-auto-rows` | 单个 `px`、`%`、`fr` 或 `auto` 轨道 |
 | `align-items` / `align-self` | `stretch`、`center`、`flex-start`、`flex-end` |
 | `justify-content` | `flex-start`、`center`、`flex-end`、`space-between` |
 
 布局由 Yoga 计算。显式 `display:flex` 的容器使用浏览器默认的 `flex-direction: row`；未显式设置 `display` 的旧写法保持原有默认纵向排布。
+
+Grid 通过 Yoga 的横向换行布局映射实现，覆盖等分 `repeat(N, 1fr)` 和单行固定/弹性混合轨道等卡片布局；它不是完整 CSS Grid 算法，暂不支持命名线、显式行列定位、跨行列、`auto-fit` / `auto-fill` 和复杂隐式轨道。
 
 `align-items` 和 `justify-content` 只按浏览器语义影响显式 `display:flex` 的内容对齐；没有显式 `display:flex` 的普通文本或 `selectable` 不会因为这些属性而居中。
 
@@ -146,22 +154,29 @@
 | --- | --- |
 | `color` | 文本色；`progress` 的填充色；SVG 的 `currentColor` |
 | `background-color` | 背景色 |
-| `background` | 支持颜色、单独的 `url(...)`、`linear-gradient(...)`、`linear-gradient(to right, ...)`、`linear-gradient(to bottom, ...)`、`linear-gradient-x(...)`、`linear-gradient-y(...)`、`radial-gradient(...)` |
+| `background` | 支持颜色、单独的 `url(...)`、多层线性/径向渐变；线性渐变支持角度、方向、`px` / 百分比色标，径向渐变支持 `at` 定位 |
 | `background-image` | 本地位图 `url(...)` 或 `none` |
 | `background-size` | 1-2 个 `px`、百分比或 `auto`；百分比相对元素背景区域 |
 | `background-position` | 1-2 个 `px`、百分比或 `left` / `right` / `top` / `bottom` / `center`；百分比按浏览器的“容器尺寸减背景尺寸”公式计算 |
 | `background-repeat` | `repeat`、`no-repeat`、`repeat-x`、`repeat-y` |
+| `mask-image` / `-webkit-mask-image` | 单层线性或径向渐变 alpha 遮罩 |
 | `border` | 简单 shorthand：宽度、`solid` / `none`、颜色 |
 | `border-color` | 边框色 |
 | `border-width` | 数字或 `px` |
 | `border-style` | `solid`、`none` |
+| `border-top` / `border-right` / `border-bottom` / `border-left` | 单边宽度、样式、颜色 shorthand；也支持对应的 `-color` / `-width` / `-style` 长属性 |
 | `border-radius` | 1-4 个数字或 `px`，按 CSS shorthand 顺序展开四角 |
 | `border-top-left-radius` / `border-top-right-radius` / `border-bottom-right-radius` / `border-bottom-left-radius` | 数字或 `px` |
+| `box-shadow` | 逗号分隔的外阴影和 `inset` 阴影；支持偏移、模糊、扩散和颜色 |
+| `text-shadow` | 逗号分隔的文字阴影；支持偏移、模糊和颜色 |
 | `font-size` | 数字或 `px` |
 | `font-weight` | `bold`、`600`、`700` 为粗体；其他为常规 |
-| `filter` | `none`，或按顺序组合 `grayscale(...)`、`brightness(...)`；参数支持非负数字和百分比 |
+| `filter` | `none`，或按顺序组合 `grayscale(...)`、`brightness(...)`、`drop-shadow(...)` |
+| `content` | `::before` / `::after` 的创建条件；当前绘制子集使用空字符串装饰盒 |
 
-`filter` 会在节点及其完整子树绘制完成后统一处理，因此背景、图片、文字、边框和不规则透明区域会一起变色，不会额外生成矩形遮罩。当前只实现颜色矩阵类滤镜，不支持模糊、阴影和滤镜动画。例如：
+渐变由 Skia `SkShaders` 生成，按 sRGB 插值并启用 Skia dithering，以减少低亮度 8 位颜色中的分层色带；渐变遮罩通过 Skia 离屏层和 `DstIn` 混合应用；`box-shadow`、`text-shadow` 和 `drop-shadow()` 分别使用 Skia 的路径、`SkMaskFilter` 与 `SkImageFilters`。这些效果没有调用浏览器内核，但 CSS 参数会映射到对应的 Skia 原生绘制能力。外阴影会裁掉盒内区域，`inset` 阴影通过“外部区域减去内孔”的路径向内模糊，不再使用粗描边近似。
+
+`filter` 会在节点及其完整子树绘制完成后统一处理，因此背景、图片、文字、边框和不规则透明区域会一起变色，不会额外生成矩形遮罩。`drop-shadow()` 使用绘制结果的 alpha 轮廓生成阴影；暂不支持通用 `blur()` 和滤镜动画。例如：
 
 ```css
 .disabled-look {
@@ -370,6 +385,7 @@ SkUI 的事件返回值表示“UI 是否实际消费了事件”，不是“DOM
 - 相同解析路径的位图图片会复用缓存，不会为多个 `<img>` 重复加载。
 - 位图绘制会按节点布局盒缩放，并裁剪到节点盒；节点设置 `border-radius` 时也会按圆角裁剪。
 - 内联 `<svg>` 和 SVG 文件都交给 Skia `SkSVGDOM` 渲染。
+- `img` 和内联 `svg` 的 HTML `width` / `height` 展示属性会作为低优先级尺寸参与布局，CSS 尺寸可以覆盖它们。
 - 支持将 SVG 中的 `currentColor` 替换为当前节点 CSS `color`。
 - SVG 会按节点布局盒缩放绘制，并裁剪到节点盒。
 
@@ -460,6 +476,8 @@ SkUI 的事件返回值表示“UI 是否实际消费了事件”，不是“DOM
 - 没有完整浏览器表单控件。
 - 没有完整 CSS 标准或外部 stylesheet。transition 覆盖 `height`、`opacity` 和 `transform`；关键帧动画覆盖
   `background-position`、`opacity` 和兼容函数列表内的 `transform`。
+- Grid 是面向卡片/指标面板的布局子集；伪元素只支持绝对定位装饰盒和空 `content`，不参与 Yoga 布局或事件命中。
+- 多层渐变共享当前 `background-size` / `background-repeat`；水平和垂直线性渐变支持按指定尺寸平铺，径向和任意角度渐变尚不支持完整二维平铺。`mask-image` 当前只支持单层渐变 alpha 遮罩，不支持 URL、多层遮罩和独立的遮罩尺寸、位置或重复属性。
 - `img` 只支持本地资源路径；位图支持 PNG、JPEG、WebP 和 BMP。懒加载属性使用浏览器一致的 `loading="lazy"`，不支持旧式 `data-loading`。暂不支持网络 URL、`srcset` 和浏览器图片事件。
 - 文本排版是单行、`selectable` 显式多行或简单多行编辑框，不是富文本排版引擎；`selectable` 暂不支持跨 DOM 节点连续选择。
 - 中文双击选词目前按单个非 ASCII 字符处理，不做自然语言分词。

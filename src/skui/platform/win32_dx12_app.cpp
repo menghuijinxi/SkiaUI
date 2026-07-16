@@ -281,6 +281,18 @@ private:
             return DefWindowProcW(hwnd, message, wParam, lParam);
         }
 
+        if (app->options_.onWindowMessage &&
+            app->options_.onWindowMessage(
+                hwnd,
+                message,
+                wParam,
+                lParam,
+                app->runtime_)) {
+            app->markFrameDirty();
+            app->requestRepaint(hwnd, false);
+            return 0;
+        }
+
         if (message == WM_MOUSEWHEEL || message == WM_MOUSEHWHEEL) {
             app->framePacing_.noteWheelInput();
         } else if (message == WM_MOUSEMOVE && (wParam & MK_LBUTTON) != 0) {

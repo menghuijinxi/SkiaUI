@@ -28,6 +28,7 @@ option(SKIAUI_BUILD_SKIA_UI_DESK "Build the SkiaUiDesk demo application" ${SKIAU
 option(SKIAUI_BUILD_TEXT_FILE_DEMO "Build the text file rendering performance demo" ${SKIAUI_BUILD_DEMOS})
 option(SKIAUI_BUILD_IMAGE_SCROLLER_DEMO "Build the image scroller memory demo" ${SKIAUI_BUILD_DEMOS})
 option(SKIAUI_BUILD_DYNAMIC_DOM_DEMO "Build the dynamic DOM mutation demo" ${SKIAUI_BUILD_DEMOS})
+option(SKIAUI_BUILD_HTML_PREVIEWER "Build the standalone HTML preview window" ${SKIAUI_BUILD_DEMOS})
 option(SKIAUI_INSTALL_SKIA_UI_DESK "Install the SkiaUiDesk demo application" OFF)
 option(SKIAUI_BUILD_TESTS "Build SkiaUI tests" ${BUILD_TESTING})
 option(SKIAUI_BUILD_WIN32 "Build the Win32 SkUI platform adapter target" ON)
@@ -58,6 +59,10 @@ endif()
 
 if(SKIAUI_BUILD_DYNAMIC_DOM_DEMO AND NOT SKIAUI_BUILD_WIN32_DX12)
     message(FATAL_ERROR "SKIAUI_BUILD_DYNAMIC_DOM_DEMO requires SKIAUI_BUILD_WIN32_DX12.")
+endif()
+
+if(SKIAUI_BUILD_HTML_PREVIEWER AND NOT SKIAUI_BUILD_WIN32_DX12)
+    message(FATAL_ERROR "SKIAUI_BUILD_HTML_PREVIEWER requires SKIAUI_BUILD_WIN32_DX12.")
 endif()
 
 add_library(Skui STATIC
@@ -119,6 +124,12 @@ endif()
 if(SKIAUI_BUILD_DYNAMIC_DOM_DEMO)
     add_executable(SkiaDynamicDomDemo WIN32
         src/skui_dynamic_dom_demo/main.cpp
+    )
+endif()
+
+if(SKIAUI_BUILD_HTML_PREVIEWER)
+    add_executable(SkiaHtmlPreviewer WIN32
+        src/skui_html_previewer/main.cpp
     )
 endif()
 
@@ -459,6 +470,34 @@ if(SKIAUI_BUILD_DYNAMIC_DOM_DEMO)
     endif()
 endif()
 
+if(SKIAUI_BUILD_HTML_PREVIEWER)
+    target_include_directories(SkiaHtmlPreviewer PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/skui/public"
+    )
+
+    target_link_libraries(SkiaHtmlPreviewer PRIVATE
+        SkuiWin32Dx12
+        comdlg32
+        shell32
+    )
+
+    target_compile_definitions(SkiaHtmlPreviewer PRIVATE
+        WIN32_LEAN_AND_MEAN
+        NOMINMAX
+        UNICODE
+        _UNICODE
+    )
+
+    if(MSVC)
+        target_compile_options(SkiaHtmlPreviewer PRIVATE
+            /utf-8
+            /permissive-
+            /Zc:__cplusplus
+        )
+    endif()
+endif()
+
 if(SKIAUI_BUILD_TESTS)
     target_link_libraries(SkuiInteractionTests PRIVATE
         Skui
@@ -507,6 +546,9 @@ if(SKIATEST_USE_SKIA_D3D)
     endif()
     if(SKIAUI_BUILD_DYNAMIC_DOM_DEMO)
         target_compile_definitions(SkiaDynamicDomDemo PRIVATE SKIATEST_USE_SKIA_D3D=1)
+    endif()
+    if(SKIAUI_BUILD_HTML_PREVIEWER)
+        target_compile_definitions(SkiaHtmlPreviewer PRIVATE SKIATEST_USE_SKIA_D3D=1)
     endif()
 endif()
 

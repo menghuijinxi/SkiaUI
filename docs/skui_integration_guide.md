@@ -17,6 +17,7 @@
 Demo target：
 
 - `SkiaUiDesk`：SkUI 自制 CSS + DOM 功能 demo。
+- `SkiaHtmlPreviewer`：选择、拖放或通过命令行加载任意本地 HTML 的预览窗口。
 - `SkiaRelayDeskDemo`：RelayDesk 界面 demo。
 - `SkiaDynamicDomDemo`：动态 DOM 增删、替换、显示/隐藏、滚动布局、轻量 CSS transition / animation 和雪碧图 demo。
 - `SkuiInteractionTests`：运行时行为回归测试。
@@ -24,6 +25,32 @@ Demo target：
 `SkiaDynamicDomDemo` 的静态资源由 `SkiaDynamicDomDemoAssets` 目标同步到可执行文件同级的
 `assets/skui_dynamic_dom_demo` 目录。修改 `assets/skui_dynamic_dom_demo` 下的 HTML、图片或其他资源后，
 重新构建 `SkiaDynamicDomDemo` 会刷新运行时实际读取的资源，避免 exe 旁边残留旧 demo 文件。
+
+### HTML 页面预览
+
+构建并启动独立预览器：
+
+```powershell
+cmake --build build\ninja-vcpkg --target SkiaHtmlPreviewer
+.\build\ninja-vcpkg\SkiaHtmlPreviewer.exe
+```
+
+启动后会弹出 HTML 文件选择窗口。也可以直接传入页面路径：
+
+```powershell
+.\build\ninja-vcpkg\SkiaHtmlPreviewer.exe E:\Project\MyUi\page.html
+```
+
+窗口支持“文件 > 打开 HTML”、`Ctrl+O`、拖放 HTML 文件、`F5` 重新加载，以及“保存渲染截图”/ `Ctrl+S`。截图直接调用 `Runtime::renderToBgraPixels`，不包含窗口边框，也不受桌面遮挡影响。HTML 引用的本地 CSS、图片和 SVG 都以页面所在目录为基准解析。
+
+固定尺寸的自动对比截图可以使用无窗口模式：
+
+```powershell
+.\build\ninja-vcpkg\SkiaHtmlPreviewer.exe `
+  --screenshot .\tmp\page-1920x1080.png `
+  --width 1920 --height 1080 `
+  E:\Project\MyUi\page.html
+```
 
 ## 依赖
 
@@ -242,6 +269,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCmd) {
 ```
 
 `WindowOptions::useSystemDpiScale` 控制 Win32/DX12 宿主是否把系统 DPI 纳入 SkUI 的缩放计算，默认是 `true`。如果目标系统已有自己的 UI 缩放方案，例如宿主已经在 4K 下按 1.5 倍管理窗口和输入坐标，可以把它设为 `false`，让 SkUI 按 1.0 的平台 DPI 运行。
+
+`WindowOptions::onWindowMessage` 是可选的宿主消息扩展点。回调返回 `true` 时表示消息已处理，宿主会标记画面为脏并请求重绘；菜单命令、文件拖放和工具级快捷键可以放在这里，普通 SkUI 输入仍由内置 Win32 事件适配器处理。
 
 `RuntimeOptions::scale` 是 SkUI 自身的用户缩放倍率，默认 `1.0f`。最终生效倍率为“Win32 系统 DPI 倍率（如果启用）乘以 `RuntimeOptions::scale`”。因此：
 

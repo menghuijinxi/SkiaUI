@@ -50,6 +50,7 @@ struct Rect {
 
 enum class Display {
     Flex,
+    Grid,
     None
 };
 
@@ -68,6 +69,7 @@ enum class GradientKind {
     None,
     LinearX,
     LinearY,
+    LinearAngle,
     Radial
 };
 
@@ -179,7 +181,45 @@ struct BackgroundSize {
 struct Gradient {
     GradientKind kind = GradientKind::None;
     std::vector<SkColor> colors;
-    std::vector<float> positions;
+    std::vector<std::optional<Length>> stopPositions;
+    float angleDegrees = 180.0f;
+    Length centerX = {50.0f, LengthUnit::Percent};
+    Length centerY = {50.0f, LengthUnit::Percent};
+};
+
+enum class GridTrackKind {
+    Fixed,
+    Fraction,
+    Auto
+};
+
+struct GridTrack {
+    GridTrackKind kind = GridTrackKind::Auto;
+    Length length = {0.0f, LengthUnit::Auto};
+    float fraction = 0.0f;
+};
+
+struct Shadow {
+    float offsetX = 0.0f;
+    float offsetY = 0.0f;
+    float blurRadius = 0.0f;
+    float spreadRadius = 0.0f;
+    SkColor color = SK_ColorBLACK;
+    bool usesCurrentColor = true;
+    bool inset = false;
+};
+
+struct BorderSide {
+    std::optional<SkColor> color;
+    std::optional<float> width;
+    std::optional<BorderStyle> style;
+};
+
+struct BorderEdges {
+    BorderSide left;
+    BorderSide top;
+    BorderSide right;
+    BorderSide bottom;
 };
 
 struct EdgeValues {
@@ -248,12 +288,14 @@ struct TransformOrigin {
 
 enum class FilterOperationKind {
     Grayscale,
-    Brightness
+    Brightness,
+    DropShadow
 };
 
 struct FilterOperation {
     FilterOperationKind kind = FilterOperationKind::Grayscale;
     float amount = 0.0f;
+    Shadow shadow;
 };
 
 struct Filter {
@@ -267,6 +309,10 @@ struct Filter {
             }
             if (operation.kind == FilterOperationKind::Brightness &&
                 operation.amount != 1.0f) {
+                return false;
+            }
+            if (operation.kind == FilterOperationKind::DropShadow &&
+                SkColorGetA(operation.shadow.color) > 0) {
                 return false;
             }
         }
@@ -314,6 +360,9 @@ struct Style {
         bool alignSelf = false;
         bool flexGrow = false;
         bool flexShrink = false;
+        bool flexBasis = false;
+        bool gridTemplateColumns = false;
+        bool gridAutoRows = false;
         bool boxSizing = false;
         bool width = false;
         bool height = false;
@@ -339,9 +388,6 @@ struct Style {
         bool backgroundPosition = false;
         bool backgroundSize = false;
         bool backgroundRepeat = false;
-        bool borderColor = false;
-        bool borderWidth = false;
-        bool borderStyle = false;
         bool borderTopLeftRadius = false;
         bool borderTopRightRadius = false;
         bool borderBottomRightRadius = false;
@@ -349,6 +395,10 @@ struct Style {
         bool fontSize = false;
         bool fontBold = false;
         bool backgroundGradient = false;
+        bool maskImage = false;
+        bool boxShadow = false;
+        bool textShadow = false;
+        bool content = false;
         bool opacity = false;
         bool transform = false;
         bool transformOrigin = false;
@@ -377,6 +427,9 @@ struct Style {
     YGAlign alignSelf = YGAlignAuto;
     float flexGrow = 0.0f;
     float flexShrink = 1.0f;
+    std::optional<Length> flexBasis;
+    std::vector<GridTrack> gridTemplateColumns;
+    std::optional<GridTrack> gridAutoRows;
     YGBoxSizing boxSizing = YGBoxSizingContentBox;
     std::optional<Length> width;
     std::optional<Length> height;
@@ -393,13 +446,15 @@ struct Style {
     BackgroundPosition backgroundPosition;
     BackgroundSize backgroundSize;
     BackgroundRepeat backgroundRepeat = BackgroundRepeat::Repeat;
-    SkColor borderColor = SK_ColorTRANSPARENT;
-    float borderWidth = 0.0f;
-    BorderStyle borderStyle = BorderStyle::None;
+    BorderEdges borders;
     CornerRadii borderRadius;
     float fontSize = 16.0f;
     bool fontBold = false;
-    Gradient backgroundGradient;
+    std::vector<Gradient> backgroundGradients;
+    std::optional<Gradient> maskGradient;
+    std::vector<Shadow> boxShadows;
+    std::vector<Shadow> textShadows;
+    std::string content;
     float opacity = 1.0f;
     Transform transform;
     TransformOrigin transformOrigin;
@@ -463,10 +518,15 @@ struct Node {
     std::vector<TextLink> textLinks;
     std::unordered_map<std::string, std::string> attributes;
     Style style;
+    Style beforeStyle;
+    Style afterStyle;
+    Style presentationStyle;
     Style inlineStyle;
     Style animatedStyle;
     Style::Flags animatedStyleFlags;
     bool hasAnimatedStyle = false;
+    bool hasBeforeStyle = false;
+    bool hasAfterStyle = false;
     Rect layout;
     ResolvedEdges resolvedPadding;
     float scrollX = 0.0f;
@@ -504,6 +564,12 @@ enum class SelectorCombinator {
     Child
 };
 
+enum class PseudoElement {
+    None,
+    Before,
+    After
+};
+
 struct SelectorPart {
     SelectorCombinator combinator = SelectorCombinator::None;
     CompoundSelector selector;
@@ -512,6 +578,7 @@ struct SelectorPart {
 struct StyleRule {
     std::vector<SelectorPart> selector;
     Style style;
+    PseudoElement pseudoElement = PseudoElement::None;
     std::optional<float> minViewportWidth;
     std::optional<float> maxViewportWidth;
     std::optional<float> minViewportHeight;
@@ -675,13 +742,23 @@ private:
     SkFont font(float size, bool bold) const;
     SkPaint fill(SkColor color) const;
     SkPaint stroke(SkColor color, float width) const;
-    SkPaint backgroundPaint(const Node& node, const Rect& rect) const;
+    SkPaint gradientPaint(const Gradient& gradient,
+                          const Style& style,
+                          const Rect& rect) const;
     void drawNode(SkCanvas& canvas, const Document& document, const Node& node);
     void drawBox(SkCanvas& canvas, const Document& document, const Node& node);
     void drawBoxDirect(SkCanvas& canvas,
                        const Document& document,
                        const Node& node,
                        const Rect& rect);
+    void drawBoxShadows(SkCanvas& canvas,
+                        const Node& node,
+                        const Rect& rect,
+                        bool inset);
+    void drawPseudoElement(SkCanvas& canvas,
+                           const Document& document,
+                           const Node& node,
+                           const Style& style);
     void drawBackgroundImage(SkCanvas& canvas,
                              const Document& document,
                              const Node& node,
@@ -695,6 +772,12 @@ private:
     bool drawSvgDom(SkCanvas& canvas, const std::string& svg, const Rect& rect, SkColor currentColor);
     void drawInputSelection(SkCanvas& canvas, const Node& node);
     void drawText(SkCanvas& canvas, const Node& node);
+    void drawStyledTextBlob(SkCanvas& canvas,
+                            const Node& node,
+                            const sk_sp<SkTextBlob>& blob,
+                            float x,
+                            float y,
+                            SkColor color);
     void drawInputCompositionUnderline(SkCanvas& canvas, const Node& node);
     void drawInputCaret(SkCanvas& canvas, const Node& node);
     void beginBitmapFrame();

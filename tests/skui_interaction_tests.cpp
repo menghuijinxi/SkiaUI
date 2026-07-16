@@ -5029,6 +5029,407 @@ int main() {
     ok = expect(thirdGapProbe == solidColor(0x00, 0x00, 0xFF),
                 "third flex child should appear after second gap") && ok;
 
+    constexpr std::string_view gridCardLayoutHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+    .root {
+      width: 140px;
+      height: 90px;
+      display: flex;
+      flex-direction: column;
+      background-color: #000000;
+    }
+    .header {
+      height: 20px;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      flex: 0 0 auto;
+    }
+    .header-item {
+      width: 10px;
+      height: 10px;
+      flex: 0 0 auto;
+    }
+    .header-a {
+      background-color: #ff0000;
+    }
+    .header-b {
+      background-color: #00ff00;
+    }
+    .grid {
+      flex: 1;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      grid-auto-rows: 1fr;
+    }
+    .red { background-color: #ff0000; }
+    .green { background-color: #00ff00; }
+    .blue { background-color: #0000ff; }
+    .cyan { background-color: #00ffff; }
+    .magenta { background-color: #ff00ff; }
+    .yellow { background-color: #ffff00; }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <div class="header">
+      <div class="header-item header-a"></div>
+      <div class="header-item header-b"></div>
+    </div>
+    <div class="grid">
+      <div class="red"></div>
+      <div class="green"></div>
+      <div class="blue"></div>
+      <div class="cyan"></div>
+      <div class="magenta"></div>
+      <div class="yellow"></div>
+    </div>
+  </div>
+</body>
+</html>
+)html";
+
+    skui::Runtime gridCardLayoutRuntime(options);
+    gridCardLayoutRuntime.resize(kWidth, kHeight, 1.0f);
+    if (!gridCardLayoutRuntime.loadDocumentFromString(
+            gridCardLayoutHtml,
+            "")) {
+        std::cerr << "grid card layout load failed: "
+                  << gridCardLayoutRuntime.lastError() << "\n";
+        return 1;
+    }
+    std::vector<uint32_t> gridCardLayoutPixels;
+    ok = renderPixels(gridCardLayoutRuntime, gridCardLayoutPixels) && ok;
+    ok = expect(
+        pixelAt(gridCardLayoutPixels, 5, 10) == solidColor(0xFF, 0x00, 0x00) &&
+            pixelAt(gridCardLayoutPixels, 19, 10) == solidColor(0x00, 0xFF, 0x00),
+        "inline-flex and flex shorthand should keep header items in one row") && ok;
+    ok = expect(
+        pixelAt(gridCardLayoutPixels, 20, 30) == solidColor(0xFF, 0x00, 0x00) &&
+            pixelAt(gridCardLayoutPixels, 70, 30) == solidColor(0x00, 0xFF, 0x00) &&
+            pixelAt(gridCardLayoutPixels, 120, 30) == solidColor(0x00, 0x00, 0xFF),
+        "repeat(3, 1fr) should create three equal grid columns") && ok;
+    ok = expect(
+        pixelAt(gridCardLayoutPixels, 20, 72) == solidColor(0x00, 0xFF, 0xFF) &&
+            pixelAt(gridCardLayoutPixels, 70, 72) == solidColor(0xFF, 0x00, 0xFF) &&
+            pixelAt(gridCardLayoutPixels, 120, 72) == solidColor(0xFF, 0xFF, 0x00),
+        "grid-auto-rows:1fr should distribute remaining height equally") && ok;
+
+    constexpr std::string_view mixedGridTracksHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      position: relative;
+      width: 140px;
+      height: 90px;
+      background-color: #000000;
+    }
+    .metric {
+      position: absolute;
+      inset: 10px 10px 40px 10px;
+      display: grid;
+      grid-template-columns: 30px minmax(0, 1fr) auto;
+      column-gap: 5px;
+    }
+    .icon { background-color: #ff0000; }
+    .label { background-color: #00ff00; }
+    .value {
+      width: 20px;
+      background-color: #0000ff;
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <div class="metric">
+      <div class="icon"></div>
+      <div class="label"></div>
+      <div class="value"></div>
+    </div>
+  </div>
+</body>
+</html>
+)html";
+
+    skui::Runtime mixedGridTracksRuntime(options);
+    mixedGridTracksRuntime.resize(kWidth, kHeight, 1.0f);
+    if (!mixedGridTracksRuntime.loadDocumentFromString(
+            mixedGridTracksHtml,
+            "")) {
+        std::cerr << "mixed grid tracks load failed: "
+                  << mixedGridTracksRuntime.lastError() << "\n";
+        return 1;
+    }
+    std::vector<uint32_t> mixedGridTracksPixels;
+    ok = renderPixels(mixedGridTracksRuntime, mixedGridTracksPixels) && ok;
+    ok = expect(
+        pixelAt(mixedGridTracksPixels, 20, 20) == solidColor(0xFF, 0x00, 0x00) &&
+            pixelAt(mixedGridTracksPixels, 50, 20) == solidColor(0x00, 0xFF, 0x00) &&
+            pixelAt(mixedGridTracksPixels, 115, 20) == solidColor(0x00, 0x00, 0xFF),
+        "fixed, minmax fraction, auto tracks and inset shorthand should share a row") && ok;
+
+    constexpr std::string_view shadowHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      position: relative;
+      width: 140px;
+      height: 90px;
+      background-color: #000000;
+    }
+    .card {
+      position: absolute;
+      left: 20px;
+      top: 20px;
+      width: 40px;
+      height: 30px;
+      background-color: #223344;
+      box-shadow:
+        8px 0 0 #ff0000,
+        inset 0 0 0 4px #00ff00;
+    }
+    .filtered {
+      position: absolute;
+      left: 90px;
+      top: 20px;
+      width: 10px;
+      height: 10px;
+      background-color: #0000ff;
+      filter: drop-shadow(12px 0 0 #ff0000);
+    }
+    .shadow-text {
+      position: absolute;
+      left: 10px;
+      top: 60px;
+      width: 30px;
+      height: 24px;
+      color: #ffffff;
+      font-size: 20px;
+      text-shadow: 5px 0 0 #ff0000;
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <div class="card"></div>
+    <div class="filtered"></div>
+    <span class="shadow-text">I</span>
+  </div>
+</body>
+</html>
+)html";
+
+    skui::Runtime shadowRuntime(options);
+    shadowRuntime.resize(kWidth, kHeight, 1.0f);
+    if (!shadowRuntime.loadDocumentFromString(shadowHtml, "")) {
+        std::cerr << "shadow CSS load failed: "
+                  << shadowRuntime.lastError() << "\n";
+        return 1;
+    }
+    std::vector<uint32_t> shadowPixels;
+    ok = renderPixels(shadowRuntime, shadowPixels) && ok;
+    ok = expect(
+        pixelAt(shadowPixels, 21, 35) == solidColor(0x00, 0xFF, 0x00) &&
+            pixelAt(shadowPixels, 40, 35) == solidColor(0x22, 0x33, 0x44) &&
+            pixelAt(shadowPixels, 64, 35) == solidColor(0xFF, 0x00, 0x00),
+        "box-shadow should paint multiple outer and inset layers") && ok;
+    ok = expect(
+        pixelAt(shadowPixels, 94, 24) == solidColor(0x00, 0x00, 0xFF) &&
+            pixelAt(shadowPixels, 106, 24) == solidColor(0xFF, 0x00, 0x00),
+        "drop-shadow filter should preserve content and paint its shadow") && ok;
+    int redTextShadowPixels = 0;
+    for (int y = 60; y < 84; ++y) {
+        for (int x = 10; x < 40; ++x) {
+            const uint32_t color = pixelAt(shadowPixels, x, y);
+            const unsigned red = (color >> 16u) & 0xFFu;
+            const unsigned green = (color >> 8u) & 0xFFu;
+            const unsigned blue = color & 0xFFu;
+            if (red > 160u && green < 80u && blue < 80u) {
+                ++redTextShadowPixels;
+            }
+        }
+    }
+    ok = expect(redTextShadowPixels > 0,
+                "text-shadow should paint a colored offset glyph") && ok;
+
+    constexpr std::string_view layeredGradientHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      position: relative;
+      width: 140px;
+      height: 90px;
+      background-color: #000000;
+    }
+    .layered-gradient {
+      position: absolute;
+      left: 10px;
+      top: 10px;
+      width: 60px;
+      height: 40px;
+      background:
+        linear-gradient(135deg, transparent 35%, #ff0000 65%),
+        radial-gradient(circle at 0% 0%, #0000ff 0%, transparent 45%);
+    }
+    .tiled-gradient {
+      position: absolute;
+      left: 80px;
+      top: 10px;
+      width: 50px;
+      height: 50px;
+      background-image:
+        linear-gradient(#ff0000 1px, transparent 1px),
+        linear-gradient(90deg, #00ff00 1px, transparent 1px);
+      background-size: 10px 10px;
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <div class="layered-gradient"></div>
+    <div class="tiled-gradient"></div>
+  </div>
+</body>
+</html>
+)html";
+
+    skui::Runtime layeredGradientRuntime(options);
+    layeredGradientRuntime.resize(kWidth, kHeight, 1.0f);
+    if (!layeredGradientRuntime.loadDocumentFromString(
+            layeredGradientHtml,
+            "")) {
+        std::cerr << "layered gradient load failed: "
+                  << layeredGradientRuntime.lastError() << "\n";
+        return 1;
+    }
+    uint32_t radialOriginPixel = 0;
+    uint32_t angledEndPixel = 0;
+    std::vector<uint32_t> layeredGradientPixels;
+    ok = renderPixels(layeredGradientRuntime, layeredGradientPixels) && ok;
+    ok = renderPixel(
+        layeredGradientRuntime,
+        11,
+        11,
+        radialOriginPixel) && ok;
+    ok = renderPixel(
+        layeredGradientRuntime,
+        68,
+        48,
+        angledEndPixel) && ok;
+    ok = expect(
+        isMostlyBlue(radialOriginPixel),
+        "positioned radial gradient should paint below a transparent top layer") && ok;
+    ok = expect(
+        isMostlyRed(angledEndPixel),
+        "angled top gradient and color stops should paint the opposite corner") && ok;
+    ok = expect(
+        isMostlyRed(pixelAt(layeredGradientPixels, 85, 10)) &&
+            isMostlyRed(pixelAt(layeredGradientPixels, 85, 20)) &&
+            pixelAt(layeredGradientPixels, 85, 15) == solidColor(0x00, 0x00, 0x00),
+        "pixel gradient stops and background-size should repeat axis-aligned grid lines") && ok;
+
+    constexpr std::string_view pseudoElementHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      position: relative;
+      width: 140px;
+      height: 90px;
+      background-color: #000000;
+    }
+    .items {
+      position: absolute;
+      left: 10px;
+      top: 10px;
+      width: 120px;
+      height: 30px;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+    }
+    .item {
+      position: relative;
+      background-color: #112233;
+    }
+    .item:nth-child(3n+1) {
+      background-color: #00ff00;
+    }
+    .item:not(:nth-child(3n))::after {
+      content: "";
+      position: absolute;
+      right: 0px;
+      top: 5px;
+      width: 2px;
+      height: 20px;
+      background-color: #ffffff;
+    }
+    .card {
+      position: absolute;
+      left: 10px;
+      top: 50px;
+      width: 30px;
+      height: 30px;
+      background-color: #00ff00;
+    }
+    .card::before {
+      content: "";
+      position: absolute;
+      inset: 4px;
+      background-color: #ff0000;
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <div class="items">
+      <div class="item"></div>
+      <div class="item"></div>
+      <div class="item"></div>
+    </div>
+    <div class="card"></div>
+  </div>
+</body>
+</html>
+)html";
+
+    skui::Runtime pseudoElementRuntime(options);
+    pseudoElementRuntime.resize(kWidth, kHeight, 1.0f);
+    if (!pseudoElementRuntime.loadDocumentFromString(
+            pseudoElementHtml,
+            "")) {
+        std::cerr << "pseudo-element CSS load failed: "
+                  << pseudoElementRuntime.lastError() << "\n";
+        return 1;
+    }
+    std::vector<uint32_t> pseudoElementPixels;
+    ok = renderPixels(pseudoElementRuntime, pseudoElementPixels) && ok;
+    ok = expect(
+        pixelAt(pseudoElementPixels, 20, 20) == solidColor(0x00, 0xFF, 0x00) &&
+            pixelAt(pseudoElementPixels, 60, 20) == solidColor(0x11, 0x22, 0x33),
+        "nth-child An+B selectors should style the matching grid item") && ok;
+    ok = expect(
+        pixelAt(pseudoElementPixels, 48, 20) == solidColor(0xFF, 0xFF, 0xFF) &&
+            pixelAt(pseudoElementPixels, 88, 20) == solidColor(0xFF, 0xFF, 0xFF) &&
+            pixelAt(pseudoElementPixels, 128, 20) == solidColor(0x11, 0x22, 0x33),
+        ":not(), nth-child(), and ::after should paint only the first two separators") && ok;
+    ok = expect(
+        pixelAt(pseudoElementPixels, 11, 51) == solidColor(0x00, 0xFF, 0x00) &&
+            pixelAt(pseudoElementPixels, 15, 55) == solidColor(0xFF, 0x00, 0x00),
+        "absolutely positioned ::before should honor inset shorthand") && ok;
+
     constexpr std::string_view textAlignmentHtml = R"html(
 <!doctype html>
 <html>
@@ -5665,6 +6066,219 @@ int main() {
     sendKey(textareaRuntime, 0x24);
     sendText(textareaRuntime, "2-");
     ok = expect(textareaValue == "one\n2-two", "textarea Home should move to the current line start") && ok;
+
+    constexpr std::string_view cssRenderingParityHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    html, body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      background: #000000;
+    }
+    .close-icon {
+      position: absolute;
+      left: 10px;
+      top: 10px;
+    }
+    .edge-borders {
+      position: absolute;
+      box-sizing: border-box;
+      left: 50px;
+      top: 10px;
+      width: 60px;
+      height: 40px;
+      background: #112233;
+      border-top: 1px solid #ff0000;
+      border-bottom: 2px solid #00ff00;
+    }
+    .masked {
+      position: absolute;
+      left: 10px;
+      top: 55px;
+      width: 40px;
+      height: 30px;
+      background: #ffffff;
+      mask-image: linear-gradient(
+        180deg,
+        rgba(0, 0, 0, 1),
+        rgba(0, 0, 0, 0)
+      );
+    }
+    .inset-shadow {
+      position: absolute;
+      left: 70px;
+      top: 55px;
+      width: 60px;
+      height: 30px;
+      background: #ffffff;
+      box-shadow: inset 0 0 18px rgba(0, 0, 0, 0.85);
+    }
+  </style>
+</head>
+<body>
+  <svg class="close-icon" width="28" height="28" viewBox="0 0 24 24" fill="none">
+    <path d="M6 6L18 18M18 6L6 18" stroke="#ffffff" stroke-width="2" />
+  </svg>
+  <div class="edge-borders"></div>
+  <div class="masked"></div>
+  <div class="inset-shadow"></div>
+</body>
+</html>
+)html";
+
+    skui::Runtime cssRenderingParityRuntime(options);
+    cssRenderingParityRuntime.resize(kWidth, kHeight, 1.0f);
+    if (!cssRenderingParityRuntime.loadDocumentFromString(
+            cssRenderingParityHtml,
+            "")) {
+        std::cerr << "CSS rendering parity load failed: "
+                  << cssRenderingParityRuntime.lastError() << "\n";
+        return 1;
+    }
+    std::vector<uint32_t> cssRenderingParityPixels;
+    ok = renderPixels(cssRenderingParityRuntime, cssRenderingParityPixels) && ok;
+    ok = expect(
+             countBrightPixels(cssRenderingParityPixels, 8, 8, 40, 40) > 20,
+             "SVG width and height presentation attributes should size inline icons") &&
+         ok;
+    ok = expect(pixelAt(cssRenderingParityPixels, 70, 10) ==
+                    solidColor(0xFF, 0x00, 0x00),
+                "border-top shorthand should draw only the top edge") &&
+         ok;
+    ok = expect(pixelAt(cssRenderingParityPixels, 70, 49) ==
+                    solidColor(0x00, 0xFF, 0x00),
+                "border-bottom shorthand should draw the bottom edge") &&
+         ok;
+    ok = expect(pixelAt(cssRenderingParityPixels, 50, 25) ==
+                    solidColor(0x11, 0x22, 0x33),
+                "unspecified border edges should remain transparent") &&
+         ok;
+    const unsigned maskTop =
+        (pixelAt(cssRenderingParityPixels, 30, 57) >> 16u) & 0xFFu;
+    const unsigned maskBottom =
+        (pixelAt(cssRenderingParityPixels, 30, 82) >> 16u) & 0xFFu;
+    ok = expect(maskTop > 200u && maskBottom < 60u,
+                "mask-image gradients should progressively attenuate element alpha") &&
+         ok;
+    const unsigned insetEdge =
+        (pixelAt(cssRenderingParityPixels, 72, 70) >> 16u) & 0xFFu;
+    const unsigned insetCenter =
+        (pixelAt(cssRenderingParityPixels, 100, 70) >> 16u) & 0xFFu;
+    ok = expect(insetCenter > insetEdge + 60u,
+                "inset shadows should blur inward instead of drawing a hard stroke") &&
+         ok;
+
+    constexpr std::string_view flexAutoMarginHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    html, body { width:100%; height:100%; margin:0; background:#000000; }
+    .row {
+      position: absolute;
+      left: 10px;
+      top: 10px;
+      width: 120px;
+      height: 30px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .lead { width:20px; height:20px; background:#ff0000; }
+    .close {
+      width: 36px;
+      height: 30px;
+      margin-left: auto;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #ffffff;
+      border: 0;
+      background: transparent;
+    }
+  </style>
+</head>
+<body>
+  <div class="row">
+    <div class="lead"></div>
+    <button class="close">
+      <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
+        <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2" />
+      </svg>
+    </button>
+  </div>
+</body>
+</html>
+)html";
+    skui::Runtime flexAutoMarginRuntime(options);
+    flexAutoMarginRuntime.resize(kWidth, kHeight, 1.0f);
+    if (!flexAutoMarginRuntime.loadDocumentFromString(flexAutoMarginHtml, "")) {
+        std::cerr << "flex auto margin load failed: "
+                  << flexAutoMarginRuntime.lastError() << "\n";
+        return 1;
+    }
+    std::vector<uint32_t> flexAutoMarginPixels;
+    ok = renderPixels(flexAutoMarginRuntime, flexAutoMarginPixels) && ok;
+    ok = expect(
+             countBrightPixels(flexAutoMarginPixels, 100, 8, 132, 42) > 20,
+             "flex gap should preserve a child's auto margin") &&
+         ok;
+
+    constexpr std::string_view lowContrastGradientHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    html, body { width:100%; height:100%; margin:0; background:#000000; }
+    .gradient {
+      position: absolute;
+      left: 10px;
+      top: 10px;
+      width: 120px;
+      height: 40px;
+      background: linear-gradient(90deg, #102236, #112337);
+    }
+  </style>
+</head>
+<body><div class="gradient"></div></body>
+</html>
+)html";
+    skui::Runtime lowContrastGradientRuntime(options);
+    lowContrastGradientRuntime.resize(kWidth, kHeight, 1.0f);
+    if (!lowContrastGradientRuntime.loadDocumentFromString(
+            lowContrastGradientHtml,
+            "")) {
+        std::cerr << "low contrast gradient load failed: "
+                  << lowContrastGradientRuntime.lastError() << "\n";
+        return 1;
+    }
+    std::vector<uint32_t> lowContrastGradientPixels;
+    ok = renderPixels(
+             lowContrastGradientRuntime,
+             lowContrastGradientPixels) &&
+         ok;
+    int longestGradientColorRun = 0;
+    int currentGradientColorRun = 0;
+    uint32_t previousGradientColor = 0;
+    for (int x = 10; x < 130; ++x) {
+        const uint32_t color = pixelAt(lowContrastGradientPixels, x, 30);
+        if (x > 10 && color == previousGradientColor) {
+            ++currentGradientColorRun;
+        } else {
+            currentGradientColorRun = 1;
+            previousGradientColor = color;
+        }
+        longestGradientColorRun = std::max(
+            longestGradientColorRun,
+            currentGradientColorRun);
+    }
+    ok = expect(
+             longestGradientColorRun <= 16,
+             "low contrast gradients should dither instead of forming color bands") &&
+         ok;
 
     runSpriteAnimationTest();
     return ok ? 0 : 1;

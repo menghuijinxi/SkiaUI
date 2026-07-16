@@ -16,6 +16,9 @@
 
 namespace skui::win32 {
 
+using WindowMessageCallback =
+    std::function<bool(HWND, UINT, WPARAM, LPARAM, Runtime&)>;
+
 struct WindowOptions {
     std::wstring title = L"SkiaUiDesk";
     int logicalWidth = 1672;
@@ -26,6 +29,7 @@ struct WindowOptions {
     RuntimeOptions runtime;
     std::function<void(Runtime&)> onRuntimeReady;
     std::function<void(Runtime&)> onRuntimeResize;
+    WindowMessageCallback onWindowMessage;
 };
 
 class Dx12WindowApp {
