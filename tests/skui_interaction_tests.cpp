@@ -275,6 +275,15 @@ bool writeBytesFixture(const std::filesystem::path& path, const unsigned char* d
     return file.good();
 }
 
+bool writeTextFixture(const std::filesystem::path& path, std::string_view text) {
+    std::ofstream file(path, std::ios::binary);
+    if (!file) {
+        return false;
+    }
+    file.write(text.data(), static_cast<std::streamsize>(text.size()));
+    return file.good();
+}
+
 bool writeRedBmpFixture(const std::filesystem::path& path) {
     static constexpr unsigned char kRedBmp[] = {
         0x42, 0x4D, 0x3A, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -1404,6 +1413,68 @@ int main() {
     ok = expect(selectorHover == solidColor(0x55, 0x66, 0x77), "child selector with :hover should apply") && ok;
     ok = expect(selectorAttribute == solidColor(0x77, 0x88, 0x99), "attribute selector should apply after setAttributeById") && ok;
     ok = expect(selectorInline == solidColor(0xAB, 0xCD, 0xEF), "setStyleById should update inline style") && ok;
+
+    const std::filesystem::path stylesheetFixtureDir =
+        std::filesystem::temp_directory_path() / "skui_external_stylesheet";
+    std::error_code stylesheetEc;
+    std::filesystem::remove_all(stylesheetFixtureDir, stylesheetEc);
+    std::filesystem::create_directories(stylesheetFixtureDir, stylesheetEc);
+    ok = expect(!stylesheetEc, "external stylesheet fixture directory should be created") && ok;
+    ok = expect(writeTextFixture(
+                    stylesheetFixtureDir / "head.css",
+                    ".external-box { background-color: #123456; }\n"
+                    "@keyframes externalFade { 0% { opacity: 1; } 100% { opacity: 0.25; } }\n"),
+                "head stylesheet fixture should be written") && ok;
+    ok = expect(writeTextFixture(
+                    stylesheetFixtureDir / "body.css",
+                    ".external-box { background-color: #654321; }\n"),
+                "body stylesheet fixture should be written") && ok;
+
+    constexpr std::string_view externalStylesheetHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <link rel="stylesheet" href="head.css">
+  <style>
+    .root {
+      position: relative;
+      width: 140px;
+      height: 90px;
+      background-color: #000000;
+    }
+    .external-box {
+      position: absolute;
+      left: 10px;
+      top: 10px;
+      width: 40px;
+      height: 40px;
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <link rel="stylesheet" href="body.css">
+    <div class="external-box"></div>
+  </div>
+</body>
+</html>
+)html";
+
+    skui::Runtime externalStylesheetRuntime(options);
+    externalStylesheetRuntime.resize(kWidth, kHeight, 1.0f);
+    if (!externalStylesheetRuntime.loadDocumentFromString(
+            externalStylesheetHtml,
+            utf8PathText(stylesheetFixtureDir))) {
+        std::cerr << "external stylesheet load failed: "
+                  << externalStylesheetRuntime.lastError() << "\n";
+        return 1;
+    }
+
+    uint32_t externalStylesheetPixel = 0;
+    ok = renderPixel(externalStylesheetRuntime, 20, 20, externalStylesheetPixel) && ok;
+    ok = expect(externalStylesheetPixel == solidColor(0x65, 0x43, 0x21),
+                "external stylesheets should load relative to basePath and follow document order") && ok;
+    std::filesystem::remove_all(stylesheetFixtureDir, stylesheetEc);
 
     constexpr std::string_view textOverflowHtml = R"html(
 <!doctype html>

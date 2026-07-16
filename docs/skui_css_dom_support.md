@@ -6,7 +6,7 @@
 
 - 使用 Lexbor 解析 HTML。
 - 只读取 `<body>` 下的元素作为 UI 树。
-- `<style>` 会被解析成样式规则；`<head>`、`<meta>`、`<title>`、`<script>` 不会生成可绘制节点。
+- `<style>` 和本地 `<link rel="stylesheet" href="...">` 会被解析成样式规则；`<head>`、`<meta>`、`<title>`、`<script>` 不会生成可绘制节点。
 - 未知标签会作为普通容器节点参与布局、绘制、事件命中。
 - 文本节点会压缩连续空白；纯空白文本会被忽略。
 - `<textarea>` 内部文本会作为初始 `value`。
@@ -70,7 +70,19 @@
 - `:not()`、`:has()`、`:is()`
 - CSS 变量
 - 完整 CSS Animation 标准；当前提供面向雪碧图的 `@keyframes` / `animation` 子集
-- 外部 CSS 文件自动加载
+- 远程 CSS（`http://` / `https://`）和 `data:` stylesheet
+
+## 外部样式表
+
+支持通过本地文件拆分 CSS：
+
+```html
+<link rel="stylesheet" href="dynamic_dom.css">
+```
+
+`href` 相对路径按当前 HTML 文档的 `basePath` 解析；通过 `Runtime::loadDocument(path)` 加载时，`basePath` 是 HTML 文件所在目录；通过 `loadDocumentFromString(html, basePath)` 加载时，由调用方显式传入。外部样式表与 `<style>` 按文档出现顺序进入同一个级联规则列表，后出现的同优先级规则会覆盖先出现的规则。
+
+当前只加载本地 CSS 文件；`http://`、`https://` 和 `data:` stylesheet 会被忽略。
 
 ## 媒体查询
 

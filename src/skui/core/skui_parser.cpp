@@ -1898,15 +1898,74 @@ void parseStyleSheet(std::string_view css,
                      std::unordered_map<std::string, KeyframesDefinition>& keyframes,
                      MediaContext media = {});
 
+bool readFile(const std::string& path, std::string& out);
+
+std::optional<std::string> resolveLocalStylesheetPath(std::string_view rawHref,
+                                                      std::string_view basePath) {
+    const std::string href = trim(rawHref);
+    if (href.empty() || href.front() == '#') {
+        return std::nullopt;
+    }
+
+    const std::string hrefLower = lower(href);
+    if (hrefLower.starts_with("http://") ||
+        hrefLower.starts_with("https://") ||
+        hrefLower.starts_with("data:")) {
+        return std::nullopt;
+    }
+
+    std::filesystem::path path = pathFromUtf8(href);
+    if (path.is_absolute()) {
+        return pathToUtf8(path);
+    }
+
+    if (!basePath.empty()) {
+        return pathToUtf8(pathFromUtf8(basePath) / path);
+    }
+    return pathToUtf8(path);
+}
+
+bool parseLinkedStyleSheet(lxb_dom_element_t* element,
+                           std::string_view basePath,
+                           std::vector<StyleRule>& rules,
+                           std::unordered_map<std::string, KeyframesDefinition>& keyframes,
+                           std::string& error) {
+    const std::vector<std::string> relTokens = splitWhitespace(lower(attr(element, "rel")));
+    if (std::find(relTokens.begin(), relTokens.end(), "stylesheet") == relTokens.end()) {
+        return true;
+    }
+
+    const std::optional<std::string> path =
+        resolveLocalStylesheetPath(attr(element, "href"), basePath);
+    if (!path) {
+        return true;
+    }
+
+    std::string css;
+    if (!readFile(*path, css)) {
+        error = "无法读取 CSS 文件: " + *path;
+        return false;
+    }
+    parseStyleSheet(css, rules, keyframes);
+    return true;
+}
+
 void collectStyleSheets(lxb_dom_node_t* root,
+                        std::string_view basePath,
                         std::vector<StyleRule>& rules,
-                        std::unordered_map<std::string, KeyframesDefinition>& keyframes) {
+                        std::unordered_map<std::string, KeyframesDefinition>& keyframes,
+                        std::string& error) {
     if (!root) {
         return;
     }
     if (root->type == LXB_DOM_NODE_TYPE_ELEMENT) {
         lxb_dom_element_t* element = lxb_dom_interface_element(root);
-        if (nodeName(element) == "style") {
+        const std::string tag = nodeName(element);
+        if (tag == "link") {
+            if (!parseLinkedStyleSheet(element, basePath, rules, keyframes, error)) {
+                return;
+            }
+        } else if (tag == "style") {
             std::string css;
             for (lxb_dom_node_t* child = root->first_child; child; child = child->next) {
                 if (child->type == LXB_DOM_NODE_TYPE_TEXT) {
@@ -1920,7 +1979,10 @@ void collectStyleSheets(lxb_dom_node_t* root,
         }
     }
     for (lxb_dom_node_t* child = root->first_child; child; child = child->next) {
-        collectStyleSheets(child, rules, keyframes);
+        if (!error.empty()) {
+            return;
+        }
+        collectStyleSheets(child, basePath, rules, keyframes, error);
     }
 }
 
@@ -2655,11 +2717,17 @@ std::unique_ptr<Node> convertElement(
     lxb_dom_element_t* element,
     Node* parent,
     std::vector<StyleRule>& rules,
-    std::unordered_map<std::string, KeyframesDefinition>& keyframes) {
+    std::unordered_map<std::string, KeyframesDefinition>& keyframes,
+    std::string_view basePath,
+    std::string& error) {
     if (!element) {
         return nullptr;
     }
     const std::string tag = nodeName(element);
+    if (tag == "link") {
+        parseLinkedStyleSheet(element, basePath, rules, keyframes, error);
+        return nullptr;
+    }
     if (tag == "style") {
         std::string css;
         for (lxb_dom_node_t* child = lxb_dom_interface_node(element)->first_child; child; child = child->next) {
@@ -2727,7 +2795,9 @@ std::unique_ptr<Node> convertElement(
                     convertElement(lxb_dom_interface_element(child),
                                    node.get(),
                                    rules,
-                                   keyframes);
+                                   keyframes,
+                                   basePath,
+                                   error);
                 if (childNode) {
                     node->children.push_back(std::move(childNode));
                 }
@@ -2796,7 +2866,10 @@ bool DocumentParser::loadString(std::string_view html,
     std::vector<StyleRule> rules;
     std::unordered_map<std::string, KeyframesDefinition> keyframes;
     if (lxb_html_head_element_t* head = lxb_html_document_head_element(htmlDocument.get())) {
-        collectStyleSheets(lxb_dom_interface_node(head), rules, keyframes);
+        collectStyleSheets(lxb_dom_interface_node(head), basePath, rules, keyframes, error);
+        if (!error.empty()) {
+            return false;
+        }
     }
 
     lxb_dom_element_t* documentElement =
@@ -2804,7 +2877,12 @@ bool DocumentParser::loadString(std::string_view html,
     std::unique_ptr<Node> root = convertElement(documentElement,
                                                 nullptr,
                                                 rules,
-                                                keyframes);
+                                                keyframes,
+                                                basePath,
+                                                error);
+    if (!error.empty()) {
+        return false;
+    }
     if (!root || root->tag != "html") {
         error = "HTML document element conversion failed";
         return false;
