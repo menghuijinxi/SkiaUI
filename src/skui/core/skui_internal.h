@@ -536,6 +536,7 @@ struct Node {
     bool hovered = false;
     bool active = false;
     bool focused = false;
+    bool editingFocused = false;
     size_t cursorIndex = 0;
     size_t selectionAnchor = 0;
     size_t selectionStart = 0;
@@ -824,6 +825,23 @@ float measureUiTextWidth(std::string_view value, float size, bool bold);
 float clampf(float value, float lo, float hi);
 std::string trim(std::string_view value);
 std::vector<std::string> splitWhitespace(std::string_view value);
+enum class ContentEditableState {
+    Inherit,
+    True,
+    False,
+    PlaintextOnly
+};
+ContentEditableState contentEditableState(const Node& node);
+bool isContentEditable(const Node& node);
+bool isContentEditableEditingHost(const Node& node);
+bool isContentEditableTextNode(const Node& node);
+bool isTextEditingNode(const Node& node);
+Node* contentEditableEditingHost(Node* node);
+const Node* contentEditableEditingHost(const Node* node);
+void prepareContentEditableTree(Node& node);
+void syncContentEditablePlaceholder(Node& node);
+std::string textContent(const Node& node);
+std::string editableTextContent(const Node& node);
 constexpr float kSkuiScrollbarThickness = 6.0f;
 constexpr float kSkuiScrollbarInset = 4.0f;
 constexpr float kSkuiScrollbarMinThumb = 24.0f;

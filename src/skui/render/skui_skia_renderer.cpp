@@ -353,7 +353,7 @@ bool isUtf8ContinuationByte(unsigned char ch) {
 size_t nextUtf8Boundary(std::string_view value, size_t index);
 
 bool isEditableNode(const Node& node) {
-    return node.tag == "input" || node.tag == "textarea";
+    return isTextEditingNode(node);
 }
 
 bool isTextareaNode(const Node& node) {
@@ -1830,7 +1830,7 @@ bool SkiaRenderer::drawSvgDom(SkCanvas& canvas, const std::string& svg, const Re
 }
 
 void SkiaRenderer::drawInputSelection(SkCanvas& canvas, const Node& node) {
-    if (!isEditableNode(node) || !node.focused || node.selectionStart == node.selectionEnd || node.value.empty()) {
+    if (!isEditableNode(node) || !node.editingFocused || node.selectionStart == node.selectionEnd || node.value.empty()) {
         return;
     }
 
@@ -2218,7 +2218,7 @@ void SkiaRenderer::drawInputCompositionUnderline(SkCanvas& canvas, const Node& n
 }
 
 void SkiaRenderer::drawInputCaret(SkCanvas& canvas, const Node& node) {
-    if (!isEditableNode(node) || !node.focused || node.selectionStart != node.selectionEnd) {
+    if (!isEditableNode(node) || !node.editingFocused || node.selectionStart != node.selectionEnd) {
         return;
     }
 
