@@ -20,6 +20,7 @@
 | `button` | 普通可命中节点，可通过 `data-action` 发出事件 |
 | `input` | 单行输入框，支持焦点、光标、选区、剪贴板、IME、Ctrl+Z |
 | `textarea` | 多行输入框，复用输入框行为，支持换行、选区、剪贴板、IME、Ctrl+Z |
+| `div[contenteditable]` | 浏览器式编辑宿主；普通 `p` / `div` 文本容器可编辑，`contenteditable="false"` 子树作为不可编辑原子节点 |
 | `selectable` | 可框选复制文本标签，支持自动折行、`<br>` 显式换行和内联 `<a href>`；普通文本默认不可选中 |
 | `progress` | 进度条，`value` / `max` 控制填充比例 |
 | `img` | 加载本地图片资源；SVG 走 SVG DOM，位图走异步加载 |
@@ -39,6 +40,7 @@
 | `value` | 输入框值；进度条当前值 |
 | `max` | 进度条最大值 |
 | `placeholder` | 输入框占位文本 |
+| `contenteditable` | 枚举属性；支持 `true`、空值、`false`、`plaintext-only` 和从父节点继承 |
 | `href` | `selectable` 内 `<a>` 的链接目标；点击时转换为 `open-url:` 动作 |
 | `src` | `img` 的资源路径 |
 | `disabled` | 禁用当前节点及其子树的指针、文本选择和输入交互；不自带灰显外观 |
@@ -354,6 +356,32 @@ SkUI 的事件返回值表示“UI 是否实际消费了事件”，不是“DOM
 
 `input` 会把换行和 tab 规整为空格。`textarea` 会保留换行，并把 CRLF 规整成 LF。
 
+## Contenteditable 文档流
+
+富文本式输入区使用浏览器标准标签，不需要 SkUI 自定义编辑器标签：
+
+```html
+<div id="composer" contenteditable="true">
+  <p id="paragraph-a">文件在这里：</p>
+  <div id="file-a"
+       contenteditable="false"
+       data-node-type="attachment">report.pdf</div>
+  <p id="paragraph-b"><br></p>
+</div>
+```
+
+当前实现支持：
+
+- `contenteditable` 的枚举值与继承；无效值按继承处理。
+- 普通 `p`、`div`、`span`、标题、`li` 和 `blockquote` 文本叶节点的光标、选区、剪贴板、撤销和 IME。
+- Enter 把当前文本容器拆成相邻普通段落。
+- Backspace / Delete 删除相邻 `contenteditable="false"` 原子节点，或合并相邻文本段落。
+- `Input` 事件以最外层编辑宿主为目标，和浏览器 editing host 一致。
+- `Runtime::selection()` 返回 `Selection` / `Range` 状态；`collapseSelection()` 与 `setSelectionBaseAndExtent()` 用元素 id 设置选区。
+- `insertHtmlAtSelection()` 在当前选区插入普通 HTML；块节点插入会拆分当前文本容器。
+
+`textContentById()` 和 `childElementIdsById()` 是 C++ DOM 桥接接口，业务层可按实际文档顺序读取文本和原子节点。当前 `Selection` 只表示同一个文本容器内的范围；跨段落连续选择、嵌套内联富文本编辑、`beforeinput` / `inputType` 和浏览器完整编辑命令尚未实现。
+
 ## 可复制文本
 
 普通文本默认不可框选复制。需要复制时使用：
@@ -431,6 +459,12 @@ SkUI 的事件返回值表示“UI 是否实际消费了事件”，不是“DOM
 - `prependHtmlById`
 - `replaceHtmlById`
 - `removeElementById`
+- `insertHtmlAtSelection`
+- `collapseSelection`
+- `setSelectionBaseAndExtent`
+- `selection`
+- `textContentById`
+- `childElementIdsById`
 - `setVisibleById`
 - `setConsumesEventsById`
 - `hasClassById`

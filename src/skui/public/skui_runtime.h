@@ -119,6 +119,23 @@ struct ScrollState {
     float contentHeight = 0.0f;
 };
 
+struct Range {
+    std::string startContainerId;
+    size_t startOffset = 0;
+    std::string endContainerId;
+    size_t endOffset = 0;
+    bool collapsed = true;
+};
+
+struct Selection {
+    std::string anchorNodeId;
+    size_t anchorOffset = 0;
+    std::string focusNodeId;
+    size_t focusOffset = 0;
+    size_t rangeCount = 0;
+    std::optional<Range> range;
+};
+
 struct RuntimeOptions {
     std::string assetRoot;
     float scale = 1.0f;
@@ -183,12 +200,22 @@ public:
     bool prependHtmlById(std::string_view parentId, std::string_view html);
     bool replaceHtmlById(std::string_view id, std::string_view html);
     bool removeElementById(std::string_view id);
+    bool insertHtmlAtSelection(std::string_view editingHostId,
+                               std::string_view html);
+    bool collapseSelection(std::string_view nodeId, size_t offset);
+    bool setSelectionBaseAndExtent(std::string_view anchorNodeId,
+                                   size_t anchorOffset,
+                                   std::string_view focusNodeId,
+                                   size_t focusOffset);
     bool setVisibleById(std::string_view id, bool visible);
     bool setConsumesEventsById(std::string_view id, bool consumesEvents);
     bool setScrollOffsetById(std::string_view id, float scrollX, float scrollY);
     bool scrollById(std::string_view id, float deltaX, float deltaY);
     bool scrollIntoViewById(std::string_view id);
     [[nodiscard]] std::optional<ScrollState> scrollStateById(std::string_view id) const;
+    [[nodiscard]] std::optional<std::string> textContentById(std::string_view id) const;
+    [[nodiscard]] std::vector<std::string> childElementIdsById(std::string_view id) const;
+    [[nodiscard]] Selection selection() const;
     [[nodiscard]] bool hasClassById(std::string_view id, std::string_view className) const;
     void setElementEventCallback(ElementEventCallback callback);
 

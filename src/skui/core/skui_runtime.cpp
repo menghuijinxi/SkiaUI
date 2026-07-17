@@ -13,6 +13,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -195,7 +196,7 @@ bool isPointerEvent(EventType type) {
 }
 
 bool isEditableNode(const Node* node) {
-    return node && (node->tag == "input" || node->tag == "textarea");
+    return node && isTextEditingNode(*node);
 }
 
 bool isSelectableTextNode(const Node* node) {
@@ -214,8 +215,18 @@ Node* inputTarget(Node* leaf) {
         if (isEditableNode(current)) {
             return current;
         }
+        if (contentEditableState(*current) == ContentEditableState::False) {
+            return nullptr;
+        }
     }
     return nullptr;
+}
+
+Node* inputEventTarget(Node& node) {
+    if (Node* host = contentEditableEditingHost(&node)) {
+        return host;
+    }
+    return &node;
 }
 
 Node* selectableTextTarget(Node* leaf) {
@@ -529,7 +540,9 @@ ElementEvent makeElementEvent(ElementEventType type, const Node& node, const Eve
     event.classes = node.classes;
     event.action = node.action;
     event.text = node.text;
-    event.value = node.value;
+    event.value = isContentEditableEditingHost(node)
+        ? editableTextContent(node)
+        : node.value;
     event.x = x;
     event.y = y;
     event.scrollX = node.scrollX;
@@ -663,6 +676,7 @@ void pushInputUndo(Node& node) {
 }
 
 void markTextChanged(Node& node) {
+    syncContentEditablePlaceholder(node);
     ++node.textRevision;
 }
 
@@ -2387,11 +2401,21 @@ public:
                 markTextChanged(*focusedNode);
             }
             clearInputSelection(*focusedNode);
-            focusedNode->focused = false;
+            focusedNode->editingFocused = false;
+            if (Node* host = contentEditableEditingHost(focusedNode)) {
+                host->focused = false;
+            } else {
+                focusedNode->focused = false;
+            }
         }
         focusedNode = next;
         if (focusedNode) {
-            focusedNode->focused = true;
+            focusedNode->editingFocused = true;
+            if (Node* host = contentEditableEditingHost(focusedNode)) {
+                host->focused = true;
+            } else {
+                focusedNode->focused = true;
+            }
             focusedNode->cursorIndex = focusedNode->value.size();
             clampInputCursor(*focusedNode);
             clearInputSelection(*focusedNode);
@@ -2464,6 +2488,211 @@ public:
         entry.size = input.value.size();
         buildEditableLines(input.value, entry.lines);
         return entry.lines;
+    }
+
+    Node* editingTargetAtPoint(Node* hit, float y) {
+        if (Node* target = inputTarget(hit)) {
+            return target;
+        }
+        if (!hit || !isContentEditableEditingHost(*hit)) {
+            return nullptr;
+        }
+
+        Node* closest = nullptr;
+        float closestDistance = std::numeric_limits<float>::max();
+        const auto visit = [&](const auto& self, Node& node) -> void {
+            if (&node != hit && !isContentEditable(node)) {
+                return;
+            }
+            if (isContentEditableTextNode(node)) {
+                const float top = visualY(node);
+                const float bottom = top + node.layout.h;
+                const float distance = y < top
+                    ? top - y
+                    : (y > bottom ? y - bottom : 0.0f);
+                if (distance < closestDistance) {
+                    closest = &node;
+                    closestDistance = distance;
+                }
+                return;
+            }
+            for (auto& child : node.children) {
+                self(self, *child);
+            }
+        };
+        visit(visit, *hit);
+        return closest;
+    }
+
+    std::string nextContentEditableNodeId(const Node& host) {
+        std::string prefix = host.id.empty()
+            ? "skui-contenteditable-paragraph"
+            : host.id + "-paragraph";
+        std::string candidate;
+        do {
+            candidate = prefix + "-" +
+                        std::to_string(++contentEditableNodeSerial);
+        } while (document.root && findById(*document.root, candidate));
+        return candidate;
+    }
+
+    std::unique_ptr<Node> makeTrailingTextNode(const Node& source,
+                                               Node& host,
+                                               std::string value) {
+        auto trailing = std::make_unique<Node>();
+        trailing->tag = source.tag;
+        trailing->id = nextContentEditableNodeId(host);
+        trailing->classes = source.classes;
+        trailing->attributes = source.attributes;
+        trailing->attributes["id"] = trailing->id;
+        trailing->inlineStyle = source.inlineStyle;
+        trailing->presentationStyle = source.presentationStyle;
+        trailing->value = std::move(value);
+        trailing->parent = source.parent;
+        syncContentEditablePlaceholder(*trailing);
+        return trailing;
+    }
+
+    bool splitContentEditableTextNode(
+        Node& node,
+        std::vector<std::unique_ptr<Node>> insertedNodes = {}) {
+        Node* host = contentEditableEditingHost(&node);
+        if (!host || !node.parent || host == &node) {
+            return false;
+        }
+        Node* parent = node.parent;
+        const std::optional<size_t> index = childIndex(*parent, node);
+        if (!index) {
+            return false;
+        }
+
+        if (!eraseInputSelection(node)) {
+            pushInputUndo(node);
+        }
+        const size_t cursor = std::min(node.cursorIndex, node.value.size());
+        std::string trailingValue = node.value.substr(cursor);
+        node.value.erase(cursor);
+        setInputCursor(node, node.value.size());
+        markTextChanged(node);
+
+        std::unique_ptr<Node> trailing =
+            makeTrailingTextNode(node, *host, std::move(trailingValue));
+        Node* trailingPointer = trailing.get();
+        auto position = parent->children.begin() +
+                        static_cast<ptrdiff_t>(*index + 1);
+        for (auto& inserted : insertedNodes) {
+            rebindParents(*inserted, parent);
+            prepareContentEditableTree(*inserted);
+            position = parent->children.insert(position, std::move(inserted));
+            ++position;
+        }
+        parent->children.insert(position, std::move(trailing));
+
+        setFocusedNode(trailingPointer);
+        setInputCursor(*trailingPointer, 0);
+        finishDocumentMutation();
+        return true;
+    }
+
+    bool erasePreviousContentEditableUnit(Node& node) {
+        Node* host = contentEditableEditingHost(&node);
+        if (!host || hasInputSelection(node) || node.cursorIndex != 0 ||
+            !node.parent) {
+            return false;
+        }
+        Node* parent = node.parent;
+        const std::optional<size_t> index = childIndex(*parent, node);
+        if (!index || *index == 0) {
+            return false;
+        }
+        Node* previous = parent->children[*index - 1].get();
+        if (!isContentEditable(*previous)) {
+            clearReferencesTo(*previous);
+            parent->children.erase(
+                parent->children.begin() + static_cast<ptrdiff_t>(*index - 1));
+            finishDocumentMutation();
+            return true;
+        }
+        if (!isContentEditableTextNode(*previous) ||
+            contentEditableEditingHost(previous) != host) {
+            return false;
+        }
+
+        pushInputUndo(*previous);
+        const size_t joinOffset = previous->value.size();
+        previous->value += node.value;
+        markTextChanged(*previous);
+        setFocusedNode(previous);
+        setInputCursor(*previous, joinOffset);
+        clearReferencesTo(node);
+        parent->children.erase(
+            parent->children.begin() + static_cast<ptrdiff_t>(*index));
+        finishDocumentMutation();
+        return true;
+    }
+
+    bool eraseNextContentEditableUnit(Node& node) {
+        Node* host = contentEditableEditingHost(&node);
+        if (!host || hasInputSelection(node) ||
+            node.cursorIndex != node.value.size() || !node.parent) {
+            return false;
+        }
+        Node* parent = node.parent;
+        const std::optional<size_t> index = childIndex(*parent, node);
+        if (!index || *index + 1 >= parent->children.size()) {
+            return false;
+        }
+        Node* next = parent->children[*index + 1].get();
+        if (!isContentEditable(*next)) {
+            clearReferencesTo(*next);
+            parent->children.erase(
+                parent->children.begin() + static_cast<ptrdiff_t>(*index + 1));
+            finishDocumentMutation();
+            return true;
+        }
+        if (!isContentEditableTextNode(*next) ||
+            contentEditableEditingHost(next) != host) {
+            return false;
+        }
+
+        pushInputUndo(node);
+        node.value += next->value;
+        markTextChanged(node);
+        clearReferencesTo(*next);
+        parent->children.erase(
+            parent->children.begin() + static_cast<ptrdiff_t>(*index + 1));
+        finishDocumentMutation();
+        return true;
+    }
+
+    bool moveAcrossContentEditableBoundary(Node& node, bool forward) {
+        Node* host = contentEditableEditingHost(&node);
+        if (!host || !node.parent || hasInputSelection(node)) {
+            return false;
+        }
+        if ((!forward && node.cursorIndex != 0) ||
+            (forward && node.cursorIndex != node.value.size())) {
+            return false;
+        }
+        Node* parent = node.parent;
+        const std::optional<size_t> index = childIndex(*parent, node);
+        if (!index) {
+            return false;
+        }
+        ptrdiff_t candidate = static_cast<ptrdiff_t>(*index) +
+                              (forward ? 1 : -1);
+        const ptrdiff_t end = static_cast<ptrdiff_t>(parent->children.size());
+        while (candidate >= 0 && candidate < end) {
+            Node* sibling = parent->children[static_cast<size_t>(candidate)].get();
+            if (isContentEditableTextNode(*sibling) &&
+                contentEditableEditingHost(sibling) == host) {
+                setFocusedNode(sibling);
+                setInputCursor(*sibling, forward ? 0 : sibling->value.size());
+                return true;
+            }
+            candidate += forward ? 1 : -1;
+        }
+        return false;
     }
 
     bool loadFragment(std::string_view html,
@@ -2610,6 +2839,7 @@ public:
     double animationTimeSeconds = 0.0;
     bool keyframeFramePending = false;
     std::string lastError;
+    size_t contentEditableNodeSerial = 0;
 };
 
 Runtime::Runtime(RuntimeOptions options) : impl_(std::make_unique<Impl>(std::move(options))) {}
@@ -2635,6 +2865,7 @@ bool Runtime::loadDocument(const std::string& path) {
     impl_->keyframeFramePending = false;
     if (impl_->document.root) {
         rebindParents(*impl_->document.root, nullptr);
+        prepareContentEditableTree(*impl_->document.root);
     }
     impl_->hasDocument = true;
     impl_->dirty = true;
@@ -2670,6 +2901,7 @@ bool Runtime::loadDocumentFromString(std::string_view html, std::string_view bas
     impl_->keyframeFramePending = false;
     if (impl_->document.root) {
         rebindParents(*impl_->document.root, nullptr);
+        prepareContentEditableTree(*impl_->document.root);
     }
     impl_->hasDocument = true;
     impl_->dirty = true;
@@ -2824,7 +3056,7 @@ bool Runtime::handleEvent(const Event& event) {
                                                       impl_->scrollbarDragOffset) || scrollChanged;
             scrolledNode = scrollChanged ? impl_->scrollingNode : scrolledNode;
             consumed = true;
-        } else if (Node* input = inputTarget(hit)) {
+        } else if (Node* input = impl_->editingTargetAtPoint(hit, y)) {
             const bool wasFocused = impl_->focusedNode == input;
             const size_t selectionAnchor = wasFocused
                 ? (hasInputSelection(*input) ? input->selectionAnchor : input->cursorIndex)
@@ -2893,7 +3125,7 @@ bool Runtime::handleEvent(const Event& event) {
         impl_->pressedButton = event.button;
         impl_->pressedLeaf = hit;
         impl_->hoveredLeaf = hit;
-        if (Node* input = inputTarget(hit)) {
+        if (Node* input = impl_->editingTargetAtPoint(hit, y)) {
             stateChanged = impl_->setFocusedNode(input) || stateChanged;
             layoutNeeded = true;
             const size_t index = impl_->editableIndexAtPoint(*input, x, y);
@@ -3087,6 +3319,9 @@ bool Runtime::handleEvent(const Event& event) {
         switch (event.key) {
         case kBackspace:
             textChanged = erasePreviousInputChar(*input);
+            if (!textChanged && contentEditableEditingHost(input)) {
+                textChanged = impl_->erasePreviousContentEditableUnit(*input);
+            }
             consumed = true;
             break;
         case kEnter:
@@ -3095,9 +3330,17 @@ bool Runtime::handleEvent(const Event& event) {
                 consumed = true;
                 break;
             }
+            if (contentEditableEditingHost(input)) {
+                textChanged = impl_->splitContentEditableTextNode(*input);
+                consumed = true;
+                break;
+            }
             return false;
         case kDelete:
             textChanged = eraseNextInputChar(*input);
+            if (!textChanged && contentEditableEditingHost(input)) {
+                textChanged = impl_->eraseNextContentEditableUnit(*input);
+            }
             consumed = true;
             break;
         case kLeft: {
@@ -3111,6 +3354,10 @@ bool Runtime::handleEvent(const Event& event) {
                 } else {
                     stateChanged = setInputCursor(*input, previous) || stateChanged;
                 }
+            } else if (!event.shiftKey && contentEditableEditingHost(input)) {
+                stateChanged =
+                    impl_->moveAcrossContentEditableBoundary(*input, false) ||
+                    stateChanged;
             }
             consumed = true;
             break;
@@ -3126,6 +3373,10 @@ bool Runtime::handleEvent(const Event& event) {
                 } else {
                     stateChanged = setInputCursor(*input, next) || stateChanged;
                 }
+            } else if (!event.shiftKey && contentEditableEditingHost(input)) {
+                stateChanged =
+                    impl_->moveAcrossContentEditableBoundary(*input, true) ||
+                    stateChanged;
             }
             consumed = true;
             break;
@@ -3213,7 +3464,9 @@ bool Runtime::handleEvent(const Event& event) {
         }
     }
     if (textChanged && impl_->focusedNode && impl_->options.onElementEvent) {
-        impl_->options.onElementEvent(makeElementEvent(ElementEventType::Input, *impl_->focusedNode, event, x, y));
+        Node* target = inputEventTarget(*impl_->focusedNode);
+        impl_->options.onElementEvent(
+            makeElementEvent(ElementEventType::Input, *target, event, x, y));
     }
     if (scrollChanged && scrolledNode && impl_->options.onElementEvent) {
         impl_->options.onElementEvent(makeElementEvent(ElementEventType::Scroll, *scrolledNode, event, x, y));
@@ -3323,7 +3576,13 @@ bool Runtime::setTextById(std::string_view id, std::string_view text) {
     if (!node) {
         return false;
     }
-    node->text = std::string(text);
+    if (isContentEditableTextNode(*node)) {
+        node->value = std::string(text);
+        node->text.clear();
+        clampInputCursor(*node);
+    } else {
+        node->text = std::string(text);
+    }
     markTextChanged(*node);
     impl_->requestLayout();
     return true;
@@ -3393,6 +3652,9 @@ bool Runtime::setAttributeById(std::string_view id, std::string_view name, std::
     }
     node->attributes[normalizedName] = std::string(value);
     syncNodeAttribute(*node, normalizedName);
+    if (normalizedName == "contenteditable") {
+        prepareContentEditableTree(*node);
+    }
     if (normalizedName == "disabled") {
         impl_->clearInteractionForDisabledSubtree(*node);
     }
@@ -3433,7 +3695,13 @@ bool Runtime::applyUpdates(const RuntimeUpdates& updates) {
         if (!node) {
             continue;
         }
-        node->text = update.text;
+        if (isContentEditableTextNode(*node)) {
+            node->value = update.text;
+            node->text.clear();
+            clampInputCursor(*node);
+        } else {
+            node->text = update.text;
+        }
         markTextChanged(*node);
         changed = true;
     }
@@ -3452,6 +3720,9 @@ bool Runtime::applyUpdates(const RuntimeUpdates& updates) {
         }
         node->attributes[normalizedName] = update.value;
         syncNodeAttribute(*node, normalizedName);
+        if (normalizedName == "contenteditable") {
+            prepareContentEditableTree(*node);
+        }
         if (normalizedName == "disabled") {
             impl_->clearInteractionForDisabledSubtree(*node);
         }
@@ -3481,6 +3752,9 @@ bool Runtime::removeAttributeById(std::string_view id, std::string_view name) {
         return false;
     }
     syncNodeAttribute(*node, normalizedName);
+    if (normalizedName == "contenteditable") {
+        prepareContentEditableTree(*node);
+    }
     impl_->requestLayout();
     return true;
 }
@@ -3501,6 +3775,7 @@ bool Runtime::appendHtmlById(std::string_view parentId, std::string_view html) {
     }
     for (auto& node : nodes) {
         rebindParents(*node, parent);
+        prepareContentEditableTree(*node);
         parent->children.push_back(std::move(node));
     }
     impl_->appendStyleRules(std::move(rules));
@@ -3527,6 +3802,7 @@ bool Runtime::prependHtmlById(std::string_view parentId, std::string_view html) 
     auto current = insertAt;
     for (auto& node : nodes) {
         rebindParents(*node, parent);
+        prepareContentEditableTree(*node);
         current = parent->children.insert(current, std::move(node));
         ++current;
     }
@@ -3559,6 +3835,7 @@ bool Runtime::replaceHtmlById(std::string_view id, std::string_view html) {
     auto insertAt = parent->children.erase(parent->children.begin() + static_cast<ptrdiff_t>(*index));
     for (auto& replacement : nodes) {
         rebindParents(*replacement, parent);
+        prepareContentEditableTree(*replacement);
         insertAt = parent->children.insert(insertAt, std::move(replacement));
         ++insertAt;
     }
@@ -3586,6 +3863,81 @@ bool Runtime::removeElementById(std::string_view id) {
     parent->children.erase(parent->children.begin() + static_cast<ptrdiff_t>(*index));
     impl_->lastError.clear();
     impl_->finishDocumentMutation();
+    return true;
+}
+
+bool Runtime::insertHtmlAtSelection(std::string_view editingHostId,
+                                    std::string_view html) {
+    if (!impl_->hasDocument || !impl_->document.root ||
+        editingHostId.empty() || html.empty()) {
+        return false;
+    }
+    Node* host = findById(*impl_->document.root, editingHostId);
+    if (!host || !isContentEditableEditingHost(*host)) {
+        impl_->lastError = "insertHtmlAtSelection target is not an editing host";
+        return false;
+    }
+
+    Node* target = impl_->focusedNode;
+    if (!target || contentEditableEditingHost(target) != host) {
+        target = impl_->editingTargetAtPoint(
+            host,
+            Impl::visualY(*host) + host->layout.h);
+    }
+    if (!target || target == host || !target->parent) {
+        impl_->lastError =
+            "insertHtmlAtSelection requires a text container inside the editing host";
+        return false;
+    }
+
+    std::vector<std::unique_ptr<Node>> nodes;
+    std::vector<StyleRule> rules;
+    if (!impl_->loadFragment(html, nodes, rules) || nodes.empty()) {
+        return false;
+    }
+    impl_->appendStyleRules(std::move(rules));
+    if (!impl_->splitContentEditableTextNode(*target, std::move(nodes))) {
+        impl_->lastError = "failed to insert HTML at the current selection";
+        return false;
+    }
+    impl_->lastError.clear();
+    return true;
+}
+
+bool Runtime::collapseSelection(std::string_view nodeId, size_t offset) {
+    if (!impl_->hasDocument || !impl_->document.root || nodeId.empty()) {
+        return false;
+    }
+    Node* node = findById(*impl_->document.root, nodeId);
+    if (!isEditableNode(node)) {
+        return false;
+    }
+    const bool focusChanged = impl_->setFocusedNode(node);
+    const bool selectionChanged = setInputCursor(*node, offset);
+    if (focusChanged || selectionChanged) {
+        impl_->requestLayout();
+    }
+    return true;
+}
+
+bool Runtime::setSelectionBaseAndExtent(std::string_view anchorNodeId,
+                                        size_t anchorOffset,
+                                        std::string_view focusNodeId,
+                                        size_t focusOffset) {
+    if (!impl_->hasDocument || !impl_->document.root ||
+        anchorNodeId.empty() || anchorNodeId != focusNodeId) {
+        return false;
+    }
+    Node* node = findById(*impl_->document.root, anchorNodeId);
+    if (!isEditableNode(node)) {
+        return false;
+    }
+    const bool focusChanged = impl_->setFocusedNode(node);
+    const bool selectionChanged =
+        setInputSelection(*node, anchorOffset, focusOffset);
+    if (focusChanged || selectionChanged) {
+        impl_->requestLayout();
+    }
     return true;
 }
 
@@ -3684,6 +4036,55 @@ std::optional<ScrollState> Runtime::scrollStateById(std::string_view id) const {
         return std::nullopt;
     }
     return scrollStateForNode(*node);
+}
+
+std::optional<std::string> Runtime::textContentById(std::string_view id) const {
+    if (!impl_->hasDocument || !impl_->document.root || id.empty()) {
+        return std::nullopt;
+    }
+    const Node* node = findById(*impl_->document.root, id);
+    if (!node) {
+        return std::nullopt;
+    }
+    return textContent(*node);
+}
+
+std::vector<std::string> Runtime::childElementIdsById(
+    std::string_view id) const {
+    std::vector<std::string> ids;
+    if (!impl_->hasDocument || !impl_->document.root || id.empty()) {
+        return ids;
+    }
+    const Node* node = findById(*impl_->document.root, id);
+    if (!node) {
+        return ids;
+    }
+    ids.reserve(node->children.size());
+    for (const auto& child : node->children) {
+        ids.push_back(child->id);
+    }
+    return ids;
+}
+
+Selection Runtime::selection() const {
+    Selection result;
+    const Node* node = impl_->focusedNode;
+    if (!isEditableNode(node)) {
+        return result;
+    }
+    result.anchorNodeId = node->id;
+    result.anchorOffset = node->selectionAnchor;
+    result.focusNodeId = node->id;
+    result.focusOffset = node->cursorIndex;
+    result.rangeCount = 1;
+    Range range;
+    range.startContainerId = node->id;
+    range.startOffset = node->selectionStart;
+    range.endContainerId = node->id;
+    range.endOffset = node->selectionEnd;
+    range.collapsed = node->selectionStart == node->selectionEnd;
+    result.range = std::move(range);
+    return result;
 }
 
 bool Runtime::hasClassById(std::string_view id, std::string_view className) const {

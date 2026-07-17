@@ -81,6 +81,68 @@ void sortChildrenByZIndex(std::vector<NodePointer>& children) {
     });
 }
 
+std::string lowerAsciiText(std::string_view value) {
+    std::string result;
+    result.reserve(value.size());
+    for (const unsigned char ch : value) {
+        result.push_back(static_cast<char>(std::tolower(ch)));
+    }
+    return result;
+}
+
+bool isContentEditableTextTag(std::string_view tag) {
+    return tag == "div" ||
+           tag == "p" ||
+           tag == "span" ||
+           tag == "blockquote" ||
+           tag == "li" ||
+           tag == "h1" ||
+           tag == "h2" ||
+           tag == "h3" ||
+           tag == "h4" ||
+           tag == "h5" ||
+           tag == "h6";
+}
+
+bool hasContentEditableElementChildren(const Node& node) {
+    return std::any_of(
+        node.children.begin(),
+        node.children.end(),
+        [](const std::unique_ptr<Node>& child) {
+            return child->tag != "br";
+        });
+}
+
+void appendTextContent(const Node& node, std::string& result) {
+    if (!node.value.empty()) {
+        result += node.value;
+    } else {
+        result += node.text;
+    }
+    for (const auto& child : node.children) {
+        appendTextContent(*child, result);
+    }
+}
+
+void appendEditableTextContent(const Node& node,
+                               const Node& host,
+                               std::string& result) {
+    if (&node != &host && !isContentEditable(node)) {
+        return;
+    }
+    const bool textNode = isContentEditableTextNode(node);
+    if (textNode) {
+        if (!result.empty()) {
+            result.push_back('\n');
+        }
+        result += node.value;
+        return;
+    }
+    for (const auto& child : node.children) {
+        appendEditableTextContent(*child, host, result);
+    }
+}
+
 } // namespace
 
 Theme Theme::dark() {
@@ -148,6 +210,123 @@ std::vector<std::string> splitWhitespace(std::string_view value) {
         parts.push_back(part);
     }
     return parts;
+}
+
+ContentEditableState contentEditableState(const Node& node) {
+    const auto it = node.attributes.find("contenteditable");
+    if (it == node.attributes.end()) {
+        return ContentEditableState::Inherit;
+    }
+    const std::string value = lowerAsciiText(trim(it->second));
+    if (value.empty() || value == "true") {
+        return ContentEditableState::True;
+    }
+    if (value == "false") {
+        return ContentEditableState::False;
+    }
+    if (value == "plaintext-only") {
+        return ContentEditableState::PlaintextOnly;
+    }
+    return ContentEditableState::Inherit;
+}
+
+bool isContentEditable(const Node& node) {
+    for (const Node* current = &node; current; current = current->parent) {
+        switch (contentEditableState(*current)) {
+        case ContentEditableState::True:
+        case ContentEditableState::PlaintextOnly:
+            return true;
+        case ContentEditableState::False:
+            return false;
+        case ContentEditableState::Inherit:
+            break;
+        }
+    }
+    return false;
+}
+
+bool isContentEditableEditingHost(const Node& node) {
+    return isContentEditable(node) &&
+           (!node.parent || !isContentEditable(*node.parent));
+}
+
+bool isContentEditableTextNode(const Node& node) {
+    if (!isContentEditable(node) || !isContentEditableTextTag(node.tag)) {
+        return false;
+    }
+    return !hasContentEditableElementChildren(node);
+}
+
+bool isTextEditingNode(const Node& node) {
+    return node.tag == "input" ||
+           node.tag == "textarea" ||
+           isContentEditableTextNode(node);
+}
+
+Node* contentEditableEditingHost(Node* node) {
+    return const_cast<Node*>(contentEditableEditingHost(
+        static_cast<const Node*>(node)));
+}
+
+const Node* contentEditableEditingHost(const Node* node) {
+    if (!node || !isContentEditable(*node)) {
+        return nullptr;
+    }
+    const Node* current = node;
+    while (current->parent && isContentEditable(*current->parent)) {
+        current = current->parent;
+    }
+    return current;
+}
+
+void prepareContentEditableTree(Node& node) {
+    for (auto& child : node.children) {
+        prepareContentEditableTree(*child);
+    }
+    if (!isContentEditableTextNode(node) || node.text.empty()) {
+        return;
+    }
+    if (node.value.empty()) {
+        node.value = std::move(node.text);
+        ++node.textRevision;
+    } else {
+        node.text.clear();
+    }
+}
+
+void syncContentEditablePlaceholder(Node& node) {
+    if (!isContentEditableTextNode(node)) {
+        return;
+    }
+    if (node.value.empty()) {
+        if (node.children.empty()) {
+            auto lineBreak = std::make_unique<Node>();
+            lineBreak->tag = "br";
+            lineBreak->parent = &node;
+            node.children.push_back(std::move(lineBreak));
+        }
+        return;
+    }
+    node.children.erase(
+        std::remove_if(
+            node.children.begin(),
+            node.children.end(),
+            [](const std::unique_ptr<Node>& child) {
+                return child->tag == "br";
+            }),
+        node.children.end());
+}
+
+std::string textContent(const Node& node) {
+    std::string result;
+    appendTextContent(node, result);
+    return result;
+}
+
+std::string editableTextContent(const Node& node) {
+    std::string result;
+    appendEditableTextContent(node, node, result);
+    return result;
 }
 
 float scrollViewportWidth(const Node& node) {

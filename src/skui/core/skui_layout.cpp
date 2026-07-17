@@ -557,12 +557,21 @@ void LayoutEngine::buildYoga(Node& node, YGNodeRef yogaNode, bool isRoot) {
     setEdge(yogaNode, YGNodeStyleSetPosition, YGNodeStyleSetPositionPercent, YGNodeStyleSetPositionAuto, YGEdgeRight, s.inset.right);
     setEdge(yogaNode, YGNodeStyleSetPosition, YGNodeStyleSetPositionPercent, YGNodeStyleSetPositionAuto, YGEdgeBottom, s.inset.bottom);
 
+    const bool contentEditableTextNode = isContentEditableTextNode(node);
     const bool hasText = !node.text.empty() ||
                          !node.value.empty() ||
-                         (node.tag == "input" && !node.placeholder.empty());
+                         (node.tag == "input" && !node.placeholder.empty()) ||
+                         contentEditableTextNode;
     const bool needsTextMeasure = needsIntrinsicMeasure(s.width) ||
                                   needsIntrinsicMeasure(s.height);
-    if (node.children.empty() && hasText && needsTextMeasure) {
+    const bool hasLayoutChildren = std::any_of(
+        node.children.begin(),
+        node.children.end(),
+        [contentEditableTextNode](const std::unique_ptr<Node>& child) {
+            return !(contentEditableTextNode && child->tag == "br") &&
+                   child->style.display != Display::None;
+        });
+    if (!hasLayoutChildren && hasText && needsTextMeasure) {
         YGNodeSetMeasureFunc(yogaNode, measureTextNode);
     }
 
@@ -575,7 +584,8 @@ void LayoutEngine::buildYoga(Node& node, YGNodeRef yogaNode, bool isRoot) {
     bool hasPreviousLayoutChild = false;
     size_t layoutChildIndex = 0;
     for (auto& child : node.children) {
-        if (child->style.display == Display::None) {
+        if (child->style.display == Display::None ||
+            (contentEditableTextNode && child->tag == "br")) {
             continue;
         }
         YGNodeRef childRef = YGNodeNew();
@@ -626,8 +636,10 @@ void LayoutEngine::readYoga(Node& node, YGNodeRef yogaNode, float offsetX, float
     };
 
     uint32_t yogaIndex = 0;
+    const bool contentEditableTextNode = isContentEditableTextNode(node);
     for (auto& child : node.children) {
-        if (child->style.display == Display::None) {
+        if (child->style.display == Display::None ||
+            (contentEditableTextNode && child->tag == "br")) {
             continue;
         }
         YGNodeRef childYoga = YGNodeGetChild(yogaNode, yogaIndex++);

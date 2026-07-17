@@ -26,6 +26,7 @@
 #include <windows.h>
 #endif
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstdint>
@@ -6066,6 +6067,205 @@ int main() {
     sendKey(textareaRuntime, 0x24);
     sendText(textareaRuntime, "2-");
     ok = expect(textareaValue == "one\n2-two", "textarea Home should move to the current line start") && ok;
+
+    constexpr std::string_view contentEditableHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      width: 140px;
+      height: 90px;
+      background-color: #000000;
+    }
+    .editor {
+      width: 120px;
+      min-height: 70px;
+      display: flex;
+      flex-direction: column;
+      background-color: #112233;
+      color: #ffffff;
+      font-size: 14px;
+    }
+    .editor:focus {
+      background-color: #334455;
+    }
+    .editor p {
+      width: 120px;
+      min-height: 20px;
+      margin: 0;
+    }
+    .file-node {
+      width: 120px;
+      height: 24px;
+      background-color: #225544;
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <div id="editor" class="editor" contenteditable="true">
+      <p id="paragraph-a">hello</p>
+    </div>
+    <div id="plaintext-host" contenteditable="plaintext-only" style="display:none">
+      <p id="plaintext-paragraph">plain</p>
+    </div>
+  </div>
+</body>
+</html>
+)html";
+
+    std::string contentEditableEventId;
+    std::string contentEditableEventValue;
+    skui::Runtime contentEditableRuntime(options);
+    contentEditableRuntime.resize(kWidth, kHeight, 1.0f);
+    contentEditableRuntime.setElementEventCallback(
+        [&](const skui::ElementEvent& event) {
+            if (event.type == skui::ElementEventType::Input) {
+                contentEditableEventId = event.id;
+                contentEditableEventValue = event.value;
+            }
+        });
+    if (!contentEditableRuntime.loadDocumentFromString(
+            contentEditableHtml,
+            "")) {
+        std::cerr << "contenteditable load failed: "
+                  << contentEditableRuntime.lastError() << "\n";
+        return 1;
+    }
+
+    ok = expect(contentEditableRuntime.collapseSelection("paragraph-a", 5),
+                "contenteditable should collapse the selection in a paragraph") &&
+         ok;
+    skui::Selection contentEditableSelection =
+        contentEditableRuntime.selection();
+    ok = expect(contentEditableSelection.rangeCount == 1 &&
+                    contentEditableSelection.focusNodeId == "paragraph-a" &&
+                    contentEditableSelection.focusOffset == 5 &&
+                    contentEditableSelection.range &&
+                    contentEditableSelection.range->collapsed,
+                "contenteditable should expose browser-shaped Selection and Range state") &&
+         ok;
+    sendText(contentEditableRuntime, "!");
+    ok = expect(contentEditableRuntime.textContentById("paragraph-a") ==
+                    std::optional<std::string>("hello!"),
+                "contenteditable paragraphs should accept text input") &&
+         ok;
+    ok = expect(contentEditableEventId == "editor" &&
+                    contentEditableEventValue == "hello!",
+                "contenteditable input events should target the editing host") &&
+         ok;
+
+    ok = expect(contentEditableRuntime.collapseSelection("paragraph-a", 3),
+                "contenteditable should move the caret before inserting a node") &&
+         ok;
+    ok = expect(
+             contentEditableRuntime.insertHtmlAtSelection(
+                 "editor",
+                 R"html(<div id="file-a" class="file-node" contenteditable="false" data-node-type="attachment">report.pdf</div>)html"),
+             "contenteditable should insert ordinary HTML at the current selection") &&
+         ok;
+    std::vector<std::string> contentEditableChildren =
+        contentEditableRuntime.childElementIdsById("editor");
+    contentEditableSelection = contentEditableRuntime.selection();
+    ok = expect(contentEditableChildren.size() == 3 &&
+                    contentEditableChildren[0] == "paragraph-a" &&
+                    contentEditableChildren[1] == "file-a" &&
+                    contentEditableChildren[2] ==
+                        contentEditableSelection.focusNodeId,
+                "inserted non-editable nodes should remain in normal document order") &&
+         ok;
+    ok = expect(contentEditableRuntime.textContentById("paragraph-a") ==
+                    std::optional<std::string>("hel") &&
+                    contentEditableRuntime.textContentById(
+                        contentEditableSelection.focusNodeId) ==
+                        std::optional<std::string>("lo!"),
+                "inserting a block at a text selection should split the paragraph") &&
+         ok;
+    ok = expect(!contentEditableRuntime.collapseSelection("file-a", 0),
+                "contenteditable=false nodes should not accept a text selection") &&
+         ok;
+    ok = expect(!contentEditableRuntime.insertHtmlAtSelection(
+                    "paragraph-a", "<div></div>"),
+                "HTML insertion should reject a non-host target") &&
+         ok;
+
+    sendKey(contentEditableRuntime, 0x08);
+    contentEditableChildren =
+        contentEditableRuntime.childElementIdsById("editor");
+    ok = expect(contentEditableChildren.size() == 2 &&
+                    std::find(contentEditableChildren.begin(),
+                              contentEditableChildren.end(),
+                              "file-a") == contentEditableChildren.end(),
+                "Backspace beside contenteditable=false should delete the atomic node") &&
+         ok;
+    ok = expect(contentEditableEventId == "editor",
+                "deleting an atomic node should emit input on the editing host") &&
+         ok;
+
+    const std::string secondParagraphId =
+        contentEditableRuntime.selection().focusNodeId;
+    ok = expect(contentEditableRuntime.collapseSelection(secondParagraphId, 2),
+                "contenteditable should place the caret inside the split paragraph") &&
+         ok;
+    sendKey(contentEditableRuntime, 0x0D);
+    contentEditableChildren =
+        contentEditableRuntime.childElementIdsById("editor");
+    const std::string thirdParagraphId =
+        contentEditableRuntime.selection().focusNodeId;
+    ok = expect(contentEditableChildren.size() == 3 &&
+                    contentEditableRuntime.textContentById(secondParagraphId) ==
+                        std::optional<std::string>("lo") &&
+                    contentEditableRuntime.textContentById(thirdParagraphId) ==
+                        std::optional<std::string>("!"),
+                "Enter in contenteditable should create an adjacent ordinary paragraph") &&
+         ok;
+    sendIme(contentEditableRuntime,
+            skui::EventType::ImeComposition,
+            "composition");
+    sendIme(contentEditableRuntime, skui::EventType::ImeEnd);
+    sendText(contentEditableRuntime, "done");
+    ok = expect(contentEditableRuntime.textContentById(thirdParagraphId) ==
+                    std::optional<std::string>("done!"),
+                "contenteditable paragraphs should share the existing IME input pipeline") &&
+         ok;
+    ok = expect(!contentEditableRuntime.setSelectionBaseAndExtent(
+                    "paragraph-a", 0, thirdParagraphId, 1),
+                "cross-container selection should fail until the runtime can represent it") &&
+         ok;
+
+    ok = expect(contentEditableRuntime.collapseSelection(
+                    "paragraph-a", 3),
+                "contenteditable should restore the caret before Delete testing") &&
+         ok;
+    ok = expect(contentEditableRuntime.insertHtmlAtSelection(
+                    "editor",
+                    R"html(<div id="file-b" contenteditable="false">archive.zip</div>)html"),
+                "contenteditable should insert a second atomic node") &&
+         ok;
+    ok = expect(contentEditableRuntime.collapseSelection(
+                    "paragraph-a", 3),
+                "contenteditable should place the caret before an atomic node") &&
+         ok;
+    sendKey(contentEditableRuntime, 0x2E);
+    contentEditableChildren =
+        contentEditableRuntime.childElementIdsById("editor");
+    ok = expect(std::find(contentEditableChildren.begin(),
+                          contentEditableChildren.end(),
+                          "file-b") == contentEditableChildren.end(),
+                "Delete beside contenteditable=false should delete the atomic node") &&
+         ok;
+    ok = expect(contentEditableRuntime.collapseSelection(
+                    "plaintext-paragraph", 5),
+                "contenteditable=plaintext-only should create an editing host") &&
+         ok;
+    sendText(contentEditableRuntime, " text");
+    ok = expect(contentEditableRuntime.textContentById(
+                    "plaintext-paragraph") ==
+                    std::optional<std::string>("plain text") &&
+                    contentEditableEventId == "plaintext-host",
+                "plaintext-only descendants should inherit editing and target their host") &&
+         ok;
 
     constexpr std::string_view cssRenderingParityHtml = R"html(
 <!doctype html>
