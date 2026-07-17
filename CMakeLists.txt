@@ -212,6 +212,7 @@ if(SKIAUI_BUILD_WIN32_DX12)
         d3dcompiler
         dbghelp
         ole32
+        windowsapp
         imm32
         shell32
         usp10

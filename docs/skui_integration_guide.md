@@ -254,6 +254,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCmd) {
     options.documentPath = "assets/ui/main.html";
     options.runtime.assetRoot = "assets/ui";
     options.useSystemDpiScale = true;
+    options.useSystemTextScale = true;
     options.runtime.scale = 1.0f;
     options.onRuntimeReady = [](skui::Runtime& ui) {
         ui.setElementEventCallback([&ui](const skui::ElementEvent& event) {
@@ -270,9 +271,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCmd) {
 
 `WindowOptions::useSystemDpiScale` 控制 Win32/DX12 宿主是否把系统 DPI 纳入 SkUI 的缩放计算，默认是 `true`。如果目标系统已有自己的 UI 缩放方案，例如宿主已经在 4K 下按 1.5 倍管理窗口和输入坐标，可以把它设为 `false`，让 SkUI 按 1.0 的平台 DPI 运行。
 
+`WindowOptions::useSystemTextScale` 控制 Win32/DX12 宿主是否跟随 Windows“文本大小”辅助功能设置，默认是 `true`。该倍率通过 `Windows.UI.ViewManagement.UISettings.TextScaleFactor` 读取，并按 Chromium 的默认处理方式合入内容有效倍率：CSS 逻辑视口、盒模型、图片、SVG、Skia 绘制和输入命中坐标会使用同一倍率。系统设置变化后，宿主会自动重新布局并重绘，但不会因此调整顶层 Win32 窗口尺寸；设为 `false` 后不再读取和监听系统文本倍率。
+
+`RuntimeOptions::textScale` 是宿主提供的手动内容文字倍率，默认 `1.0f`。它不会直接改写各节点的 `font-size`，而是作为独立的辅助功能倍率合入 Runtime 的有效倍率。Win32 系统文本缩放开启时，实际文字倍率为“系统文字倍率乘以 `RuntimeOptions::textScale`”；关闭时只使用 `RuntimeOptions::textScale`。自定义宿主可以调用 `Runtime::setTextScale(textScale)` 动态更新，`Runtime::textScale()` 返回当前文字倍率。
+
 `WindowOptions::onWindowMessage` 是可选的宿主消息扩展点。回调返回 `true` 时表示消息已处理，宿主会标记画面为脏并请求重绘；菜单命令、文件拖放和工具级快捷键可以放在这里，普通 SkUI 输入仍由内置 Win32 事件适配器处理。
 
-`RuntimeOptions::scale` 是 SkUI 自身的用户缩放倍率，默认 `1.0f`。最终生效倍率为“Win32 系统 DPI 倍率（如果启用）乘以 `RuntimeOptions::scale`”。因此：
+`RuntimeOptions::scale` 是 SkUI 自身的用户缩放倍率，默认 `1.0f`。最终生效倍率为“Win32 系统 DPI 倍率（如果启用）乘以 `RuntimeOptions::scale`，再乘以实际文字倍率”。因此：
 
 - 跟随 Windows 150% 缩放：`useSystemDpiScale = true`，`runtime.scale = 1.0f`。
 - 忽略 Windows DPI，使用宿主自己的 150% 缩放：`useSystemDpiScale = false`，由宿主管理窗口尺寸和输入坐标，必要时设置 `runtime.scale = 1.5f`。
@@ -305,7 +310,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCmd) {
 7. 图片异步加载、状态更新、输入事件或 `tick()` 返回仍有动画帧时，由宿主根据 `requestRedraw`、
    `animationPending` 或自己的 dirty flag 安排下一帧。
 
-自定义后端传给 `Runtime::resize(width, height, dpiScale)` 的 `dpiScale` 应只表示平台 DPI 倍率。如果宿主不希望 SkUI 跟随系统 DPI，就传 `1.0f`；如果还需要用户自定义 UI 缩放，设置 `RuntimeOptions::scale` 或运行时调用 `Runtime::setScale(scale)`。SkUI 内部会用 `dpiScale * scale` 统一处理逻辑视口、Skia 绘制缩放和输入命中坐标。
+自定义后端传给 `Runtime::resize(width, height, dpiScale)` 的 `dpiScale` 应只表示平台 DPI 倍率。如果宿主不希望 SkUI 跟随系统 DPI，就传 `1.0f`；如果还需要用户自定义 UI 缩放，设置 `RuntimeOptions::scale` 或运行时调用 `Runtime::setScale(scale)`。宿主读取到系统文字倍率后，应通过 `RuntimeOptions::textScale` 或 `Runtime::setTextScale(textScale)` 传入。SkUI 内部会用 `dpiScale * scale * textScale` 统一处理逻辑视口、Skia 绘制缩放和输入命中坐标。
 
 ### 透明叠层与事件透传
 

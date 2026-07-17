@@ -1825,8 +1825,14 @@ public:
         return std::max(0.1f, options.scale);
     }
 
+    float textScale() const {
+        return std::max(0.1f, options.textScale);
+    }
+
     float effectiveScale() const {
-        return std::max(0.1f, std::max(0.1f, dpiScale) * userScale());
+        return std::max(
+            0.1f,
+            std::max(0.1f, dpiScale) * userScale() * textScale());
     }
 
     bool hasAnimatedKeyframes(const KeyframesDefinition& keyframes) const {
@@ -3260,6 +3266,17 @@ void Runtime::setScale(float scale) {
     impl_->requestLayout();
 }
 
+void Runtime::setTextScale(float textScale) {
+    textScale = std::max(0.1f, textScale);
+    if (std::abs(textScale - impl_->options.textScale) <= 0.001f) {
+        impl_->flushLayout();
+        return;
+    }
+
+    impl_->options.textScale = textScale;
+    impl_->requestLayout();
+}
+
 bool Runtime::addClassById(std::string_view id, std::string_view className) {
     if (!impl_->hasDocument || !impl_->document.root || id.empty() || className.empty()) {
         return false;
@@ -3736,6 +3753,10 @@ float Runtime::dpiScale() const {
 
 float Runtime::scale() const {
     return impl_->userScale();
+}
+
+float Runtime::textScale() const {
+    return impl_->textScale();
 }
 
 float Runtime::effectiveScale() const {

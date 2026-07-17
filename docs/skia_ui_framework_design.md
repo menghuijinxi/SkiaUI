@@ -53,6 +53,7 @@
 skui::RuntimeOptions options;
 options.assetRoot = "assets/ui";
 options.scale = 1.0f; // 用户 UI 缩放倍率，会和 resize 传入的 dpiScale 相乘。
+options.textScale = 1.0f; // 文字辅助倍率，会合入内容布局、绘制和输入倍率。
 options.theme = skui::Theme::Dark();
 
 skui::Runtime ui(options);
@@ -75,6 +76,7 @@ window.title = L"SkiaUiDesk";
 window.width = 1280;
 window.height = 800;
 window.useSystemDpiScale = true;
+window.useSystemTextScale = true;
 window.runtime.scale = 1.0f;
 
 skui::win32::Dx12WindowApp app(window);

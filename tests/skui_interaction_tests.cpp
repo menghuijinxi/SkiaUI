@@ -501,24 +501,124 @@ int main() {
     {
         skui::RuntimeOptions scaledOptions = options;
         scaledOptions.scale = 1.5f;
+        scaledOptions.textScale = 1.25f;
         skui::Runtime scaledRuntime(scaledOptions);
         scaledRuntime.resize(300, 150, 2.0f);
 
         ok = expect(scaledRuntime.dpiScale() == 2.0f, "dpiScale should keep platform scale") && ok;
         ok = expect(scaledRuntime.scale() > 1.49f && scaledRuntime.scale() < 1.51f,
                     "runtime scale should expose user scale") && ok;
-        ok = expect(scaledRuntime.effectiveScale() > 2.99f && scaledRuntime.effectiveScale() < 3.01f,
-                    "effective scale should combine platform dpi and user scale") && ok;
-        ok = expect(skui::runtimeLogicalWidth(scaledRuntime) == 100,
-                    "logical width should use effective scale") && ok;
-        ok = expect(skui::runtimeLogicalHeight(scaledRuntime) == 50,
-                    "logical height should use effective scale") && ok;
+        ok = expect(scaledRuntime.textScale() > 1.24f &&
+                        scaledRuntime.textScale() < 1.26f,
+                    "runtime text scale should expose configured text scale") && ok;
+        ok = expect(scaledRuntime.effectiveScale() > 3.74f &&
+                        scaledRuntime.effectiveScale() < 3.76f,
+                    "effective scale should combine dpi, user, and text scales") && ok;
+        ok = expect(skui::runtimeLogicalWidth(scaledRuntime) == 80,
+                    "logical width should include text scale") && ok;
+        ok = expect(skui::runtimeLogicalHeight(scaledRuntime) == 40,
+                    "logical height should include text scale") && ok;
+
+        scaledRuntime.setTextScale(1.5f);
+        ok = expect(scaledRuntime.textScale() > 1.49f &&
+                        scaledRuntime.textScale() < 1.51f,
+                    "setTextScale should update text scale") && ok;
+        ok = expect(scaledRuntime.effectiveScale() > 4.49f &&
+                        scaledRuntime.effectiveScale() < 4.51f,
+                    "text scale should update the content scale") && ok;
+        ok = expect(skui::runtimeLogicalWidth(scaledRuntime) == 67,
+                    "setTextScale should update logical width") && ok;
 
         scaledRuntime.setScale(0.5f);
-        ok = expect(scaledRuntime.effectiveScale() > 0.99f && scaledRuntime.effectiveScale() < 1.01f,
+        ok = expect(scaledRuntime.effectiveScale() > 1.49f &&
+                        scaledRuntime.effectiveScale() < 1.51f,
                     "setScale should update effective scale") && ok;
-        ok = expect(skui::runtimeLogicalWidth(scaledRuntime) == 300,
+        ok = expect(skui::runtimeLogicalWidth(scaledRuntime) == 200,
                     "setScale should update logical width") && ok;
+
+        scaledRuntime.setTextScale(0.0f);
+        ok = expect(scaledRuntime.textScale() > 0.09f &&
+                        scaledRuntime.textScale() < 0.11f,
+                    "text scale should clamp invalid small values") && ok;
+    }
+    {
+        constexpr std::string_view textScaleHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      position: relative;
+      width: 140px;
+      height: 90px;
+      background-color: #000000;
+    }
+    .label {
+      position: absolute;
+      left: 4px;
+      top: 4px;
+      color: #ffffff;
+      font-size: 10px;
+    }
+    .marker {
+      position: absolute;
+      left: 50px;
+      top: 10px;
+      width: 20px;
+      height: 20px;
+      background-color: #ff0000;
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <span class="label">Text scale</span>
+    <div class="marker" data-action="scaled-marker"></div>
+  </div>
+</body>
+</html>
+)html";
+
+        skui::Runtime textScaleRuntime(options);
+        textScaleRuntime.resize(kWidth, kHeight, 1.0f);
+        if (!textScaleRuntime.loadDocumentFromString(textScaleHtml, "")) {
+            std::cerr << "text scale load failed: "
+                      << textScaleRuntime.lastError() << "\n";
+            return 1;
+        }
+        int markerClicks = 0;
+        textScaleRuntime.setElementEventCallback(
+            [&](const skui::ElementEvent& event) {
+                if (event.type == skui::ElementEventType::Click &&
+                    event.action == "scaled-marker") {
+                    ++markerClicks;
+                }
+            });
+
+        std::vector<uint32_t> normalTextPixels;
+        std::vector<uint32_t> scaledTextPixels;
+        ok = renderPixels(textScaleRuntime, normalTextPixels) && ok;
+        textScaleRuntime.setTextScale(2.0f);
+        ok = renderPixels(textScaleRuntime, scaledTextPixels) && ok;
+        const int normalTextPixelCount =
+            countBrightPixels(normalTextPixels, 0, 0, 100, 60);
+        const int scaledTextPixelCount =
+            countBrightPixels(scaledTextPixels, 0, 0, 100, 60);
+        ok = expect(scaledTextPixelCount > normalTextPixelCount + 20,
+                    "text scale should enlarge rendered text") && ok;
+        const uint32_t red = solidColor(255, 0, 0);
+        ok = expect(pixelAt(normalTextPixels, 55, 15) == red &&
+                        pixelAt(scaledTextPixels, 55, 15) != red &&
+                        pixelAt(scaledTextPixels, 115, 30) == red,
+                    "text scale should uniformly scale non-text geometry") && ok;
+        sendMouse(textScaleRuntime, skui::EventType::MouseDown, 55.0f, 15.0f);
+        sendMouse(textScaleRuntime, skui::EventType::MouseUp, 55.0f, 15.0f);
+        ok = expect(markerClicks == 0,
+                    "text scale should remove the old physical hit target") && ok;
+        sendMouse(textScaleRuntime, skui::EventType::MouseDown, 115.0f, 30.0f);
+        sendMouse(textScaleRuntime, skui::EventType::MouseUp, 115.0f, 30.0f);
+        ok = expect(markerClicks == 1,
+                    "text scale should update the physical hit target") && ok;
     }
     {
         constexpr std::string_view browserRootHtml = R"html(

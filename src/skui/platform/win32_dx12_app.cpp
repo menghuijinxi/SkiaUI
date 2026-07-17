@@ -13,7 +13,10 @@
 
 #include <dbghelp.h>
 #include <dwmapi.h>
+#include <objbase.h>
 #include <shellscalingapi.h>
+#include <winrt/Windows.Foundation.h>
+#include <winrt/Windows.UI.ViewManagement.h>
 
 #include <algorithm>
 #include <atomic>
@@ -31,6 +34,7 @@ namespace {
 
 constexpr float kDefaultDpi = 96.0f;
 constexpr UINT kRequestRedrawMessage = WM_APP + 0x531;
+constexpr UINT kSystemTextScaleChangedMessage = WM_APP + 0x532;
 
 float dpiScaleForDpi(UINT dpi) {
     return static_cast<float>(std::max<UINT>(dpi, 1)) / kDefaultDpi;
@@ -52,12 +56,41 @@ void adjustWindowRectForDpi(RECT& rect, UINT dpi) {
     }
 }
 
+class ComApartmentScope {
+public:
+    ~ComApartmentScope() {
+        if (shouldUninitialize_) {
+            CoUninitialize();
+        }
+    }
+
+    HRESULT initialize() {
+        if (initialized_) {
+            return S_OK;
+        }
+
+        const HRESULT result =
+            CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+        if (FAILED(result) && result != RPC_E_CHANGED_MODE) {
+            return result;
+        }
+        initialized_ = true;
+        shouldUninitialize_ = SUCCEEDED(result);
+        return result;
+    }
+
+private:
+    bool initialized_ = false;
+    bool shouldUninitialize_ = false;
+};
+
 }  // namespace
 
 class Dx12WindowApp::Impl {
 public:
     explicit Impl(WindowOptions options)
         : options_(std::move(options)),
+          configuredTextScale_(std::max(0.1f, options_.runtime.textScale)),
           runtime_(withWin32PlatformCallbacks(configureRuntimeCallbacks(options_.runtime))),
           eventAdapter_(runtime_),
           d3d_(options_.clearColor) {
@@ -70,6 +103,7 @@ public:
     }
 
     ~Impl() {
+        shutdownSystemTextScale();
         if (backgroundBrush_) {
             DeleteObject(backgroundBrush_);
             backgroundBrush_ = nullptr;
@@ -80,6 +114,7 @@ public:
         SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE);
         dpi_ = systemDpi();
         backgroundBrush_ = CreateSolidBrush(options_.clearColor);
+        initializeSystemTextScale();
 
         if (options_.onRuntimeReady) {
             options_.onRuntimeReady(runtime_);
@@ -136,6 +171,8 @@ public:
             return 1;
         }
         hwnd_ = hwnd;
+        textScaleWindow_->store(hwnd);
+        refreshSystemTextScale();
         framePacing_.initialize(hwnd);
 
         BOOL dark = TRUE;
@@ -149,13 +186,18 @@ public:
             DispatchMessageW(&msg);
         }
         framePacing_.finalize(presentedWidth_, presentedHeight_);
+        shutdownSystemTextScale();
         hwnd_ = nullptr;
         return static_cast<int>(msg.wParam);
     }
 
 private:
+    ComApartmentScope comApartment_;
     WindowOptions options_;
+    float configuredTextScale_ = 1.0f;
     HWND hwnd_ = nullptr;
+    std::shared_ptr<std::atomic<HWND>> textScaleWindow_ =
+        std::make_shared<std::atomic<HWND>>(nullptr);
     std::atomic_bool redrawMessagePending_{false};
     FramePacingMonitor framePacing_;
     Runtime runtime_;
@@ -175,6 +217,8 @@ private:
     int runtimeLayoutHeight_ = 0;
     float runtimeLayoutDpiScale_ = 0.0f;
     std::optional<std::chrono::steady_clock::time_point> lastAnimationTick_;
+    std::optional<winrt::Windows::UI::ViewManagement::UISettings> uiSettings_;
+    std::optional<winrt::event_token> textScaleChangedToken_;
     bool animationTickPending_ = false;
     static Impl* get(HWND hwnd) {
         return reinterpret_cast<Impl*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
@@ -182,6 +226,81 @@ private:
 
     float runtimeDpiScale() const {
         return options_.useSystemDpiScale ? dpiScaleForDpi(dpi_) : 1.0f;
+    }
+
+    void initializeSystemTextScale() {
+        runtime_.setTextScale(configuredTextScale_);
+        if (!options_.useSystemTextScale) {
+            return;
+        }
+
+        const HRESULT initResult = comApartment_.initialize();
+        if (FAILED(initResult) && initResult != RPC_E_CHANGED_MODE) {
+            OutputDebugStringW(
+                L"SkUI: 无法初始化 COM，已回退为手动文本倍率。\n");
+            return;
+        }
+
+        try {
+            uiSettings_.emplace();
+            refreshSystemTextScale();
+            textScaleChangedToken_ = uiSettings_->TextScaleFactorChanged(
+                [textScaleWindow = textScaleWindow_](
+                    const auto&,
+                    const auto&) noexcept {
+                    const HWND hwnd = textScaleWindow->load();
+                    if (hwnd) {
+                        PostMessageW(
+                            hwnd,
+                            kSystemTextScaleChangedMessage,
+                            0,
+                            0);
+                    }
+                });
+        } catch (const winrt::hresult_error& error) {
+            std::wstring message =
+                L"SkUI: 无法读取系统文本缩放，已回退为手动文本倍率：";
+            message += error.message().c_str();
+            message += L"\n";
+            OutputDebugStringW(message.c_str());
+            shutdownSystemTextScale();
+            runtime_.setTextScale(configuredTextScale_);
+        }
+    }
+
+    void refreshSystemTextScale() {
+        if (!options_.useSystemTextScale || !uiSettings_) {
+            return;
+        }
+
+        try {
+            const float systemTextScale = static_cast<float>(
+                uiSettings_->TextScaleFactor());
+            const float nextTextScale =
+                configuredTextScale_ * std::max(0.1f, systemTextScale);
+            if (std::abs(nextTextScale - runtime_.textScale()) <= 0.001f) {
+                return;
+            }
+            runtime_.setTextScale(nextTextScale);
+            markFrameDirty();
+            if (hwnd_) {
+                requestRepaint(hwnd_, false);
+            }
+        } catch (const winrt::hresult_error& error) {
+            std::wstring message = L"SkUI: 更新系统文本缩放失败：";
+            message += error.message().c_str();
+            message += L"\n";
+            OutputDebugStringW(message.c_str());
+        }
+    }
+
+    void shutdownSystemTextScale() {
+        textScaleWindow_->store(nullptr);
+        if (uiSettings_ && textScaleChangedToken_) {
+            uiSettings_->TextScaleFactorChanged(*textScaleChangedToken_);
+        }
+        textScaleChangedToken_.reset();
+        uiSettings_.reset();
     }
 
     void tickRuntimeForRender() {
@@ -281,6 +400,11 @@ private:
             return DefWindowProcW(hwnd, message, wParam, lParam);
         }
 
+        if (message == kSystemTextScaleChangedMessage) {
+            app->refreshSystemTextScale();
+            return 0;
+        }
+
         if (app->options_.onWindowMessage &&
             app->options_.onWindowMessage(
                 hwnd,
@@ -367,6 +491,7 @@ private:
             app->eraseBackground(hwnd, reinterpret_cast<HDC>(wParam));
             return 1;
         case WM_DESTROY:
+            app->shutdownSystemTextScale();
             app->hwnd_ = nullptr;
             PostQuitMessage(0);
             return 0;
