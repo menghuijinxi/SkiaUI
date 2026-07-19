@@ -665,8 +665,7 @@ SkPaint SkiaRenderer::gradientPaint(const Gradient& gradient,
         gradientRect.h);
 
     std::vector<SkColor4f> colors = gradientColors(gradient.colors);
-    const auto makeColorStops = [&](float extent,
-                                    SkTileMode tileMode) {
+    const auto makeColorStopPositions = [&](float extent) {
         std::vector<std::optional<float>> parsedPositions;
         parsedPositions.reserve(gradient.stopPositions.size());
         for (const std::optional<Length>& position :
@@ -715,13 +714,11 @@ SkPaint SkiaRenderer::gradientPaint(const Gradient& gradient,
         for (const std::optional<float>& position : parsedPositions) {
             positions.push_back(position.value_or(0.0f));
         }
-        SkGradient::Interpolation interpolation;
-        interpolation.fColorSpace =
-            SkGradient::Interpolation::ColorSpace::kSRGB;
-        return SkGradient(
-            SkGradient::Colors(colors, positions, tileMode),
-            interpolation);
+        return positions;
     };
+    SkGradient::Interpolation interpolation;
+    interpolation.fColorSpace =
+        SkGradient::Interpolation::ColorSpace::kSRGB;
     if (gradient.kind == GradientKind::Radial) {
         const float centerX = gradientRect.x +
             resolveTransformLength(gradient.centerX, gradientRect.w);
@@ -735,10 +732,14 @@ SkPaint SkiaRenderer::gradientPaint(const Gradient& gradient,
             std::abs(gradientRect.y + gradientRect.h - centerY));
         const float radius = std::sqrt(
             radiusX * radiusX + radiusY * radiusY);
+        const std::vector<float> positions = makeColorStopPositions(radius);
+        const SkGradient skGradient(
+            SkGradient::Colors(colors, positions, SkTileMode::kClamp),
+            interpolation);
         p.setShader(SkShaders::RadialGradient(
             SkPoint::Make(centerX, centerY),
             radius,
-            makeColorStops(radius, SkTileMode::kClamp)));
+            skGradient));
     } else {
         float angleDegrees = gradient.angleDegrees;
         if (gradient.kind == GradientKind::LinearX) {
@@ -766,11 +767,16 @@ SkPaint SkiaRenderer::gradientPaint(const Gradient& gradient,
         const bool repeats =
             (hasExplicitWidth || hasExplicitHeight) &&
             style.backgroundRepeat != BackgroundRepeat::NoRepeat;
+        const SkTileMode tileMode =
+            repeats ? SkTileMode::kRepeat : SkTileMode::kClamp;
+        const std::vector<float> positions =
+            makeColorStopPositions(halfLength * 2.0f);
+        const SkGradient skGradient(
+            SkGradient::Colors(colors, positions, tileMode),
+            interpolation);
         p.setShader(SkShaders::LinearGradient(
             points,
-            makeColorStops(
-                halfLength * 2.0f,
-                repeats ? SkTileMode::kRepeat : SkTileMode::kClamp)));
+            skGradient));
     }
     return p;
 }

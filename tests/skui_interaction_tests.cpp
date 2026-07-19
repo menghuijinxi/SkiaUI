@@ -5395,12 +5395,26 @@ int main() {
         linear-gradient(90deg, #00ff00 1px, transparent 1px);
       background-size: 10px 10px;
     }
+    .three-stop-gradient {
+      position: absolute;
+      left: 10px;
+      top: 60px;
+      width: 120px;
+      height: 20px;
+      background: linear-gradient(
+        90deg,
+        #ff0000 0%,
+        #00ff00 50%,
+        #0000ff 100%
+      );
+    }
   </style>
 </head>
 <body>
   <div class="root">
     <div class="layered-gradient"></div>
     <div class="tiled-gradient"></div>
+    <div class="three-stop-gradient"></div>
   </div>
 </body>
 </html>
@@ -5440,6 +5454,11 @@ int main() {
             isMostlyRed(pixelAt(layeredGradientPixels, 85, 20)) &&
             pixelAt(layeredGradientPixels, 85, 15) == solidColor(0x00, 0x00, 0x00),
         "pixel gradient stops and background-size should repeat axis-aligned grid lines") && ok;
+    ok = expect(
+        isMostlyRed(pixelAt(layeredGradientPixels, 12, 70)) &&
+            isMostlyGreen(pixelAt(layeredGradientPixels, 70, 70)) &&
+            isMostlyBlue(pixelAt(layeredGradientPixels, 128, 70)),
+        "multi-stop gradient colors should remain valid until Skia creates the shader") && ok;
 
     constexpr std::string_view pseudoElementHtml = R"html(
 <!doctype html>
