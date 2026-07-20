@@ -23,6 +23,8 @@
 #include "include/effects/SkGradient.h"
 #include "include/effects/SkColorMatrix.h"
 #include "include/effects/SkImageFilters.h"
+#include "include/gpu/ganesh/GrRecordingContext.h"
+#include "include/gpu/ganesh/SkImageGanesh.h"
 #include "modules/svg/include/SkSVGDOM.h"
 
 #include <algorithm>
@@ -38,6 +40,7 @@
 #include <optional>
 #include <sstream>
 #include <thread>
+#include <unordered_set>
 
 namespace skui {
 namespace {
@@ -576,6 +579,8 @@ SkiaRenderer::SkiaRenderer(RuntimeOptions options)
       clearColor_(options.clearColor),
       bitmapCacheBudgetBytes_(options.bitmapCacheBudgetBytes),
       bitmapLoadWorkerCount_(normalizeBitmapWorkerCount(options.bitmapLoadWorkerCount)),
+      lazyImagePreloadMarginViewports_(
+          std::max(0.0f, options.lazyImagePreloadMarginViewports)),
       requestRedraw_(std::move(options.requestRedraw)) {}
 
 SkiaRenderer::~SkiaRenderer() {
@@ -589,11 +594,70 @@ void SkiaRenderer::clearCaches() {
     textCache_.clear();
     clearNodeCaches();
     displayedBitmapImages_.clear();
+    residentBitmapImages_.clear();
+    lazyPreloadPathsPreviousFrame_.clear();
+    lazyPreloadPathsCurrentFrame_.clear();
     bitmapState_.reset();
 }
 
 void SkiaRenderer::clearNodeCaches() {
     textLineCache_.clear();
+}
+
+MemoryStats SkiaRenderer::memoryStats() const {
+    MemoryStats stats;
+    BitmapMemoryStats& bitmapStats = stats.bitmapImages;
+    bitmapStats.budgetBytes = bitmapCacheBudgetBytes_;
+    bitmapStats.displayedImageCount = displayedBitmapImages_.size();
+
+    std::unordered_set<std::string> displayedPaths;
+    for (const auto& [node, displayed] : displayedBitmapImages_) {
+        (void)node;
+        if (!displayedPaths.insert(displayed.path).second) {
+            continue;
+        }
+        size_t rowBytes = 0;
+        size_t byteSize = 0;
+        if (imageBufferLayout(displayed.width,
+                              displayed.height,
+                              rowBytes,
+                              byteSize)) {
+            bitmapStats.displayedBytes += byteSize;
+        }
+    }
+
+    const std::shared_ptr<BitmapImageState> state = bitmapState_;
+    if (state) {
+        std::lock_guard lock(state->mutex);
+        bitmapStats.budgetBytes = state->budgetBytes;
+        bitmapStats.cacheBytes = state->cacheBytes;
+        bitmapStats.peakCacheBytes = state->peakCacheBytes;
+        bitmapStats.cacheEntryCount = state->cache.size();
+        bitmapStats.cacheHitCount = state->cacheHitCount;
+        bitmapStats.cacheMissCount = state->cacheMissCount;
+        bitmapStats.decodeCount = state->decodeCount;
+        bitmapStats.evictionCount = state->evictionCount;
+        for (const auto& [path, entry] : state->cache) {
+            (void)path;
+            switch (entry.state) {
+            case ImageState::Loading:
+                ++bitmapStats.loadingImageCount;
+                break;
+            case ImageState::Ready:
+                ++bitmapStats.readyImageCount;
+                break;
+            case ImageState::Failed:
+                ++bitmapStats.failedImageCount;
+                break;
+            }
+        }
+    }
+
+    stats.textCacheEntryCount = textCache_.size();
+    stats.textLineCacheEntryCount = textLineCache_.size();
+    stats.svgFileCacheEntryCount = svgFileCache_.size();
+    stats.svgDomCacheEntryCount = svgDomCache_.size();
+    return stats;
 }
 
 void SkiaRenderer::shutdownCaches() {
@@ -603,6 +667,9 @@ void SkiaRenderer::shutdownCaches() {
     textCache_.clear();
     textLineCache_.clear();
     displayedBitmapImages_.clear();
+    residentBitmapImages_.clear();
+    lazyPreloadPathsPreviousFrame_.clear();
+    lazyPreloadPathsCurrentFrame_.clear();
     bitmapState_.reset();
 }
 
@@ -796,9 +863,13 @@ void SkiaRenderer::draw(Document& document, SkCanvas& canvas, int width, int hei
     traceTextCount_ = 0;
     traceSvgCount_ = 0;
     traceNodeCount_ = 0;
+    const float scale = std::max(0.1f, dpiScale);
+    lazyImagePreloadMarginX_ =
+        static_cast<float>(width) / scale * lazyImagePreloadMarginViewports_;
+    lazyImagePreloadMarginY_ =
+        static_cast<float>(height) / scale * lazyImagePreloadMarginViewports_;
     beginBitmapFrame();
     canvas.clear(clearColor_);
-    const float scale = std::max(0.1f, dpiScale);
     canvas.save();
     canvas.scale(scale, scale);
     if (document.root) {
@@ -850,6 +921,7 @@ void SkiaRenderer::drawNode(SkCanvas& canvas, const Document& document, const No
         }
         canvas.translate(-originX, -originY);
     }
+    requestLazyBitmapImageIfNeeded(canvas, document, node);
     const float opacity = clampf(node.style.opacity, 0.0f, 1.0f);
     if (opacity <= 0.0f) {
         canvas.restoreToCount(saveCount);
@@ -1206,7 +1278,7 @@ void SkiaRenderer::drawBackgroundImage(SkCanvas& canvas,
     }
 
     const BitmapImageEntry entry = bitmapImageEntry(path);
-    sk_sp<SkImage> image = bitmapImageForEntry(path, entry);
+    sk_sp<SkImage> image = bitmapImageForEntry(canvas, path, entry);
     if (!image || entry.width <= 0 || entry.height <= 0) {
         return;
     }
@@ -1383,7 +1455,13 @@ void SkiaRenderer::drawImage(SkCanvas& canvas, const Document& document, const N
         BitmapImageEntry entry = bitmapImageEntry(path);
         int imageWidth = 0;
         int imageHeight = 0;
-        sk_sp<SkImage> image = displayBitmapImageForNode(node, path, entry, imageWidth, imageHeight);
+        sk_sp<SkImage> image = displayBitmapImageForNode(
+            canvas,
+            node,
+            path,
+            entry,
+            imageWidth,
+            imageHeight);
         if (!image) {
             return;
         }
@@ -1401,12 +1479,13 @@ void SkiaRenderer::drawImage(SkCanvas& canvas, const Document& document, const N
     drawSvgMarkup(canvas, *svg, node.layout, node.style.color);
 }
 
-sk_sp<SkImage> SkiaRenderer::displayBitmapImageForNode(const Node& node,
+sk_sp<SkImage> SkiaRenderer::displayBitmapImageForNode(SkCanvas& canvas,
+                                                       const Node& node,
                                                        const std::string& path,
                                                        const BitmapImageEntry& entry,
                                                        int& imageWidth,
                                                        int& imageHeight) {
-    sk_sp<SkImage> image = bitmapImageForEntry(path, entry);
+    sk_sp<SkImage> image = bitmapImageForEntry(canvas, path, entry);
     if (image) {
         DisplayedBitmapImage& displayed = displayedBitmapImages_[&node];
         displayed.path = path;
@@ -1462,68 +1541,129 @@ void SkiaRenderer::drawBitmapImage(SkCanvas& canvas,
     canvas.restore();
 }
 
-sk_sp<SkImage> SkiaRenderer::bitmapImageForEntry(const std::string& path, const BitmapImageEntry& entry) {
+sk_sp<SkImage> SkiaRenderer::bitmapImageForEntry(SkCanvas& canvas,
+                                                 const std::string& path,
+                                                 const BitmapImageEntry& entry) {
     if (entry.state != ImageState::Ready) {
         return nullptr;
     }
-    if (entry.image) {
-        return entry.image;
-    }
-    if (!entry.pixels || entry.pixels->empty()) {
-        return nullptr;
+
+    sk_sp<SkImage> rasterImage = entry.image;
+    if (!rasterImage) {
+        if (!entry.pixels || entry.pixels->empty()) {
+            return nullptr;
+        }
+
+        const SkImageInfo info = SkImageInfo::Make(entry.width,
+                                                   entry.height,
+                                                   kBGRA_8888_SkColorType,
+                                                   kPremul_SkAlphaType,
+                                                   SkColorSpace::MakeSRGB());
+        const SkPixmap pixmap(info, entry.pixels->data(), entry.rowBytes);
+        rasterImage = SkImages::RasterFromPixmapCopy(pixmap);
+        if (!rasterImage) {
+            return nullptr;
+        }
+
+        if (bitmapState_) {
+            std::lock_guard lock(bitmapState_->mutex);
+            auto cacheIt = bitmapState_->cache.find(path);
+            if (cacheIt != bitmapState_->cache.end() &&
+                cacheIt->second.state == ImageState::Ready &&
+                !cacheIt->second.image &&
+                cacheIt->second.pixels == entry.pixels) {
+                cacheIt->second.image = rasterImage;
+                cacheIt->second.pixels.reset();
+            }
+        }
     }
 
-    const SkImageInfo info = SkImageInfo::Make(entry.width,
-                                               entry.height,
-                                               kBGRA_8888_SkColorType,
-                                               kPremul_SkAlphaType,
-                                               SkColorSpace::MakeSRGB());
-    SkPixmap pixmap(info, entry.pixels->data(), entry.rowBytes);
-    sk_sp<SkImage> image = SkImages::RasterFromPixmapCopy(pixmap);
-    if (!image || !bitmapState_) {
-        return image;
+    ResidentBitmapImage& resident = residentBitmapImages_[path];
+    if (resident.rasterImage != rasterImage) {
+        resident.rasterImage = rasterImage;
+        resident.displayImage.reset();
+    }
+    resident.rowBytes = entry.rowBytes;
+    resident.byteSize = entry.byteSize;
+    resident.lastUsedFrame = entry.lastUsedFrame;
+    resident.width = entry.width;
+    resident.height = entry.height;
+
+    GrDirectContext* directContext =
+        GrAsDirectContext(canvas.recordingContext());
+    if (!directContext) {
+        return rasterImage;
     }
 
-    std::lock_guard lock(bitmapState_->mutex);
-    auto it = bitmapState_->cache.find(path);
-    if (it != bitmapState_->cache.end() &&
-        it->second.state == ImageState::Ready &&
-        !it->second.image &&
-        it->second.pixels == entry.pixels) {
-        it->second.image = image;
-        it->second.pixels.reset();
+    // 当前绘制路径由 resident map 明确持有，离开当前帧工作集后统一释放 GPU 副本。
+    // 这里不加入 Ganesh 的普通 LRU，避免可见纹理在帧间被预算驱逐并重复上传。
+    if (resident.displayImage) {
+        sk_sp<SkImage> compatibleImage = SkImages::TextureFromImage(
+            directContext,
+            resident.displayImage.get(),
+            skgpu::Mipmapped::kNo,
+            skgpu::Budgeted::kNo);
+        if (compatibleImage) {
+            resident.displayImage = compatibleImage;
+            return compatibleImage;
+        }
     }
-    return image;
+
+    sk_sp<SkImage> textureImage = SkImages::TextureFromImage(
+        directContext,
+        rasterImage.get(),
+        skgpu::Mipmapped::kNo,
+        skgpu::Budgeted::kNo);
+    if (!textureImage) {
+        return rasterImage;
+    }
+    resident.displayImage = textureImage;
+    return textureImage;
 }
 
 void SkiaRenderer::beginBitmapFrame() {
+    lazyPreloadPathsCurrentFrame_.clear();
     std::shared_ptr<BitmapImageState> state = bitmapState_;
     if (!state) {
         return;
     }
     std::lock_guard lock(state->mutex);
     ++state->frame;
+    state->activePaths.clear();
 }
 
 void SkiaRenderer::endBitmapFrame() {
     std::shared_ptr<BitmapImageState> state = bitmapState_;
-    if (!state) {
-        return;
-    }
     uint64_t frame = 0;
-    {
+    if (state) {
         std::lock_guard lock(state->mutex);
         frame = state->frame;
         pruneBitmapCacheLocked(*state);
     }
 
-    for (auto it = displayedBitmapImages_.begin(); it != displayedBitmapImages_.end();) {
-        if (it->second.lastUsedFrame != frame) {
-            it = displayedBitmapImages_.erase(it);
-        } else {
-            ++it;
+    if (state) {
+        for (auto it = residentBitmapImages_.begin();
+             it != residentBitmapImages_.end();) {
+            if (it->second.lastUsedFrame != frame) {
+                it = residentBitmapImages_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+
+        for (auto it = displayedBitmapImages_.begin();
+             it != displayedBitmapImages_.end();) {
+            if (it->second.lastUsedFrame != frame) {
+                it = displayedBitmapImages_.erase(it);
+            } else {
+                ++it;
+            }
         }
     }
+
+    lazyPreloadPathsPreviousFrame_ =
+        std::move(lazyPreloadPathsCurrentFrame_);
+    lazyPreloadPathsCurrentFrame_.clear();
 }
 
 void SkiaRenderer::requestBitmapImages(const Document& document) {
@@ -1544,6 +1684,42 @@ bool shouldRequestBitmapImageEagerly(const Node& node) {
 }
 
 }  // namespace
+
+void SkiaRenderer::requestLazyBitmapImageIfNeeded(SkCanvas& canvas,
+                                                  const Document& document,
+                                                  const Node& node) {
+    if (node.tag != "img" ||
+        node.src.empty() ||
+        isSvgSource(node.src) ||
+        shouldRequestBitmapImageEagerly(node)) {
+        return;
+    }
+
+    SkRect preloadBounds;
+    if (!canvas.getLocalClipBounds(&preloadBounds)) {
+        return;
+    }
+    preloadBounds.outset(lazyImagePreloadMarginX_,
+                         lazyImagePreloadMarginY_);
+    if (!SkRect::Intersects(preloadBounds, node.layout.sk())) {
+        return;
+    }
+
+    const std::string path = resolveAssetPath(document, node.src);
+    if (path.empty()) {
+        return;
+    }
+
+    const bool firstRequestThisFrame =
+        lazyPreloadPathsCurrentFrame_.insert(path).second;
+    const bool enteredPreloadMargin =
+        lazyPreloadPathsPreviousFrame_.find(path) ==
+        lazyPreloadPathsPreviousFrame_.end();
+    // 只在进入边距时触发；否则超预算淘汰会被加载完成回调放大为解码循环。
+    if (firstRequestThisFrame && enteredPreloadMargin) {
+        requestBitmapImage(path);
+    }
+}
 
 void SkiaRenderer::requestBitmapImagesForNode(const Document& document, const Node& node) {
     if (node.tag == "img" &&
@@ -1580,8 +1756,10 @@ void SkiaRenderer::requestBitmapImage(const std::string& path) {
     {
         std::lock_guard lock(state->mutex);
         if (state->cache.find(path) != state->cache.end()) {
+            ++state->cacheHitCount;
             return;
         }
+        ++state->cacheMissCount;
         state->cache.emplace(path, BitmapImageEntry{});
     }
     enqueueBitmapLoad(state, path);
@@ -1596,11 +1774,33 @@ SkiaRenderer::BitmapImageEntry SkiaRenderer::bitmapImageEntry(const std::string&
     std::shared_ptr<BitmapImageState> state = bitmapState_;
     {
         std::lock_guard lock(state->mutex);
+        state->activePaths.insert(path);
         auto it = state->cache.find(path);
         if (it != state->cache.end()) {
+            ++state->cacheHitCount;
             it->second.lastUsedFrame = state->frame;
             return it->second;
         }
+
+        ++state->cacheMissCount;
+        const auto residentIt = residentBitmapImages_.find(path);
+        if (residentIt != residentBitmapImages_.end() &&
+            residentIt->second.rasterImage) {
+            BitmapImageEntry retained;
+            retained.state = ImageState::Ready;
+            retained.image = residentIt->second.rasterImage;
+            retained.rowBytes = residentIt->second.rowBytes;
+            retained.byteSize = residentIt->second.byteSize;
+            retained.lastUsedFrame = state->frame;
+            retained.width = residentIt->second.width;
+            retained.height = residentIt->second.height;
+            state->cacheBytes += retained.byteSize;
+            state->peakCacheBytes =
+                std::max(state->peakCacheBytes, state->cacheBytes);
+            state->cache.emplace(path, retained);
+            return retained;
+        }
+
         BitmapImageEntry pending;
         pending.lastUsedFrame = state->frame;
         state->cache.emplace(path, std::move(pending));
@@ -1644,6 +1844,7 @@ void SkiaRenderer::stopBitmapLoads(const std::shared_ptr<BitmapImageState>& stat
         std::lock_guard lock(state->mutex);
         state->queue.clear();
         state->cache.clear();
+        state->activePaths.clear();
         state->cacheBytes = 0;
         state->dirty = false;
         state->stop = true;
@@ -1670,7 +1871,8 @@ void SkiaRenderer::pruneBitmapCacheLocked(BitmapImageState& state) {
             if (entry.state != ImageState::Ready || entry.byteSize == 0) {
                 continue;
             }
-            if (state.frame != 0 && entry.lastUsedFrame == state.frame) {
+            if (state.activePaths.find(it->first) != state.activePaths.end() ||
+                (state.frame != 0 && entry.lastUsedFrame == state.frame)) {
                 continue;
             }
             if (entry.lastUsedFrame < oldestFrame) {
@@ -1684,6 +1886,7 @@ void SkiaRenderer::pruneBitmapCacheLocked(BitmapImageState& state) {
         const size_t byteSize = candidate->second.byteSize;
         state.cacheBytes = state.cacheBytes >= byteSize ? state.cacheBytes - byteSize : 0;
         state.cache.erase(candidate);
+        ++state.evictionCount;
     }
 }
 
@@ -1714,13 +1917,18 @@ void SkiaRenderer::bitmapWorkerLoop(std::shared_ptr<BitmapImageState> state, Req
                 return;
             }
             auto it = state->cache.find(path);
-            if (it != state->cache.end()) {
+            if (it != state->cache.end() &&
+                it->second.state == ImageState::Loading) {
                 const size_t oldByteSize = it->second.byteSize;
                 state->cacheBytes = state->cacheBytes >= oldByteSize ? state->cacheBytes - oldByteSize : 0;
                 loaded.lastUsedFrame = it->second.lastUsedFrame;
                 it->second = std::move(loaded);
                 if (it->second.state == ImageState::Ready) {
                     state->cacheBytes += it->second.byteSize;
+                    state->peakCacheBytes =
+                        std::max(state->peakCacheBytes,
+                                 state->cacheBytes);
+                    ++state->decodeCount;
                 }
                 pruneBitmapCacheLocked(*state);
                 state->dirty = true;

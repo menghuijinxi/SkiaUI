@@ -4227,6 +4227,233 @@ int main() {
     }
 
     {
+        const std::filesystem::path lazyMarginDir =
+            std::filesystem::temp_directory_path() /
+            "skui_lazy_bitmap_preload_margin";
+        std::filesystem::create_directories(lazyMarginDir);
+        ok = expect(writeRedPngFixture(lazyMarginDir / "near.png"),
+                    "near lazy bitmap fixture should be written") && ok;
+        ok = expect(writeBluePngFixture(lazyMarginDir / "far.png"),
+                    "far lazy bitmap fixture should be written") && ok;
+
+        constexpr std::string_view lazyMarginHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      position: relative;
+      width: 140px;
+      height: 90px;
+      overflow-y: auto;
+      background-color: #000000;
+    }
+    .content {
+      position: absolute;
+      left: 0px;
+      top: 0px;
+      width: 140px;
+      height: 320px;
+    }
+    .photo {
+      position: absolute;
+      left: 0px;
+      width: 20px;
+      height: 20px;
+    }
+    .near {
+      top: 150px;
+    }
+    .far {
+      top: 250px;
+    }
+  </style>
+</head>
+<body>
+  <div id="lazy-scroll" class="root">
+    <div class="content">
+      <img id="near" class="photo near" src="near.png" loading="lazy">
+      <img id="far" class="photo far" src="far.png" loading="lazy">
+    </div>
+  </div>
+</body>
+</html>
+)html";
+
+        skui::RuntimeOptions lazyMarginOptions = options;
+        lazyMarginOptions.assetRoot = utf8PathText(lazyMarginDir);
+        lazyMarginOptions.lazyImagePreloadMarginViewports = 1.0f;
+        skui::Runtime lazyMarginRuntime(lazyMarginOptions);
+        lazyMarginRuntime.resize(kWidth, kHeight, 1.0f);
+        ok = expect(
+                 lazyMarginRuntime.loadDocumentFromString(
+                     lazyMarginHtml,
+                     utf8PathText(lazyMarginDir)),
+                 "lazy preload margin document should load") &&
+             ok;
+
+        const skui::MemoryStats beforeLazyRender =
+            lazyMarginRuntime.memoryStats();
+        ok = expect(beforeLazyRender.bitmapImages.cacheEntryCount == 0,
+                    "lazy bitmaps should not enter the eager request scan") && ok;
+
+        uint32_t lazyMarginPixel = 0;
+        ok = renderPixel(lazyMarginRuntime,
+                         0,
+                         0,
+                         lazyMarginPixel) && ok;
+        waitForDirty(lazyMarginRuntime);
+        const skui::MemoryStats nearLazyStats =
+            lazyMarginRuntime.memoryStats();
+        ok = expect(
+                 nearLazyStats.bitmapImages.cacheEntryCount == 1 &&
+                     nearLazyStats.bitmapImages.readyImageCount == 1 &&
+                     nearLazyStats.bitmapImages.decodeCount == 1,
+                 "lazy bitmap within one viewport margin should preload") &&
+             ok;
+
+        ok = expect(lazyMarginRuntime.setScrollOffsetById(
+                        "lazy-scroll",
+                        0.0f,
+                        80.0f),
+                    "lazy preload container should scroll") && ok;
+        const std::optional<skui::ScrollState> scrolledLazyState =
+            lazyMarginRuntime.scrollStateById("lazy-scroll");
+        ok = expect(scrolledLazyState.has_value() &&
+                        scrolledLazyState->scrollY == 80.0f,
+                    "lazy preload container should retain its scroll offset") && ok;
+        ok = renderPixel(lazyMarginRuntime,
+                         0,
+                         0,
+                         lazyMarginPixel) && ok;
+        waitForDirty(lazyMarginRuntime);
+        const skui::MemoryStats bothLazyStats =
+            lazyMarginRuntime.memoryStats();
+        ok = expect(
+                 bothLazyStats.bitmapImages.cacheEntryCount == 2 &&
+                     bothLazyStats.bitmapImages.readyImageCount == 2 &&
+                     bothLazyStats.bitmapImages.decodeCount == 2,
+                 "lazy bitmap should preload after scrolling into the margin") &&
+             ok;
+
+        std::filesystem::remove_all(lazyMarginDir);
+    }
+
+    {
+        const std::filesystem::path lazyBudgetDir =
+            std::filesystem::temp_directory_path() /
+            "skui_lazy_bitmap_budget_thrash";
+        std::filesystem::create_directories(lazyBudgetDir);
+        ok = expect(writeRedPngFixture(lazyBudgetDir / "visible-red.png"),
+                    "visible red bitmap budget fixture should be written") && ok;
+        ok = expect(writeBluePngFixture(lazyBudgetDir / "visible-blue.png"),
+                    "visible blue bitmap budget fixture should be written") && ok;
+        ok = expect(writeSolidPngFixture(
+                        lazyBudgetDir / "prefetch.png",
+                        0x00,
+                        0xFF,
+                        0x00),
+                    "prefetch bitmap budget fixture should be written") && ok;
+
+        constexpr std::string_view lazyBudgetHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .viewer {
+      position: relative;
+      width: 140px;
+      height: 40px;
+      overflow-y: auto;
+      background-color: #000000;
+    }
+    .content {
+      position: absolute;
+      left: 0px;
+      top: 0px;
+      width: 140px;
+      height: 180px;
+    }
+    .photo {
+      position: absolute;
+      left: 0px;
+      width: 20px;
+      height: 20px;
+    }
+    .visible-red {
+      top: 0px;
+    }
+    .visible-blue {
+      left: 24px;
+      top: 0px;
+    }
+    .prefetch {
+      top: 100px;
+    }
+  </style>
+</head>
+<body>
+  <div class="viewer">
+    <div class="content">
+      <img class="photo visible-red" src="visible-red.png" loading="lazy">
+      <img class="photo visible-blue" src="visible-blue.png" loading="lazy">
+      <img class="photo prefetch" src="prefetch.png" loading="lazy">
+    </div>
+  </div>
+</body>
+</html>
+)html";
+
+        skui::RuntimeOptions lazyBudgetOptions = options;
+        lazyBudgetOptions.assetRoot = utf8PathText(lazyBudgetDir);
+        lazyBudgetOptions.bitmapCacheBudgetBytes = 16;
+        lazyBudgetOptions.bitmapLoadWorkerCount = 1;
+        lazyBudgetOptions.lazyImagePreloadMarginViewports = 1.0f;
+        skui::Runtime lazyBudgetRuntime(lazyBudgetOptions);
+        lazyBudgetRuntime.resize(kWidth, kHeight, 1.0f);
+        ok = expect(
+                 lazyBudgetRuntime.loadDocumentFromString(
+                     lazyBudgetHtml,
+                     utf8PathText(lazyBudgetDir)),
+                 "lazy bitmap budget document should load") &&
+             ok;
+
+        std::vector<uint32_t> lazyBudgetPixels;
+        for (int retry = 0; retry < 100; ++retry) {
+            ok = renderPixels(lazyBudgetRuntime, lazyBudgetPixels) && ok;
+            const skui::MemoryStats stats = lazyBudgetRuntime.memoryStats();
+            if (stats.bitmapImages.decodeCount >= 3 &&
+                isMostlyRed(pixelAt(lazyBudgetPixels, 10, 10)) &&
+                isMostlyBlue(pixelAt(lazyBudgetPixels, 34, 10))) {
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+
+        for (int frame = 0; frame < 6; ++frame) {
+            ok = renderPixels(lazyBudgetRuntime, lazyBudgetPixels) && ok;
+            std::this_thread::sleep_for(std::chrono::milliseconds(30));
+            (void)lazyBudgetRuntime.dirty();
+        }
+
+        const skui::MemoryStats lazyBudgetStats =
+            lazyBudgetRuntime.memoryStats();
+        ok = expect(isMostlyRed(pixelAt(lazyBudgetPixels, 10, 10)),
+                    "visible red bitmap should remain rendered under preload pressure") && ok;
+        ok = expect(isMostlyBlue(pixelAt(lazyBudgetPixels, 34, 10)),
+                    "visible blue bitmap should remain rendered under preload pressure") && ok;
+        ok = expect(
+                 lazyBudgetStats.bitmapImages.cacheBytes == 32 &&
+                     lazyBudgetStats.bitmapImages.cacheEntryCount == 2 &&
+                     lazyBudgetStats.bitmapImages.decodeCount == 3 &&
+                     lazyBudgetStats.bitmapImages.evictionCount == 1,
+                 "active images may exceed budget without repeatedly decoding an evicted preload") &&
+             ok;
+
+        std::filesystem::remove_all(lazyBudgetDir);
+    }
+
+    {
         const std::filesystem::path cacheDir = std::filesystem::temp_directory_path() / "skui_bitmap_cache_budget";
         std::filesystem::create_directories(cacheDir);
         const std::filesystem::path redPath = cacheDir / "red.png";
@@ -4296,6 +4523,30 @@ int main() {
         waitForDirty(budgetRuntime);
         ok = renderPixel(budgetRuntime, 20, 20, budgetPixel) && ok;
         ok = expect(isMostlyRed(budgetPixel), "evicted red bitmap should render after reload") && ok;
+
+        const skui::MemoryStats budgetStats = budgetRuntime.memoryStats();
+        ok = expect(budgetStats.bitmapImages.budgetBytes == 16 &&
+                        budgetStats.bitmapImages.cacheBytes == 16 &&
+                        budgetStats.bitmapImages.peakCacheBytes == 32,
+                    "bitmap memory stats should expose budget, usage, and peak") && ok;
+        ok = expect(budgetStats.bitmapImages.cacheEntryCount == 1 &&
+                        budgetStats.bitmapImages.displayedImageCount == 1 &&
+                        budgetStats.bitmapImages.displayedBytes == 16 &&
+                        budgetStats.bitmapImages.readyImageCount == 1,
+                    "bitmap memory stats should expose cache and display state") && ok;
+        ok = expect(budgetStats.bitmapImages.cacheHitCount > 0 &&
+                        budgetStats.bitmapImages.cacheMissCount >= 3 &&
+                        budgetStats.bitmapImages.decodeCount >= 3 &&
+                        budgetStats.bitmapImages.evictionCount >= 2,
+                    "bitmap memory stats should expose runtime cache counters") && ok;
+
+        const std::string budgetReport = budgetRuntime.memoryReport();
+        ok = expect(budgetReport.find("SkiaUI Memory Report") !=
+                            std::string::npos &&
+                        budgetReport.find("Bitmap cache: 16 B / 16 B") !=
+                            std::string::npos &&
+                        budgetReport.find("DOM nodes:") != std::string::npos,
+                    "memory report should format structured runtime statistics") && ok;
 
         std::filesystem::remove_all(cacheDir);
     }

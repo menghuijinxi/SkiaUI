@@ -108,6 +108,31 @@ struct RuntimeUpdates {
     std::vector<AttributeUpdate> attributes;
 };
 
+struct BitmapMemoryStats {
+    size_t budgetBytes = 0;
+    size_t cacheBytes = 0;
+    size_t peakCacheBytes = 0;
+    size_t displayedBytes = 0;
+    size_t cacheEntryCount = 0;
+    size_t displayedImageCount = 0;
+    size_t loadingImageCount = 0;
+    size_t readyImageCount = 0;
+    size_t failedImageCount = 0;
+    uint64_t cacheHitCount = 0;
+    uint64_t cacheMissCount = 0;
+    uint64_t decodeCount = 0;
+    uint64_t evictionCount = 0;
+};
+
+struct MemoryStats {
+    BitmapMemoryStats bitmapImages;
+    size_t domNodeCount = 0;
+    size_t textCacheEntryCount = 0;
+    size_t textLineCacheEntryCount = 0;
+    size_t svgFileCacheEntryCount = 0;
+    size_t svgDomCacheEntryCount = 0;
+};
+
 struct ScrollState {
     float scrollX = 0.0f;
     float scrollY = 0.0f;
@@ -143,6 +168,7 @@ struct RuntimeOptions {
     SkColor clearColor = SkColorSetRGB(7, 12, 18);
     size_t bitmapCacheBudgetBytes = 192u * 1024u * 1024u;
     size_t bitmapLoadWorkerCount = 4;
+    float lazyImagePreloadMarginViewports = 1.0f;
     Theme theme = Theme::dark();
     ElementEventCallback onElementEvent;
     ClipboardReadCallback readClipboardText;
@@ -227,6 +253,8 @@ public:
     [[nodiscard]] float scale() const;
     [[nodiscard]] float textScale() const;
     [[nodiscard]] float effectiveScale() const;
+    [[nodiscard]] MemoryStats memoryStats() const;
+    [[nodiscard]] std::string memoryReport() const;
     [[nodiscard]] Cursor cursor() const;
     [[nodiscard]] bool dirty() const;
     [[nodiscard]] std::string lastError() const;

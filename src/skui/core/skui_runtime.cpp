@@ -13,8 +13,10 @@
 #include <cctype>
 #include <cmath>
 #include <cstdint>
+#include <iomanip>
 #include <limits>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -30,6 +32,32 @@ void rebindParents(Node& node, Node* parent) {
     for (auto& child : node.children) {
         rebindParents(*child, &node);
     }
+}
+
+size_t countDomNodes(const Node& node) {
+    size_t count = 1;
+    for (const auto& child : node.children) {
+        count += countDomNodes(*child);
+    }
+    return count;
+}
+
+std::string formatMemoryBytes(size_t bytes) {
+    constexpr size_t kKibibyte = 1024u;
+    constexpr size_t kMebibyte = 1024u * 1024u;
+    std::ostringstream output;
+    if (bytes >= kMebibyte) {
+        output << std::fixed << std::setprecision(1)
+               << static_cast<double>(bytes) / static_cast<double>(kMebibyte)
+               << " MiB";
+    } else if (bytes >= kKibibyte) {
+        output << std::fixed << std::setprecision(1)
+               << static_cast<double>(bytes) / static_cast<double>(kKibibyte)
+               << " KiB";
+    } else {
+        output << bytes << " B";
+    }
+    return output.str();
 }
 
 bool isRenderableNode(const Node& node) {
@@ -4162,6 +4190,43 @@ float Runtime::textScale() const {
 
 float Runtime::effectiveScale() const {
     return impl_->effectiveScale();
+}
+
+MemoryStats Runtime::memoryStats() const {
+    MemoryStats stats = impl_->renderer.memoryStats();
+    if (impl_->document.root) {
+        stats.domNodeCount = countDomNodes(*impl_->document.root);
+    }
+    return stats;
+}
+
+std::string Runtime::memoryReport() const {
+    const MemoryStats stats = memoryStats();
+    const BitmapMemoryStats& bitmaps = stats.bitmapImages;
+    std::ostringstream output;
+    output << "SkiaUI Memory Report\n"
+           << "Bitmap cache: " << formatMemoryBytes(bitmaps.cacheBytes)
+           << " / " << formatMemoryBytes(bitmaps.budgetBytes) << '\n'
+           << "Peak bitmap cache: "
+           << formatMemoryBytes(bitmaps.peakCacheBytes) << '\n'
+           << "Displayed bitmap working set: "
+           << formatMemoryBytes(bitmaps.displayedBytes) << '\n'
+           << "Bitmap entries: " << bitmaps.cacheEntryCount
+           << " (loading=" << bitmaps.loadingImageCount
+           << ", ready=" << bitmaps.readyImageCount
+           << ", failed=" << bitmaps.failedImageCount << ")\n"
+           << "Displayed bitmap nodes: " << bitmaps.displayedImageCount << '\n'
+           << "Bitmap cache lookups: hits=" << bitmaps.cacheHitCount
+           << ", misses=" << bitmaps.cacheMissCount << '\n'
+           << "Bitmap decodes: " << bitmaps.decodeCount
+           << ", evictions=" << bitmaps.evictionCount << '\n'
+           << "DOM nodes: " << stats.domNodeCount << '\n'
+           << "Text cache entries: " << stats.textCacheEntryCount << '\n'
+           << "Text line cache entries: "
+           << stats.textLineCacheEntryCount << '\n'
+           << "SVG file cache entries: " << stats.svgFileCacheEntryCount << '\n'
+           << "SVG DOM cache entries: " << stats.svgDomCacheEntryCount;
+    return output.str();
 }
 
 Cursor Runtime::cursor() const {

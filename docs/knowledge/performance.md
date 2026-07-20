@@ -14,6 +14,9 @@
 解决方案：SkUI 的位图缓存记录每个 `Ready` 条目的解码字节数和最近使用帧。每帧渲染后、
 以及后台加载完成后，如果缓存总字节数超过 `RuntimeOptions::bitmapCacheBudgetBytes`，就淘汰
 不是当前帧使用的最旧 `Ready` 条目。当前帧工作集会被保护，因此单张大图不会在正在绘制时被清掉。
+`Runtime::memoryStats()` 暴露预算、当前字节、历史峰值、缓存状态和命中、解码、淘汰计数；
+`Runtime::memoryReport()` 只负责把同一份结构化数据格式化为日志文本。显示工作集通常仍被缓存持有，
+因此报告中的 displayed bytes 和 cache bytes 不能直接相加。
 
 验证方式：
 
@@ -28,6 +31,34 @@ cmd.exe /c 'call "C:\Program Files\Microsoft Visual Studio\18\Community\Common7\
 - 当前帧正在使用的图片不能为了满足预算被立即删除。
 - 关闭 runtime 时，缓存字节数要和缓存条目一起清零。
 
+### 大图可见工作集与预加载抖动
+
+现象：`SkiaImageScrollerDemo` 同时处理 9 张 3840×2160 PNG 时，窗口长时间卡顿。修复前的
+12 秒轨迹产生 75 个重绘帧，图片绘制平均 47.6 ms，总渲染平均 64.2 ms，工作集达到
+960–1137 MiB。页面实际绘制 6 张图片，另外 3 张位于 lazy 预加载边距内。
+
+根因：6 张 4K BGRA 位图需要约 189.8 MiB，几乎占满 192 MiB CPU 位图预算。预加载图片
+完成解码后立即被淘汰，但下一帧仍在同一个预加载边距内，于是再次排队解码；每次完成又请求
+重绘。缓存条目被异步淘汰时，节点持有的旧 `SkImage` 也没有被路径缓存复用。GPU 侧原先只保存
+CPU raster image，Ganesh 上传结果属于普通可淘汰资源，无法表达“当前帧持续显示”的驻留语义。
+
+最终解决方案：
+
+- 当前绘制路径加入 active working set；预算是可淘汰缓存的软预算，不能淘汰 active 图片。
+- 用按路径的 resident map 保留 active raster image；cache entry 丢失时从 resident map 恢复，
+  不重新读取和解码文件。
+- 在 Ganesh 画布上通过 `SkImages::TextureFromImage(..., skgpu::Budgeted::kNo)` 创建并持有
+  GPU-backed image；图片保持 active 时纹理不可被普通 GPU LRU 淘汰，离开绘制路径后释放。
+- lazy 预加载只在路径进入预加载边距的边沿触发一次；被预算淘汰后不会在视口不变时循环解码，
+  离开并重新进入边距或真正进入绘制路径时才允许重新请求。
+- 后台迟到的解码结果只允许替换仍处于 `Loading` 的条目，不能覆盖已经从 resident map 恢复的
+  `Ready` 图片。
+
+验证结果：同一组 9 张 4K 图片修复后只在启动 0.7 秒内产生 9 个帧，随后停止重绘；工作集降为
+约 544 MiB。自动滚动往返时，图片绘制平均 0.27 ms，总渲染平均 2.17 ms，证明 CPU 重解码和
+GPU 重上传均已停止。回归测试使用“1 张可见图片 + 1 张超预算 lazy 预加载图片”，断言视口不变时
+总解码次数保持为 2。
+
 ## 图片请求需要区分 eager 和 lazy
 
 现象：按钮按下态、hover 态和动态换图如果等到第一次绘制才请求图片，第一次切换会短暂显示空白；但图片滚动列表如果所有 `img` 都提前请求，又会造成大量后台解码和缓存压力。
@@ -36,7 +67,7 @@ cmd.exe /c 'call "C:\Program Files\Microsoft Visual Studio\18\Community\Common7\
 
 参考项目：浏览器会把普通 `<img>` 当作 eager 资源建立请求，即使元素当前不可见；同时通过 `loading="lazy"` 让页面作者显式选择懒加载。浏览器在同一图片元素换源时也会区分 current image 和 pending image，避免新资源未完成前立刻清空旧画面。
 
-解决方案：SkUI 默认在样式重算后扫描 DOM 中的非 SVG `img` 并建立异步请求，覆盖 `display:none` 的状态图，防止首次显示时闪空。显式 `loading="lazy"` 的图片跳过这个提前请求，只在进入绘制路径时排队，适合 `SkiaImageScrollerDemo` 这类大量缩略图滚动列表。同一个 `img` 切换 `src` 时保留上一张已显示位图，直到新图片 ready 后替换。
+解决方案：SkUI 默认在样式重算后扫描 DOM 中的非 SVG `img` 并建立异步请求，覆盖 `display:none` 的状态图，防止首次显示时闪空。显式 `loading="lazy"` 的图片跳过这个提前请求；渲染遍历使用当前画布的变换和裁剪区域判断节点距离，默认在进入视口四周一个视口尺寸的预加载边距时排队。`RuntimeOptions::lazyImagePreloadMarginViewports` 可以调整边距，适合 `SkiaImageScrollerDemo` 这类大量缩略图滚动列表。同一个 `img` 切换 `src` 时保留上一张已显示位图，直到新图片 ready 后替换。
 
 验证方式：
 
@@ -48,7 +79,8 @@ cmd.exe /c 'call "C:\Program Files\Microsoft Visual Studio\18\Community\Common7\
 
 - 普通隐藏状态图应该在显示前已经完成异步请求。
 - `loading="lazy"` 的隐藏图不应该在 `display:none` 阶段提前请求。
-- lazy 图片首次进入绘制路径后应能异步加载，并通过 `requestRedraw` 驱动下一帧显示。
+- lazy 图片进入预加载边距后应能异步加载，并通过 `requestRedraw` 驱动下一帧显示。
+- 预加载边距之外的 lazy 图片不应建立缓存条目。
 - 同一个 `img` 切换 `src` 时，新图未完成前应继续显示旧图。
 - 大图滚动列表应优先使用 `loading="lazy"`，避免 DOM 阶段请求全部图片。
 

@@ -28,6 +28,7 @@
 #include <string_view>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 class SkSVGDOM;
@@ -647,6 +648,7 @@ public:
     void clearCaches();
     void clearNodeCaches();
     void shutdownCaches();
+    [[nodiscard]] MemoryStats memoryStats() const;
     size_t textIndexAtOffset(std::string_view value, float size, bool bold, float offset);
     TextHitResult textHitAtPoint(const Node& node,
                                  const std::string& value,
@@ -706,8 +708,19 @@ private:
         int height = 0;
     };
 
+    struct ResidentBitmapImage {
+        sk_sp<SkImage> rasterImage;
+        sk_sp<SkImage> displayImage;
+        size_t rowBytes = 0;
+        size_t byteSize = 0;
+        uint64_t lastUsedFrame = 0;
+        int width = 0;
+        int height = 0;
+    };
+
     struct BitmapImageState {
         std::unordered_map<std::string, BitmapImageEntry> cache;
+        std::unordered_set<std::string> activePaths;
         std::deque<std::string> queue;
         std::vector<std::thread> workers;
         std::mutex mutex;
@@ -716,6 +729,11 @@ private:
         size_t budgetBytes = 0;
         size_t workerCount = 1;
         uint64_t frame = 0;
+        size_t peakCacheBytes = 0;
+        uint64_t cacheHitCount = 0;
+        uint64_t cacheMissCount = 0;
+        uint64_t decodeCount = 0;
+        uint64_t evictionCount = 0;
         bool dirty = false;
         bool workersStarted = false;
         bool stop = false;
@@ -725,6 +743,9 @@ private:
     SkColor clearColor_ = SkColorSetRGB(7, 12, 18);
     size_t bitmapCacheBudgetBytes_ = 0;
     size_t bitmapLoadWorkerCount_ = 1;
+    float lazyImagePreloadMarginViewports_ = 0.0f;
+    float lazyImagePreloadMarginX_ = 0.0f;
+    float lazyImagePreloadMarginY_ = 0.0f;
     RequestRedrawCallback requestRedraw_;
     std::unordered_map<std::string, TextEntry> textCache_;
     bool traceRender_ = false;
@@ -783,11 +804,17 @@ private:
     void drawInputCaret(SkCanvas& canvas, const Node& node);
     void beginBitmapFrame();
     void endBitmapFrame();
+    void requestLazyBitmapImageIfNeeded(SkCanvas& canvas,
+                                        const Document& document,
+                                        const Node& node);
     void requestBitmapImagesForNode(const Document& document, const Node& node);
     void requestBitmapImage(const std::string& path);
     BitmapImageEntry bitmapImageEntry(const std::string& path);
-    sk_sp<SkImage> bitmapImageForEntry(const std::string& path, const BitmapImageEntry& entry);
-    sk_sp<SkImage> displayBitmapImageForNode(const Node& node,
+    sk_sp<SkImage> bitmapImageForEntry(SkCanvas& canvas,
+                                       const std::string& path,
+                                       const BitmapImageEntry& entry);
+    sk_sp<SkImage> displayBitmapImageForNode(SkCanvas& canvas,
+                                             const Node& node,
                                              const std::string& path,
                                              const BitmapImageEntry& entry,
                                              int& imageWidth,
@@ -813,6 +840,9 @@ private:
     std::unordered_map<std::string, std::string> svgFileCache_;
     std::unordered_map<const Node*, TextLineCacheEntry> textLineCache_;
     std::unordered_map<const Node*, DisplayedBitmapImage> displayedBitmapImages_;
+    std::unordered_map<std::string, ResidentBitmapImage> residentBitmapImages_;
+    std::unordered_set<std::string> lazyPreloadPathsPreviousFrame_;
+    std::unordered_set<std::string> lazyPreloadPathsCurrentFrame_;
     std::shared_ptr<BitmapImageState> bitmapState_;
 };
 
