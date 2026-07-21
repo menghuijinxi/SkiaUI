@@ -200,6 +200,25 @@ struct GridTrack {
     float fraction = 0.0f;
 };
 
+enum class GridLineKind {
+    Auto,
+    Index,
+    Span
+};
+
+struct GridLine {
+    GridLineKind kind = GridLineKind::Auto;
+    int value = 0;
+};
+
+enum class GridItemAlignment {
+    Auto,
+    Stretch,
+    Start,
+    Center,
+    End
+};
+
 struct Shadow {
     float offsetX = 0.0f;
     float offsetY = 0.0f;
@@ -363,7 +382,12 @@ struct Style {
         bool flexShrink = false;
         bool flexBasis = false;
         bool gridTemplateColumns = false;
+        bool gridTemplateRows = false;
         bool gridAutoRows = false;
+        bool gridColumnStart = false;
+        bool gridColumnEnd = false;
+        bool justifyItems = false;
+        bool justifySelf = false;
         bool boxSizing = false;
         bool width = false;
         bool height = false;
@@ -430,7 +454,12 @@ struct Style {
     float flexShrink = 1.0f;
     std::optional<Length> flexBasis;
     std::vector<GridTrack> gridTemplateColumns;
+    std::vector<GridTrack> gridTemplateRows;
     std::optional<GridTrack> gridAutoRows;
+    GridLine gridColumnStart;
+    GridLine gridColumnEnd;
+    GridItemAlignment justifyItems = GridItemAlignment::Stretch;
+    GridItemAlignment justifySelf = GridItemAlignment::Auto;
     YGBoxSizing boxSizing = YGBoxSizingContentBox;
     std::optional<Length> width;
     std::optional<Length> height;
@@ -644,7 +673,12 @@ public:
 
     explicit SkiaRenderer(RuntimeOptions options);
     ~SkiaRenderer();
-    void draw(Document& document, SkCanvas& canvas, int width, int height, float dpiScale);
+    void draw(Document& document,
+              SkCanvas& canvas,
+              int width,
+              int height,
+              float dpiScale,
+              bool clearCanvas = true);
     void clearCaches();
     void clearNodeCaches();
     void shutdownCaches();

@@ -313,80 +313,299 @@ void setFlexBasis(YGNodeRef node, const std::optional<Length>& basis) {
     }
 }
 
-bool allGridColumnsAreFractional(const Style& style) {
-    return !style.gridTemplateColumns.empty() &&
-           std::all_of(style.gridTemplateColumns.begin(),
-                       style.gridTemplateColumns.end(),
-                       [](const GridTrack& track) {
-                           return track.kind == GridTrackKind::Fraction;
-                       });
+bool allTracksAreFractional(const std::vector<GridTrack>& tracks) {
+    return !tracks.empty() &&
+           std::all_of(tracks.begin(), tracks.end(), [](const GridTrack& track) {
+               return track.kind == GridTrackKind::Fraction;
+           });
 }
 
-void applyGridColumnTrack(YGNodeRef child,
+struct ResolvedGridColumn {
+    std::optional<size_t> start;
+    size_t span = 1;
+};
+
+struct PositionedGridItem {
+    Node* node = nullptr;
+    size_t row = 0;
+    size_t column = 0;
+    size_t columnSpan = 1;
+};
+
+struct GridPlacementPlan {
+    std::vector<PositionedGridItem> items;
+    size_t cellCount = 0;
+};
+
+std::optional<size_t> resolveGridLineIndex(const GridLine& line,
+                                           size_t columnCount) {
+    if (line.kind != GridLineKind::Index) {
+        return std::nullopt;
+    }
+
+    const int lineCount = static_cast<int>(columnCount) + 1;
+    const int index = line.value > 0
+        ? line.value - 1
+        : lineCount + line.value;
+    if (index < 0 || index > static_cast<int>(columnCount)) {
+        return std::nullopt;
+    }
+    return static_cast<size_t>(index);
+}
+
+ResolvedGridColumn resolveGridColumn(const Style& style,
+                                     size_t columnCount) {
+    ResolvedGridColumn result;
+    size_t span = 1;
+    if (style.gridColumnStart.kind == GridLineKind::Span) {
+        span = static_cast<size_t>(style.gridColumnStart.value);
+    }
+    if (style.gridColumnEnd.kind == GridLineKind::Span) {
+        span = static_cast<size_t>(style.gridColumnEnd.value);
+    }
+    span = std::clamp(span, size_t{1}, columnCount);
+
+    const std::optional<size_t> start = resolveGridLineIndex(
+        style.gridColumnStart,
+        columnCount);
+    const std::optional<size_t> end = resolveGridLineIndex(
+        style.gridColumnEnd,
+        columnCount);
+    if (start && end && *end > *start) {
+        result.start = std::min(*start, columnCount - 1);
+        result.span = std::min(*end - *start, columnCount - *result.start);
+        return result;
+    }
+    if (start) {
+        result.start = std::min(*start, columnCount - 1);
+        result.span = std::min(span, columnCount - *result.start);
+        return result;
+    }
+    if (end) {
+        result.span = span;
+        result.start = *end >= span ? *end - span : 0;
+        result.start = std::min(*result.start, columnCount - result.span);
+        return result;
+    }
+
+    result.span = span;
+    return result;
+}
+
+bool gridCellsAreFree(const std::vector<bool>& occupied,
+                      size_t row,
+                      size_t column,
+                      size_t span,
+                      size_t columnCount) {
+    const size_t first = row * columnCount + column;
+    for (size_t offset = 0; offset < span; ++offset) {
+        const size_t index = first + offset;
+        if (index < occupied.size() && occupied[index]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+GridPlacementPlan positionGridItems(const std::vector<Node*>& children,
+                                    size_t columnCount) {
+    GridPlacementPlan plan;
+    std::vector<bool> occupied;
+    size_t autoCursor = 0;
+
+    for (Node* child : children) {
+        const ResolvedGridColumn requested = resolveGridColumn(
+            child->style,
+            columnCount);
+        size_t row = 0;
+        size_t column = 0;
+        if (requested.start) {
+            column = *requested.start;
+            while (!gridCellsAreFree(
+                occupied,
+                row,
+                column,
+                requested.span,
+                columnCount)) {
+                ++row;
+            }
+        } else {
+            size_t candidate = autoCursor;
+            while (true) {
+                row = candidate / columnCount;
+                column = candidate % columnCount;
+                if (column + requested.span <= columnCount &&
+                    gridCellsAreFree(
+                        occupied,
+                        row,
+                        column,
+                        requested.span,
+                        columnCount)) {
+                    break;
+                }
+                ++candidate;
+            }
+            autoCursor = row * columnCount + column + requested.span;
+        }
+
+        const size_t first = row * columnCount + column;
+        const size_t end = first + requested.span;
+        occupied.resize(std::max(occupied.size(), end), false);
+        std::fill(occupied.begin() + first, occupied.begin() + end, true);
+        plan.items.push_back({child, row, column, requested.span});
+        plan.cellCount = std::max(plan.cellCount, end);
+    }
+    return plan;
+}
+
+void applySingleColumnTrack(YGNodeRef cell, const GridTrack& track) {
+    if (track.kind == GridTrackKind::Fixed) {
+        if (track.length.unit == LengthUnit::Percent) {
+            YGNodeStyleSetWidthPercent(cell, track.length.value);
+        } else {
+            YGNodeStyleSetWidth(cell, track.length.value);
+        }
+        YGNodeStyleSetFlexGrow(cell, 0.0f);
+        YGNodeStyleSetFlexShrink(cell, 0.0f);
+    } else if (track.kind == GridTrackKind::Fraction) {
+        YGNodeStyleSetFlexBasis(cell, 0.0f);
+        YGNodeStyleSetFlexGrow(cell, track.fraction);
+        YGNodeStyleSetFlexShrink(cell, 1.0f);
+    } else {
+        YGNodeStyleSetFlexBasisAuto(cell);
+        YGNodeStyleSetFlexGrow(cell, 0.0f);
+        YGNodeStyleSetFlexShrink(cell, 0.0f);
+    }
+}
+
+void applyGridColumnTrack(YGNodeRef cell,
                           const Style& gridStyle,
-                          size_t columnIndex) {
-    if (gridStyle.gridTemplateColumns.empty()) {
+                          size_t column,
+                          size_t span) {
+    const std::vector<GridTrack>& tracks = gridStyle.gridTemplateColumns;
+    if (tracks.empty() || column >= tracks.size()) {
         return;
     }
-    const GridTrack& track = gridStyle.gridTemplateColumns[
-        columnIndex % gridStyle.gridTemplateColumns.size()];
-    if (allGridColumnsAreFractional(gridStyle)) {
+    span = std::min(span, tracks.size() - column);
+
+    if (allTracksAreFractional(tracks)) {
         float totalFraction = 0.0f;
-        for (const GridTrack& column : gridStyle.gridTemplateColumns) {
-            totalFraction += column.fraction;
+        float itemFraction = 0.0f;
+        for (size_t index = 0; index < tracks.size(); ++index) {
+            totalFraction += tracks[index].fraction;
+            if (index >= column && index < column + span) {
+                itemFraction += tracks[index].fraction;
+            }
         }
         if (totalFraction > 0.0f) {
             YGNodeStyleSetWidthPercent(
-                child,
-                track.fraction / totalFraction * 100.0f);
-            YGNodeStyleSetFlexGrow(child, 0.0f);
-            YGNodeStyleSetFlexShrink(child, 0.0f);
+                cell,
+                itemFraction / totalFraction * 100.0f);
+            YGNodeStyleSetFlexGrow(cell, 0.0f);
+            YGNodeStyleSetFlexShrink(cell, 0.0f);
         }
         return;
     }
-    if (track.kind == GridTrackKind::Fixed) {
-        if (track.length.unit == LengthUnit::Percent) {
-            YGNodeStyleSetWidthPercent(child, track.length.value);
-        } else {
-            YGNodeStyleSetWidth(child, track.length.value);
-        }
-        YGNodeStyleSetFlexGrow(child, 0.0f);
-        YGNodeStyleSetFlexShrink(child, 0.0f);
-    } else if (track.kind == GridTrackKind::Fraction) {
-        YGNodeStyleSetFlexBasis(child, 0.0f);
-        YGNodeStyleSetFlexGrow(child, track.fraction);
-        YGNodeStyleSetFlexShrink(child, 1.0f);
+    if (span == 1) {
+        applySingleColumnTrack(cell, tracks[column]);
+        return;
+    }
+
+    const LengthUnit unit = tracks[column].length.unit;
+    const bool fixedWithSameUnit = std::all_of(
+        tracks.begin() + static_cast<std::ptrdiff_t>(column),
+        tracks.begin() + static_cast<std::ptrdiff_t>(column + span),
+        [unit](const GridTrack& track) {
+            return track.kind == GridTrackKind::Fixed &&
+                   track.length.unit == unit;
+        });
+    if (!fixedWithSameUnit) {
+        applySingleColumnTrack(cell, tracks[column]);
+        return;
+    }
+
+    float extent = 0.0f;
+    for (size_t index = column; index < column + span; ++index) {
+        extent += tracks[index].length.value;
+    }
+    if (gridStyle.columnGap && gridStyle.columnGap->unit == unit) {
+        extent += gridStyle.columnGap->value * static_cast<float>(span - 1);
+    }
+    if (unit == LengthUnit::Percent) {
+        YGNodeStyleSetWidthPercent(cell, extent);
     } else {
-        YGNodeStyleSetFlexBasisAuto(child);
-        YGNodeStyleSetFlexGrow(child, 0.0f);
-        YGNodeStyleSetFlexShrink(child, 0.0f);
+        YGNodeStyleSetWidth(cell, extent);
+    }
+    YGNodeStyleSetFlexGrow(cell, 0.0f);
+    YGNodeStyleSetFlexShrink(cell, 0.0f);
+}
+
+void applyGridRowTrack(YGNodeRef cell,
+                       const Style& gridStyle,
+                       size_t row,
+                       size_t rowCount) {
+    const GridTrack* track = nullptr;
+    if (row < gridStyle.gridTemplateRows.size()) {
+        track = &gridStyle.gridTemplateRows[row];
+    } else if (gridStyle.gridAutoRows) {
+        track = &*gridStyle.gridAutoRows;
+    }
+
+    if (!track) {
+        if (gridStyle.gridTemplateRows.empty() && rowCount == 1) {
+            YGNodeStyleSetHeightPercent(cell, 100.0f);
+        }
+        return;
+    }
+    if (track->kind == GridTrackKind::Fixed) {
+        if (track->length.unit == LengthUnit::Percent) {
+            YGNodeStyleSetHeightPercent(cell, track->length.value);
+        } else {
+            YGNodeStyleSetHeight(cell, track->length.value);
+        }
+        return;
+    }
+    if (track->kind != GridTrackKind::Fraction) {
+        return;
+    }
+
+    if (!gridStyle.gridTemplateRows.empty() &&
+        allTracksAreFractional(gridStyle.gridTemplateRows)) {
+        float totalFraction = 0.0f;
+        for (const GridTrack& rowTrack : gridStyle.gridTemplateRows) {
+            totalFraction += rowTrack.fraction;
+        }
+        if (totalFraction > 0.0f) {
+            YGNodeStyleSetHeightPercent(
+                cell,
+                track->fraction / totalFraction * 100.0f);
+        }
+    } else if (gridStyle.gridTemplateRows.empty() && rowCount > 0) {
+        YGNodeStyleSetHeightPercent(
+            cell,
+            100.0f / static_cast<float>(rowCount));
     }
 }
 
-void applyGridAutoRow(YGNodeRef child,
-                      const Style& gridStyle,
-                      const Style& childStyle,
-                      size_t visibleChildCount) {
-    if (childStyle.height || gridStyle.gridTemplateColumns.empty()) {
-        return;
+YGJustify gridItemJustification(GridItemAlignment alignment) {
+    if (alignment == GridItemAlignment::Center) {
+        return YGJustifyCenter;
     }
-    const size_t columnCount = gridStyle.gridTemplateColumns.size();
-    if (!gridStyle.gridAutoRows && visibleChildCount <= columnCount) {
-        YGNodeStyleSetHeightPercent(child, 100.0f);
-        return;
+    if (alignment == GridItemAlignment::End) {
+        return YGJustifyFlexEnd;
     }
-    if (!gridStyle.gridAutoRows ||
-        gridStyle.gridAutoRows->kind != GridTrackKind::Fraction ||
-        !allGridColumnsAreFractional(gridStyle)) {
-        return;
-    }
-    const size_t rowCount =
-        (visibleChildCount + columnCount - 1) / columnCount;
-    if (rowCount > 0) {
-        YGNodeStyleSetHeightPercent(
-            child,
-            100.0f / static_cast<float>(rowCount));
-    }
+    return YGJustifyFlexStart;
+}
+
+GridItemAlignment resolvedGridItemAlignment(const Style& gridStyle,
+                                            const Style& childStyle) {
+    const GridItemAlignment alignment =
+        childStyle.justifySelf == GridItemAlignment::Auto
+            ? gridStyle.justifyItems
+            : childStyle.justifySelf;
+    return alignment == GridItemAlignment::Auto
+        ? GridItemAlignment::Stretch
+        : alignment;
 }
 
 }  // namespace
@@ -493,6 +712,7 @@ void LayoutEngine::buildYoga(Node& node, YGNodeRef yogaNode, bool isRoot) {
 
     YGNodeSetContext(yogaNode, &node);
     const bool isGrid = s.display == Display::Grid;
+    const bool usesGridCells = isGrid && !s.gridTemplateColumns.empty();
     const YGFlexDirection flexDirection = isGrid
         ? YGFlexDirectionRow
         : s.flexDirection;
@@ -502,7 +722,9 @@ void LayoutEngine::buildYoga(Node& node, YGNodeRef yogaNode, bool isRoot) {
         setFlexGap(yogaNode, YGGutterRow, s.rowGap);
         setFlexGap(yogaNode, YGGutterColumn, s.columnGap);
     }
-    YGNodeStyleSetAlignItems(yogaNode, s.alignItems);
+    YGNodeStyleSetAlignItems(
+        yogaNode,
+        usesGridCells ? YGAlignStretch : s.alignItems);
     YGNodeStyleSetJustifyContent(yogaNode, s.justifyContent);
     if (s.alignSelf != YGAlignAuto) {
         YGNodeStyleSetAlignSelf(yogaNode, s.alignSelf);
@@ -575,14 +797,78 @@ void LayoutEngine::buildYoga(Node& node, YGNodeRef yogaNode, bool isRoot) {
         YGNodeSetMeasureFunc(yogaNode, measureTextNode);
     }
 
-    const size_t visibleChildCount = static_cast<size_t>(std::count_if(
-        node.children.begin(),
-        node.children.end(),
-        [](const std::unique_ptr<Node>& child) {
-            return child->style.display != Display::None;
-        }));
-    bool hasPreviousLayoutChild = false;
-    size_t layoutChildIndex = 0;
+    if (usesGridCells) {
+        std::vector<Node*> layoutChildren;
+        layoutChildren.reserve(node.children.size());
+        for (auto& child : node.children) {
+            if (child->style.display != Display::None &&
+                !(contentEditableTextNode && child->tag == "br")) {
+                layoutChildren.push_back(child.get());
+            }
+        }
+
+        const size_t columnCount = s.gridTemplateColumns.size();
+        const GridPlacementPlan plan = positionGridItems(
+            layoutChildren,
+            columnCount);
+        const size_t rowCount = plan.cellCount == 0
+            ? 0
+            : (plan.cellCount + columnCount - 1) / columnCount;
+        std::vector<const PositionedGridItem*> itemStarts(
+            plan.cellCount,
+            nullptr);
+        for (const PositionedGridItem& item : plan.items) {
+            itemStarts[item.row * columnCount + item.column] = &item;
+        }
+
+        for (size_t cellIndex = 0; cellIndex < plan.cellCount;) {
+            const PositionedGridItem* item = itemStarts[cellIndex];
+            const size_t row = cellIndex / columnCount;
+            const size_t column = cellIndex % columnCount;
+            const size_t span = item ? item->columnSpan : 1;
+            YGNodeRef cellRef = YGNodeNew();
+            YGNodeStyleSetFlexDirection(cellRef, YGFlexDirectionRow);
+            YGNodeStyleSetAlignItems(cellRef, s.alignItems);
+            applyGridColumnTrack(cellRef, s, column, span);
+            applyGridRowTrack(cellRef, s, row, rowCount);
+            if (column > 0) {
+                setGapMargin(cellRef, YGEdgeLeft, s.columnGap, std::nullopt);
+            }
+            if (row > 0) {
+                setGapMargin(cellRef, YGEdgeTop, s.rowGap, std::nullopt);
+            }
+
+            if (item) {
+                YGNodeSetContext(cellRef, item->node);
+                YGNodeRef childRef = YGNodeNew();
+                buildYoga(*item->node, childRef, false);
+                const GridItemAlignment alignment =
+                    resolvedGridItemAlignment(s, item->node->style);
+                YGNodeStyleSetJustifyContent(
+                    cellRef,
+                    gridItemJustification(alignment));
+
+                // Grid item 的 flex 属性不参与单元格内对齐；stretch 仅在宽度为 auto 时填满轨道。
+                YGNodeStyleSetFlexGrow(childRef, 0.0f);
+                YGNodeStyleSetFlexShrink(childRef, 0.0f);
+                if (alignment == GridItemAlignment::Stretch &&
+                    needsIntrinsicMeasure(item->node->style.width)) {
+                    YGNodeStyleSetFlexBasis(childRef, 0.0f);
+                    YGNodeStyleSetFlexGrow(childRef, 1.0f);
+                    YGNodeStyleSetFlexShrink(childRef, 1.0f);
+                }
+                YGNodeInsertChild(cellRef, childRef, 0);
+            }
+
+            YGNodeInsertChild(
+                yogaNode,
+                cellRef,
+                YGNodeGetChildCount(yogaNode));
+            cellIndex += span;
+        }
+        return;
+    }
+
     for (auto& child : node.children) {
         if (child->style.display == Display::None ||
             (contentEditableTextNode && child->tag == "br")) {
@@ -590,34 +876,7 @@ void LayoutEngine::buildYoga(Node& node, YGNodeRef yogaNode, bool isRoot) {
         }
         YGNodeRef childRef = YGNodeNew();
         buildYoga(*child, childRef, false);
-        if (isGrid) {
-            applyGridColumnTrack(childRef, s, layoutChildIndex);
-            applyGridAutoRow(
-                childRef,
-                s,
-                child->style,
-                visibleChildCount);
-        }
-        if (isGrid && hasPreviousLayoutChild &&
-            (s.rowGap || s.columnGap) &&
-            !s.gridTemplateColumns.empty()) {
-            const size_t columnCount = s.gridTemplateColumns.size();
-            if (layoutChildIndex % columnCount != 0) {
-                setGapMargin(childRef,
-                             YGEdgeLeft,
-                             s.columnGap,
-                             child->style.margin.left);
-            }
-            if (layoutChildIndex >= columnCount) {
-                setGapMargin(childRef,
-                             YGEdgeTop,
-                             s.rowGap,
-                             child->style.margin.top);
-            }
-        }
         YGNodeInsertChild(yogaNode, childRef, YGNodeGetChildCount(yogaNode));
-        hasPreviousLayoutChild = true;
-        ++layoutChildIndex;
     }
 }
 
@@ -634,6 +893,25 @@ void LayoutEngine::readYoga(Node& node, YGNodeRef yogaNode, float offsetX, float
         resolvedEdgeOrZero(YGNodeLayoutGetPadding(yogaNode, YGEdgeRight)),
         resolvedEdgeOrZero(YGNodeLayoutGetPadding(yogaNode, YGEdgeBottom)),
     };
+
+    if (node.style.display == Display::Grid &&
+        !node.style.gridTemplateColumns.empty()) {
+        const uint32_t cellCount = YGNodeGetChildCount(yogaNode);
+        for (uint32_t index = 0; index < cellCount; ++index) {
+            YGNodeRef cellYoga = YGNodeGetChild(yogaNode, index);
+            auto* child = static_cast<Node*>(YGNodeGetContext(cellYoga));
+            if (!child || YGNodeGetChildCount(cellYoga) == 0) {
+                continue;
+            }
+            YGNodeRef childYoga = YGNodeGetChild(cellYoga, 0);
+            readYoga(
+                *child,
+                childYoga,
+                node.layout.x + YGNodeLayoutGetLeft(cellYoga),
+                node.layout.y + YGNodeLayoutGetTop(cellYoga));
+        }
+        return;
+    }
 
     uint32_t yogaIndex = 0;
     const bool contentEditableTextNode = isContentEditableTextNode(node);

@@ -6,6 +6,7 @@
 #include "include/core/SkCanvas.h"
 #include "include/core/SkColorType.h"
 #include "include/core/SkImageInfo.h"
+#include "include/core/SkPaint.h"
 #include "include/core/SkSurface.h"
 
 #include <algorithm>
@@ -3534,6 +3535,43 @@ void Runtime::render(SkCanvas& canvas) {
     impl_->renderer.draw(impl_->document, canvas, impl_->width, impl_->height, impl_->effectiveScale());
     impl_->dirty = false;
     perf::Trace::write("skui", "runtime_render", impl_->width, impl_->height, perf::Trace::elapsedMs(traceStart));
+}
+
+void Runtime::renderInto(SkCanvas& canvas, const RuntimeRenderRegion& region) {
+    const auto traceStart = perf::Trace::now();
+    const SkRect destination = SkRect::MakeXYWH(
+        region.x,
+        region.y,
+        static_cast<float>(impl_->width),
+        static_cast<float>(impl_->height));
+
+    canvas.save();
+    canvas.clipRect(destination, SkClipOp::kIntersect, false);
+    if (region.drawBackground) {
+        SkPaint clearPaint;
+        clearPaint.setColor(impl_->options.clearColor);
+        canvas.drawRect(destination, clearPaint);
+    }
+
+    if (impl_->hasDocument && impl_->document.root) {
+        canvas.translate(region.x, region.y);
+        impl_->renderer.draw(
+            impl_->document,
+            canvas,
+            impl_->width,
+            impl_->height,
+            impl_->effectiveScale(),
+            false);
+    }
+    canvas.restore();
+
+    impl_->dirty = false;
+    perf::Trace::write(
+        "skui",
+        "runtime_render_into",
+        impl_->width,
+        impl_->height,
+        perf::Trace::elapsedMs(traceStart));
 }
 
 void Runtime::setScale(float scale) {

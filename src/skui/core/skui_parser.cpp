@@ -688,7 +688,7 @@ std::optional<GridTrack> parseGridTrack(std::string_view raw) {
     return std::nullopt;
 }
 
-std::optional<std::vector<GridTrack>> parseGridTemplateColumns(
+std::optional<std::vector<GridTrack>> parseGridTrackList(
     std::string_view raw) {
     const std::string value = lower(trim(raw));
     if (value == "none") {
@@ -723,6 +723,93 @@ std::optional<std::vector<GridTrack>> parseGridTemplateColumns(
     return tracks.empty()
         ? std::nullopt
         : std::optional<std::vector<GridTrack>>{std::move(tracks)};
+}
+
+std::optional<int> parseGridInteger(std::string_view raw) {
+    const std::string value = trim(raw);
+    int resultValue = 0;
+    const char* begin = value.data();
+    const char* end = value.data() + value.size();
+    const auto result = std::from_chars(begin, end, resultValue);
+    if (result.ec != std::errc{} || result.ptr != end || resultValue == 0) {
+        return std::nullopt;
+    }
+    return resultValue;
+}
+
+std::optional<GridLine> parseGridLine(std::string_view raw) {
+    const std::string value = lower(trim(raw));
+    if (value == "auto") {
+        return GridLine{};
+    }
+
+    const std::vector<std::string> tokens = splitCssTokens(value);
+    if (tokens.size() == 1) {
+        if (std::optional<int> index = parseGridInteger(tokens.front())) {
+            return GridLine{GridLineKind::Index, *index};
+        }
+        return std::nullopt;
+    }
+    if (tokens.size() == 2 && tokens.front() == "span") {
+        if (std::optional<int> span = parseGridInteger(tokens.back());
+            span && *span > 0) {
+            return GridLine{GridLineKind::Span, *span};
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<std::pair<GridLine, GridLine>> parseGridColumn(
+    std::string_view raw) {
+    const size_t slash = raw.find('/');
+    if (slash == std::string_view::npos) {
+        if (std::optional<GridLine> start = parseGridLine(raw)) {
+            return std::pair<GridLine, GridLine>{*start, GridLine{}};
+        }
+        return std::nullopt;
+    }
+    if (raw.find('/', slash + 1) != std::string_view::npos) {
+        return std::nullopt;
+    }
+
+    std::optional<GridLine> start = parseGridLine(raw.substr(0, slash));
+    std::optional<GridLine> end = parseGridLine(raw.substr(slash + 1));
+    if (!start || !end) {
+        return std::nullopt;
+    }
+    return std::pair<GridLine, GridLine>{*start, *end};
+}
+
+std::optional<GridItemAlignment> parseGridItemAlignment(
+    std::string_view raw) {
+    std::vector<std::string> tokens = splitCssTokens(lower(trim(raw)));
+    if (tokens.size() == 2 &&
+        (tokens.front() == "safe" || tokens.front() == "unsafe")) {
+        tokens.erase(tokens.begin());
+    }
+    if (tokens.size() != 1) {
+        return std::nullopt;
+    }
+
+    const std::string& value = tokens.front();
+    if (value == "auto") {
+        return GridItemAlignment::Auto;
+    }
+    if (value == "normal" || value == "stretch") {
+        return GridItemAlignment::Stretch;
+    }
+    if (value == "start" || value == "self-start" ||
+        value == "flex-start" || value == "left") {
+        return GridItemAlignment::Start;
+    }
+    if (value == "center") {
+        return GridItemAlignment::Center;
+    }
+    if (value == "end" || value == "self-end" ||
+        value == "flex-end" || value == "right") {
+        return GridItemAlignment::End;
+    }
+    return std::nullopt;
 }
 
 bool parseFlexShorthand(std::string_view raw, Style& style) {
@@ -1581,9 +1668,29 @@ void mergeStyle(Style& target, const Style& source) {
         target.gridTemplateColumns = source.gridTemplateColumns;
         target.flags.gridTemplateColumns = true;
     }
+    if (f.gridTemplateRows) {
+        target.gridTemplateRows = source.gridTemplateRows;
+        target.flags.gridTemplateRows = true;
+    }
     if (f.gridAutoRows) {
         target.gridAutoRows = source.gridAutoRows;
         target.flags.gridAutoRows = true;
+    }
+    if (f.gridColumnStart) {
+        target.gridColumnStart = source.gridColumnStart;
+        target.flags.gridColumnStart = true;
+    }
+    if (f.gridColumnEnd) {
+        target.gridColumnEnd = source.gridColumnEnd;
+        target.flags.gridColumnEnd = true;
+    }
+    if (f.justifyItems) {
+        target.justifyItems = source.justifyItems;
+        target.flags.justifyItems = true;
+    }
+    if (f.justifySelf) {
+        target.justifySelf = source.justifySelf;
+        target.flags.justifySelf = true;
     }
     if (f.boxSizing) {
         target.boxSizing = source.boxSizing;
@@ -2571,14 +2678,50 @@ void applyDeclaration(Style& style, std::string_view rawName, std::string_view r
         style.flags.flexBasis = true;
     } else if (name == "grid-template-columns") {
         if (std::optional<std::vector<GridTrack>> tracks =
-                parseGridTemplateColumns(value)) {
+                parseGridTrackList(value)) {
             style.gridTemplateColumns = std::move(*tracks);
             style.flags.gridTemplateColumns = true;
+        }
+    } else if (name == "grid-template-rows") {
+        if (std::optional<std::vector<GridTrack>> tracks =
+                parseGridTrackList(value)) {
+            style.gridTemplateRows = std::move(*tracks);
+            style.flags.gridTemplateRows = true;
         }
     } else if (name == "grid-auto-rows") {
         if (std::optional<GridTrack> track = parseGridTrack(value)) {
             style.gridAutoRows = *track;
             style.flags.gridAutoRows = true;
+        }
+    } else if (name == "grid-column") {
+        if (std::optional<std::pair<GridLine, GridLine>> column =
+                parseGridColumn(value)) {
+            style.gridColumnStart = column->first;
+            style.gridColumnEnd = column->second;
+            style.flags.gridColumnStart = true;
+            style.flags.gridColumnEnd = true;
+        }
+    } else if (name == "grid-column-start") {
+        if (std::optional<GridLine> line = parseGridLine(value)) {
+            style.gridColumnStart = *line;
+            style.flags.gridColumnStart = true;
+        }
+    } else if (name == "grid-column-end") {
+        if (std::optional<GridLine> line = parseGridLine(value)) {
+            style.gridColumnEnd = *line;
+            style.flags.gridColumnEnd = true;
+        }
+    } else if (name == "justify-items") {
+        if (std::optional<GridItemAlignment> alignment =
+                parseGridItemAlignment(value)) {
+            style.justifyItems = *alignment;
+            style.flags.justifyItems = true;
+        }
+    } else if (name == "justify-self") {
+        if (std::optional<GridItemAlignment> alignment =
+                parseGridItemAlignment(value)) {
+            style.justifySelf = *alignment;
+            style.flags.justifySelf = true;
         }
     } else if (name == "width" && length) {
         style.width = *length;

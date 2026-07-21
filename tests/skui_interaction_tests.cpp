@@ -500,6 +500,72 @@ int main() {
 
     bool ok = true;
     {
+        constexpr int compositeWidth = 80;
+        constexpr int compositeHeight = 40;
+        constexpr std::string_view redHtml = R"html(
+<html><body style="width:20px;height:20px;background-color:#ff0000"></body></html>
+)html";
+        constexpr std::string_view greenHtml = R"html(
+<html><body style="width:20px;height:20px;background-color:#00ff00"></body></html>
+)html";
+
+        skui::RuntimeOptions redOptions = options;
+        redOptions.clearColor = SK_ColorTRANSPARENT;
+        skui::Runtime redRuntime(redOptions);
+        redRuntime.resize(20, 20, 1.0f);
+        ok = expect(redRuntime.loadDocumentFromString(redHtml),
+                    "red composite document should load") && ok;
+
+        skui::RuntimeOptions greenOptions = options;
+        greenOptions.clearColor = SK_ColorTRANSPARENT;
+        skui::Runtime greenRuntime(greenOptions);
+        greenRuntime.resize(20, 20, 1.0f);
+        ok = expect(greenRuntime.loadDocumentFromString(greenHtml),
+                    "green composite document should load") && ok;
+
+        skui::RuntimeOptions transparentOptions = options;
+        transparentOptions.clearColor = SK_ColorTRANSPARENT;
+        skui::Runtime transparentRuntime(transparentOptions);
+        transparentRuntime.resize(20, 20, 1.0f);
+        ok = expect(
+                 transparentRuntime.loadDocumentFromString("<html><body></body></html>"),
+                 "transparent composite document should load") && ok;
+
+        std::vector<uint32_t> compositePixels(
+            static_cast<size_t>(compositeWidth) * compositeHeight,
+            solidColor(0, 0, 255));
+        const SkImageInfo compositeInfo = SkImageInfo::Make(
+            compositeWidth,
+            compositeHeight,
+            kBGRA_8888_SkColorType,
+            kPremul_SkAlphaType);
+        const sk_sp<SkSurface> compositeSurface = SkSurfaces::WrapPixels(
+            compositeInfo,
+            compositePixels.data(),
+            static_cast<size_t>(compositeWidth) * sizeof(uint32_t));
+        ok = expect(compositeSurface != nullptr,
+                    "shared composite surface should be created") && ok;
+        if (compositeSurface) {
+            redRuntime.renderInto(
+                *compositeSurface->getCanvas(),
+                skui::RuntimeRenderRegion{5.0f, 5.0f, true});
+            greenRuntime.renderInto(
+                *compositeSurface->getCanvas(),
+                skui::RuntimeRenderRegion{35.0f, 10.0f, true});
+            transparentRuntime.renderInto(
+                *compositeSurface->getCanvas(),
+                skui::RuntimeRenderRegion{5.0f, 5.0f, true});
+
+            ok = expect(isMostlyBlue(pixelAt(compositePixels, compositeWidth, 0, 0)),
+                        "renderInto should preserve pixels outside view regions") && ok;
+            ok = expect(isMostlyRed(pixelAt(compositePixels, compositeWidth, 10, 10)),
+                        "transparent runtime should preserve the lower runtime") && ok;
+            ok = expect(isMostlyGreen(pixelAt(compositePixels, compositeWidth, 40, 15)),
+                        "second runtime should coexist on the shared surface") && ok;
+        }
+    }
+
+    {
         skui::RuntimeOptions scaledOptions = options;
         scaledOptions.scale = 1.5f;
         scaledOptions.textScale = 1.25f;
@@ -5472,6 +5538,97 @@ int main() {
             pixelAt(gridCardLayoutPixels, 70, 72) == solidColor(0xFF, 0x00, 0xFF) &&
             pixelAt(gridCardLayoutPixels, 120, 72) == solidColor(0xFF, 0xFF, 0x00),
         "grid-auto-rows:1fr should distribute remaining height equally") && ok;
+
+    constexpr std::string_view positionedGridItemsHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      position: relative;
+      width: 140px;
+      height: 90px;
+      background-color: #000000;
+    }
+    .grid {
+      position: absolute;
+      left: 10px;
+      top: 10px;
+      width: 120px;
+      height: 70px;
+      display: grid;
+      grid-template-columns: 30px 80px;
+      grid-template-rows: 15px 15px 20px;
+      column-gap: 10px;
+      row-gap: 10px;
+      justify-items: center;
+    }
+    .end {
+      grid-column: 2;
+      justify-self: end;
+      width: 20px;
+      height: 10px;
+      background-color: #ff0000;
+    }
+    .center {
+      grid-column: 1;
+      width: 10px;
+      height: 10px;
+      background-color: #00ff00;
+    }
+    .auto {
+      justify-self: stretch;
+      background-color: #0000ff;
+    }
+    .span {
+      grid-column: 1 / -1;
+      justify-self: stretch;
+      background-color: #ffff00;
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <div class="grid">
+      <div class="end"></div>
+      <div class="center"></div>
+      <div class="auto"></div>
+      <div class="span"></div>
+    </div>
+  </div>
+</body>
+</html>
+)html";
+
+    skui::Runtime positionedGridItemsRuntime(options);
+    positionedGridItemsRuntime.resize(kWidth, kHeight, 1.0f);
+    if (!positionedGridItemsRuntime.loadDocumentFromString(
+            positionedGridItemsHtml,
+            "")) {
+        std::cerr << "positioned grid items load failed: "
+                  << positionedGridItemsRuntime.lastError() << "\n";
+        return 1;
+    }
+    std::vector<uint32_t> positionedGridItemsPixels;
+    ok = renderPixels(positionedGridItemsRuntime, positionedGridItemsPixels) && ok;
+    ok = expect(
+        pixelAt(positionedGridItemsPixels, 25, 15) == solidColor(0x00, 0xFF, 0x00) &&
+            pixelAt(positionedGridItemsPixels, 15, 15) == solidColor(0x00, 0x00, 0x00),
+        "justify-items:center should center an explicitly placed grid item") && ok;
+    ok = expect(
+        pixelAt(positionedGridItemsPixels, 120, 15) == solidColor(0xFF, 0x00, 0x00) &&
+            pixelAt(positionedGridItemsPixels, 90, 15) == solidColor(0x00, 0x00, 0x00),
+        "grid-column and justify-self:end should place an item at the end of its cell") && ok;
+    ok = expect(
+        pixelAt(positionedGridItemsPixels, 20, 42) == solidColor(0x00, 0x00, 0xFF) &&
+            pixelAt(positionedGridItemsPixels, 20, 30) == solidColor(0x00, 0x00, 0x00) &&
+            pixelAt(positionedGridItemsPixels, 60, 42) == solidColor(0x00, 0x00, 0x00),
+        "grid-template-rows should size explicit rows around the row gap") && ok;
+    ok = expect(
+        pixelAt(positionedGridItemsPixels, 20, 70) == solidColor(0xFF, 0xFF, 0x00) &&
+            pixelAt(positionedGridItemsPixels, 60, 70) == solidColor(0xFF, 0xFF, 0x00) &&
+            pixelAt(positionedGridItemsPixels, 120, 70) == solidColor(0xFF, 0xFF, 0x00),
+        "negative grid lines should let grid-column span fixed tracks and their gap") && ok;
 
     constexpr std::string_view mixedGridTracksHtml = R"html(
 <!doctype html>

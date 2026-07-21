@@ -848,7 +848,12 @@ SkPaint SkiaRenderer::gradientPaint(const Gradient& gradient,
     return p;
 }
 
-void SkiaRenderer::draw(Document& document, SkCanvas& canvas, int width, int height, float dpiScale) {
+void SkiaRenderer::draw(Document& document,
+                        SkCanvas& canvas,
+                        int width,
+                        int height,
+                        float dpiScale,
+                        bool clearCanvas) {
     const bool traceEnabled = perf::Trace::enabled();
     const auto traceStart = traceEnabled ? perf::Trace::now() : perf::Trace::Clock::time_point{};
     traceRender_ = traceEnabled;
@@ -869,7 +874,9 @@ void SkiaRenderer::draw(Document& document, SkCanvas& canvas, int width, int hei
     lazyImagePreloadMarginY_ =
         static_cast<float>(height) / scale * lazyImagePreloadMarginViewports_;
     beginBitmapFrame();
-    canvas.clear(clearColor_);
+    if (clearCanvas) {
+        canvas.clear(clearColor_);
+    }
     canvas.save();
     canvas.scale(scale, scale);
     if (document.root) {

@@ -131,15 +131,18 @@
 | `flex-grow` / `flex-shrink` | 数字 |
 | `flex` / `flex-basis` | 常用 1-3 值 shorthand；basis 支持 `px` / `%` / `auto` |
 | `grid-template-columns` | `repeat(N, track)` 或轨道列表；支持 `px`、`%`、`fr`、`auto`、`minmax(0, track)` |
+| `grid-template-rows` | 轨道列表；支持 `px`、`%`、`auto`，以及全 `fr` 轨道列表 |
 | `grid-auto-rows` | 单个 `px`、`%`、`fr` 或 `auto` 轨道 |
+| `grid-column` / `grid-column-start` / `grid-column-end` | 正负整数网格线、`auto`、`span N`；支持数值列定位和列跨度 |
+| `justify-items` / `justify-self` | `auto`、`normal`、`stretch`、`start`、`center`、`end` 及常见 `flex-*` / `left` / `right` 别名 |
 | `align-items` / `align-self` | `stretch`、`center`、`flex-start`、`flex-end` |
 | `justify-content` | `flex-start`、`center`、`flex-end`、`space-between` |
 
 布局由 Yoga 计算。显式 `display:flex` 的容器使用浏览器默认的 `flex-direction: row`；未显式设置 `display` 的旧写法保持原有默认纵向排布。
 
-Grid 通过 Yoga 的横向换行布局映射实现，覆盖等分 `repeat(N, 1fr)` 和单行固定/弹性混合轨道等卡片布局；它不是完整 CSS Grid 算法，暂不支持命名线、显式行列定位、跨行列、`auto-fit` / `auto-fill` 和复杂隐式轨道。
+Grid 通过 Yoga 的横向换行布局和内部单元格节点实现，覆盖等分 `repeat(N, 1fr)`、固定/弹性混合列轨道、数值列线定位、固定同单位或全 `fr` 列跨度、显式行轨道和单项水平对齐。内部单元格不进入 DOM，也不影响选择器、事件目标和绘制顺序。它不是完整 CSS Grid 算法，暂不支持命名线、`grid-row` 显式行定位、`grid-template-areas`、固定与 `fr` 混合的行轨道分配、`auto-fit` / `auto-fill`、dense 自动放置和复杂隐式轨道。
 
-`align-items` 和 `justify-content` 只按浏览器语义影响显式 `display:flex` 的内容对齐；没有显式 `display:flex` 的普通文本或 `selectable` 不会因为这些属性而居中。
+`display:flex` 使用 `align-items` 和 `justify-content` 控制内容对齐。Grid 使用 `align-items` / `align-self` 控制单元格块轴对齐，使用 `justify-items` / `justify-self` 控制单元格行内轴对齐。没有显式 Flex 或 Grid 容器的普通文本和 `selectable` 不会因为这些属性而居中。
 
 文本叶节点显式设置 `width:auto` / `height:auto` 时，与省略对应尺寸一致，使用文本固有尺寸参与布局；最终背景框会同时包含文本、padding 和 border。宽高均为固定值时不再执行固有尺寸测量。
 

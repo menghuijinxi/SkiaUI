@@ -188,6 +188,12 @@ struct Event {
     std::string text;
 };
 
+struct RuntimeRenderRegion {
+    float x = 0.0f;
+    float y = 0.0f;
+    bool drawBackground = true;
+};
+
 class RendererBackend {
 public:
     virtual ~RendererBackend() = default;
@@ -210,7 +216,12 @@ public:
     bool handleEvent(const Event& event);
     [[nodiscard]] bool tick(float deltaSeconds);
     void render(SkCanvas& canvas);
-    bool renderToBgraPixels(uint32_t* pixels, int width, int height, size_t rowBytes, float dpiScale);
+    void renderInto(SkCanvas& canvas, const RuntimeRenderRegion& region);
+    bool renderToBgraPixels(uint32_t* pixels,
+                            int width,
+                            int height,
+                            size_t rowBytes,
+                            float dpiScale);
     void setScale(float scale);
     void setTextScale(float textScale);
     bool addClassById(std::string_view id, std::string_view className);
