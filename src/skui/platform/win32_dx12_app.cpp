@@ -3,6 +3,11 @@
 #include "frame_pacing_monitor.h"
 #include "skui_win32_event_adapter.h"
 
+#if defined(SKIAUI_HAS_FFMPEG_VIDEO)
+#include "skui_ffmpeg.h"
+#include "skui_win32_audio.h"
+#endif
+
 #include "d3d_presenter.h"
 #include "perf_trace.h"
 
@@ -35,6 +40,7 @@ namespace {
 constexpr float kDefaultDpi = 96.0f;
 constexpr UINT kRequestRedrawMessage = WM_APP + 0x531;
 constexpr UINT kSystemTextScaleChangedMessage = WM_APP + 0x532;
+constexpr double kMaximumFrameRateLimit = 1000.0;
 
 float dpiScaleForDpi(UINT dpi) {
     return static_cast<float>(std::max<UINT>(dpi, 1)) / kDefaultDpi;
@@ -88,6 +94,8 @@ private:
 
 class Dx12WindowApp::Impl {
 public:
+    friend class Dx12WindowApp;
+
     explicit Impl(WindowOptions options)
         : options_(std::move(options)),
           configuredTextScale_(std::max(0.1f, options_.runtime.textScale)),
@@ -103,6 +111,7 @@ public:
     }
 
     ~Impl() {
+        shutdownFrameRateTimer();
         shutdownSystemTextScale();
         if (backgroundBrush_) {
             DeleteObject(backgroundBrush_);
@@ -174,6 +183,7 @@ public:
         textScaleWindow_->store(hwnd);
         refreshSystemTextScale();
         framePacing_.initialize(hwnd);
+        initializeFrameRateTimer();
 
         BOOL dark = TRUE;
         DwmSetWindowAttribute(hwnd, 20, &dark, sizeof(dark));
@@ -181,11 +191,35 @@ public:
         UpdateWindow(hwnd);
 
         MSG msg{};
-        while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
-            TranslateMessage(&msg);
-            DispatchMessageW(&msg);
+        bool running = true;
+        while (running) {
+            const DWORD handleCount = frameRateTimer_ ? 1u : 0u;
+            const HANDLE* handles = frameRateTimer_ ? &frameRateTimer_ : nullptr;
+            const DWORD waitResult = MsgWaitForMultipleObjectsEx(
+                handleCount,
+                handles,
+                INFINITE,
+                QS_ALLINPUT,
+                MWMO_INPUTAVAILABLE);
+            if (waitResult == WAIT_FAILED) {
+                running = false;
+                msg.wParam = 1;
+                continue;
+            }
+            if (frameRateTimer_ && waitResult == WAIT_OBJECT_0) {
+                dispatchScheduledFrame();
+            }
+            while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+                if (msg.message == WM_QUIT) {
+                    running = false;
+                    break;
+                }
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
         }
         framePacing_.finalize(presentedWidth_, presentedHeight_);
+        shutdownFrameRateTimer();
         shutdownSystemTextScale();
         hwnd_ = nullptr;
         return static_cast<int>(msg.wParam);
@@ -199,6 +233,7 @@ private:
     std::shared_ptr<std::atomic<HWND>> textScaleWindow_ =
         std::make_shared<std::atomic<HWND>>(nullptr);
     std::atomic_bool redrawMessagePending_{false};
+    std::atomic<double> frameRateLimit_{0.0};
     FramePacingMonitor framePacing_;
     Runtime runtime_;
     Win32EventAdapter eventAdapter_;
@@ -220,6 +255,8 @@ private:
     std::optional<winrt::Windows::UI::ViewManagement::UISettings> uiSettings_;
     std::optional<winrt::event_token> textScaleChangedToken_;
     bool animationTickPending_ = false;
+    HANDLE frameRateTimer_ = nullptr;
+    bool frameRateTimerPending_ = false;
     static Impl* get(HWND hwnd) {
         return reinterpret_cast<Impl*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
     }
@@ -312,6 +349,95 @@ private:
         }
         lastAnimationTick_ = now;
         animationTickPending_ = runtime_.tick(deltaSeconds);
+        if (options_.onRuntimeTick) {
+            options_.onRuntimeTick(runtime_, deltaSeconds);
+        }
+    }
+
+    void setFrameRateLimit(double framesPerSecond) {
+        const double normalized = std::isfinite(framesPerSecond)
+                                      ? std::clamp(framesPerSecond,
+                                                   0.0,
+                                                   kMaximumFrameRateLimit)
+                                      : 0.0;
+        frameRateLimit_.store(normalized, std::memory_order_relaxed);
+    }
+
+    [[nodiscard]] double frameRateLimit() const {
+        return frameRateLimit_.load(std::memory_order_relaxed);
+    }
+
+    void initializeFrameRateTimer() {
+        if (frameRateTimer_) {
+            return;
+        }
+        constexpr DWORD kHighResolutionTimerFlag = 0x00000002;
+        frameRateTimer_ = CreateWaitableTimerExW(
+            nullptr,
+            nullptr,
+            kHighResolutionTimerFlag,
+            TIMER_ALL_ACCESS);
+        if (!frameRateTimer_) {
+            frameRateTimer_ = CreateWaitableTimerW(nullptr, FALSE, nullptr);
+        }
+    }
+
+    void shutdownFrameRateTimer() {
+        frameRateTimerPending_ = false;
+        if (!frameRateTimer_) {
+            return;
+        }
+        CancelWaitableTimer(frameRateTimer_);
+        CloseHandle(frameRateTimer_);
+        frameRateTimer_ = nullptr;
+    }
+
+    bool scheduleLimitedFrame() {
+        const double framesPerSecond = frameRateLimit();
+        if (!frameRateTimer_ || framesPerSecond <= 0.0 ||
+            !lastAnimationTick_) {
+            return false;
+        }
+
+        const auto now = std::chrono::steady_clock::now();
+        const auto framePeriod = std::chrono::duration<double>(
+            1.0 / framesPerSecond);
+        const auto dueTime = *lastAnimationTick_ + framePeriod;
+        if (now >= dueTime) {
+            return false;
+        }
+        if (frameRateTimerPending_) {
+            return true;
+        }
+
+        const double waitSeconds =
+            std::chrono::duration<double>(dueTime - now).count();
+        LARGE_INTEGER relativeDueTime{};
+        relativeDueTime.QuadPart = -std::max<LONGLONG>(
+            1,
+            static_cast<LONGLONG>(std::ceil(waitSeconds * 10'000'000.0)));
+        if (!SetWaitableTimer(frameRateTimer_,
+                              &relativeDueTime,
+                              0,
+                              nullptr,
+                              nullptr,
+                              FALSE)) {
+            return false;
+        }
+        frameRateTimerPending_ = true;
+        return true;
+    }
+
+    void dispatchScheduledFrame() {
+        if (!frameRateTimerPending_) {
+            return;
+        }
+        frameRateTimerPending_ = false;
+        redrawMessagePending_.store(false);
+        markFrameDirty();
+        if (hwnd_) {
+            requestRepaint(hwnd_, false);
+        }
     }
 
     float effectiveWindowScale() const {
@@ -319,6 +445,12 @@ private:
     }
 
     RuntimeOptions configureRuntimeCallbacks(RuntimeOptions options) {
+#if defined(SKIAUI_HAS_FFMPEG_VIDEO)
+        if (!options.mediaPlayerFactory) {
+            options.mediaPlayerFactory = ffmpeg::makeMediaPlayerFactory(
+                makeWasapiAudioOutputFactory());
+        }
+#endif
         const RequestRedrawCallback previous = std::move(options.requestRedraw);
         options.requestRedraw = [this, previous] {
             if (previous) {
@@ -436,6 +568,9 @@ private:
         switch (message) {
         case kRequestRedrawMessage:
             app->framePacing_.noteRedrawDispatch();
+            if (app->scheduleLimitedFrame()) {
+                return 0;
+            }
             app->redrawMessagePending_.store(false);
             app->markFrameDirty();
             // 动画会持续请求下一帧。这里只失效窗口，让输入消息优先于 WM_PAINT 处理。
@@ -491,6 +626,7 @@ private:
             app->eraseBackground(hwnd, reinterpret_cast<HDC>(wParam));
             return 1;
         case WM_DESTROY:
+            app->shutdownFrameRateTimer();
             app->shutdownSystemTextScale();
             app->hwnd_ = nullptr;
             PostQuitMessage(0);
@@ -637,6 +773,14 @@ Dx12WindowApp::Dx12WindowApp(WindowOptions options) : impl_(new Impl(std::move(o
 
 Dx12WindowApp::~Dx12WindowApp() {
     delete impl_;
+}
+
+void Dx12WindowApp::setFrameRateLimit(double framesPerSecond) {
+    impl_->setFrameRateLimit(framesPerSecond);
+}
+
+double Dx12WindowApp::frameRateLimit() const {
+    return impl_->frameRateLimit();
 }
 
 int Dx12WindowApp::run(HINSTANCE instance, int showCmd) {

@@ -2210,7 +2210,7 @@ void applyInheritedStyle(Node& node, const RuntimeOptions& options) {
 
     if (node.tag == "text" || node.tag == "span" || node.tag == "label" || node.tag == "button" ||
         node.tag == "input" || node.tag == "textarea" || node.tag == "progress" ||
-        node.tag == "img" || node.tag == "svg") {
+        node.tag == "img" || node.tag == "video" || node.tag == "svg") {
         node.style.flexShrink = 0.0f;
     }
 
@@ -3490,7 +3490,7 @@ std::unique_ptr<Node> convertElement(
         parseDeclarations(inlineStyle, node->inlineStyle);
     }
 
-    if (tag == "img" || tag == "svg") {
+    if (tag == "img" || tag == "video" || tag == "svg") {
         if (std::optional<Length> width =
                 parseLength(attributeValue(node->attributes, "width"))) {
             node->presentationStyle.width = *width;

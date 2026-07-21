@@ -6,4 +6,17 @@ find_dependency(unofficial-skia CONFIG)
 find_dependency(yoga CONFIG)
 find_dependency(lexbor CONFIG)
 
+if(@SKIAUI_ENABLE_FFMPEG_VIDEO@)
+    find_dependency(FFMPEG)
+    if(NOT TARGET FFMPEG::FFMPEG)
+        add_library(FFMPEG::FFMPEG INTERFACE IMPORTED)
+        target_include_directories(FFMPEG::FFMPEG INTERFACE
+            ${FFMPEG_INCLUDE_DIRS}
+        )
+        target_link_libraries(FFMPEG::FFMPEG INTERFACE
+            ${FFMPEG_LIBRARIES}
+        )
+    endif()
+endif()
+
 include("${CMAKE_CURRENT_LIST_DIR}/SkiaUITargets.cmake")

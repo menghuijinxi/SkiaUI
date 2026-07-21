@@ -557,6 +557,9 @@ struct Node {
     bool hasAnimatedStyle = false;
     bool hasBeforeStyle = false;
     bool hasAfterStyle = false;
+    sk_sp<SkImage> videoFrame;
+    int videoFrameWidth = 0;
+    int videoFrameHeight = 0;
     Rect layout;
     ResolvedEdges resolvedPadding;
     float scrollX = 0.0f;

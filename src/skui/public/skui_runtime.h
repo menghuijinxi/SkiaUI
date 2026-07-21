@@ -1,5 +1,7 @@
 #pragma once
 
+#include "skui_media.h"
+
 #include "include/core/SkColor.h"
 
 #include <cstddef>
@@ -62,6 +64,7 @@ enum class ElementEventType {
     MouseMove,
     MouseUp,
     Click,
+    KeyDown,
     Input,
     Scroll
 };
@@ -79,9 +82,13 @@ struct ElementEvent {
     float scrollX = 0.0f;
     float scrollY = 0.0f;
     MouseButton button = MouseButton::None;
+    unsigned key = 0;
+    bool shiftKey = false;
+    bool ctrlKey = false;
 };
 
 using ElementEventCallback = std::function<void(const ElementEvent&)>;
+using ElementKeyDownCallback = std::function<bool(const ElementEvent&)>;
 using ClipboardReadCallback = std::function<std::string()>;
 using ClipboardWriteCallback = std::function<void(std::string_view)>;
 using RequestRedrawCallback = std::function<void()>;
@@ -169,8 +176,11 @@ struct RuntimeOptions {
     size_t bitmapCacheBudgetBytes = 192u * 1024u * 1024u;
     size_t bitmapLoadWorkerCount = 4;
     float lazyImagePreloadMarginViewports = 1.0f;
+    size_t videoPredecodeFrames = 3;
     Theme theme = Theme::dark();
+    MediaPlayerFactory mediaPlayerFactory;
     ElementEventCallback onElementEvent;
+    ElementKeyDownCallback onElementKeyDown;
     ClipboardReadCallback readClipboardText;
     ClipboardWriteCallback writeClipboardText;
     RequestRedrawCallback requestRedraw;
@@ -239,6 +249,13 @@ public:
     bool prependHtmlById(std::string_view parentId, std::string_view html);
     bool replaceHtmlById(std::string_view id, std::string_view html);
     bool removeElementById(std::string_view id);
+    bool prepareVideoById(std::string_view id);
+    bool playVideoById(std::string_view id);
+    bool pauseVideoById(std::string_view id);
+    bool seekVideoById(std::string_view id, double seconds);
+    bool setVideoMutedById(std::string_view id, bool muted);
+    [[nodiscard]] std::optional<MediaPlaybackState> videoStateById(
+        std::string_view id) const;
     bool insertHtmlAtSelection(std::string_view editingHostId,
                                std::string_view html);
     bool collapseSelection(std::string_view nodeId, size_t offset);
@@ -257,6 +274,7 @@ public:
     [[nodiscard]] Selection selection() const;
     [[nodiscard]] bool hasClassById(std::string_view id, std::string_view className) const;
     void setElementEventCallback(ElementEventCallback callback);
+    void setElementKeyDownCallback(ElementKeyDownCallback callback);
 
     [[nodiscard]] int width() const;
     [[nodiscard]] int height() const;

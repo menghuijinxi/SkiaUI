@@ -1450,6 +1450,17 @@ void SkiaRenderer::drawScrollbars(SkCanvas& canvas, const Node& node) {
 }
 
 void SkiaRenderer::drawImage(SkCanvas& canvas, const Document& document, const Node& node) {
+    if (node.tag == "video") {
+        if (node.videoFrame && node.videoFrameWidth > 0 && node.videoFrameHeight > 0) {
+            drawBitmapImage(canvas,
+                            node,
+                            *node.videoFrame,
+                            node.videoFrameWidth,
+                            node.videoFrameHeight);
+        }
+        return;
+    }
+
     if (node.tag != "img" || node.src.empty()) {
         return;
     }

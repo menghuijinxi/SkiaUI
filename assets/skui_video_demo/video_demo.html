@@ -1,0 +1,277 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    html, body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+    }
+    body {
+      background-color: #090b0f;
+      color: rgba(244,247,250,0.96);
+      font-size: 15px;
+    }
+    .screen {
+      width: 100%;
+      height: 100%;
+      position: relative;
+      background: linear-gradient(to bottom, #11151b, #080a0e);
+    }
+    .topbar {
+      position: absolute;
+      left: 28px;
+      top: 20px;
+      right: 28px;
+      height: 72px;
+      border-bottom-color: rgba(255,255,255,0.13);
+      border-bottom-width: 1px;
+      border-bottom-style: solid;
+    }
+    .title {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 420px;
+      height: 30px;
+      font-size: 24px;
+      font-weight: bold;
+    }
+    .runtime-readout {
+      position: absolute;
+      left: 0;
+      top: 38px;
+      width: 500px;
+      height: 24px;
+      color: rgba(183,193,204,0.88);
+      font-size: 14px;
+    }
+    .fps-controls {
+      position: absolute;
+      display: flex;
+      right: 0;
+      top: 8px;
+      height: 44px;
+      align-items: center;
+      gap: 8px;
+    }
+    .fps-label {
+      width: 74px;
+      height: 30px;
+      color: rgba(187,197,207,0.88);
+      font-size: 14px;
+    }
+    .fps-button {
+      display: flex;
+      width: 62px;
+      height: 34px;
+      align-items: center;
+      justify-content: center;
+      background-color: rgba(255,255,255,0.055);
+      border-color: rgba(255,255,255,0.16);
+      border-width: 1px;
+      border-style: solid;
+      border-radius: 6px;
+      color: rgba(221,226,232,0.92);
+      font-size: 14px;
+      font-weight: bold;
+    }
+    .fps-button:hover {
+      background-color: rgba(255,255,255,0.10);
+      border-color: rgba(255,255,255,0.30);
+    }
+    .fps-button.selected {
+      background-color: rgba(48,201,130,0.20);
+      border-color: rgba(77,224,153,0.82);
+      color: #eafff2;
+    }
+    .sequence-panel {
+      position: absolute;
+      left: 28px;
+      top: 112px;
+      right: 486px;
+      bottom: 26px;
+    }
+    .logo-panel {
+      position: absolute;
+      top: 112px;
+      right: 28px;
+      bottom: 26px;
+      width: 430px;
+      padding-left: 24px;
+      border-left-color: rgba(255,255,255,0.12);
+      border-left-width: 1px;
+      border-left-style: solid;
+    }
+    .panel-title {
+      position: absolute;
+      left: 0;
+      top: 0;
+      right: 0;
+      height: 30px;
+      font-size: 19px;
+      font-weight: bold;
+    }
+    .panel-note {
+      position: absolute;
+      left: 0;
+      top: 31px;
+      right: 0;
+      height: 24px;
+      color: rgba(159,170,182,0.86);
+      font-size: 13px;
+    }
+    .video-stage {
+      position: absolute;
+      left: 0;
+      top: 68px;
+      right: 0;
+      bottom: 124px;
+      overflow: hidden;
+      background-color: #030405;
+      border-color: rgba(255,255,255,0.15);
+      border-width: 1px;
+      border-style: solid;
+      border-radius: 8px;
+    }
+    .logo-panel .video-stage {
+      bottom: 174px;
+    }
+    video {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      background-color: #030405;
+    }
+    .stage-badge {
+      position: absolute;
+      display: flex;
+      left: 12px;
+      top: 12px;
+      width: 86px;
+      height: 28px;
+      align-items: center;
+      justify-content: center;
+      background-color: rgba(3,5,7,0.76);
+      border-color: rgba(255,255,255,0.21);
+      border-width: 1px;
+      border-style: solid;
+      border-radius: 5px;
+      color: rgba(236,241,246,0.94);
+      font-size: 12px;
+      font-weight: bold;
+    }
+    .controls {
+      position: absolute;
+      display: flex;
+      left: 0;
+      right: 0;
+      bottom: 62px;
+      height: 44px;
+      gap: 10px;
+    }
+    .primary-button, .secondary-button {
+      display: flex;
+      height: 42px;
+      align-items: center;
+      justify-content: center;
+      border-width: 1px;
+      border-style: solid;
+      border-radius: 7px;
+      font-size: 15px;
+      font-weight: bold;
+    }
+    .primary-button {
+      width: 198px;
+      background-color: rgba(45,202,128,0.21);
+      border-color: rgba(71,224,151,0.76);
+      color: #effff6;
+    }
+    .primary-button:hover {
+      background-color: rgba(45,202,128,0.31);
+    }
+    .secondary-button {
+      width: 92px;
+      background-color: rgba(255,255,255,0.055);
+      border-color: rgba(255,255,255,0.18);
+      color: rgba(232,237,242,0.92);
+    }
+    .secondary-button:hover {
+      background-color: rgba(255,255,255,0.10);
+    }
+    .status-line {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 22px;
+      height: 26px;
+      color: rgba(183,193,204,0.90);
+      font-size: 13px;
+    }
+    .logo-panel .controls {
+      bottom: 106px;
+    }
+    .logo-panel .status-line {
+      bottom: 66px;
+    }
+    .audio-line {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 24px;
+      height: 24px;
+      color: rgba(111,220,169,0.92);
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+  <div class="screen">
+    <div class="topbar">
+      <div class="title">Video Playback Lab</div>
+      <div id="runtime-readout" class="runtime-readout">目标 60 FPS · 等待媒体预解码</div>
+      <div class="fps-controls">
+        <div class="fps-label">渲染帧率</div>
+        <div id="fps-10" class="fps-button" data-action="fps-10">10</div>
+        <div id="fps-30" class="fps-button" data-action="fps-30">30</div>
+        <div id="fps-60" class="fps-button selected" data-action="fps-60">60</div>
+        <div id="fps-120" class="fps-button" data-action="fps-120">120</div>
+      </div>
+    </div>
+
+    <div class="sequence-panel">
+      <div class="panel-title">区位价值 · 开始 → 循环</div>
+      <div class="panel-note">25 FPS · 循环片段已显式预解码</div>
+      <div class="video-stage">
+        <video id="intro-video" preload="auto" data-predecode-frames="8"></video>
+        <video id="loop-video" preload="auto" data-predecode-frames="8" loop></video>
+        <div id="sequence-badge" class="stage-badge">READY</div>
+      </div>
+      <div class="controls">
+        <div id="sequence-play" class="primary-button" data-action="play-sequence">播放开始 + 循环</div>
+        <div class="secondary-button" data-action="pause-sequence">暂停</div>
+      </div>
+      <div id="sequence-status" class="status-line">开始：打开中 · 循环：打开中</div>
+    </div>
+
+    <div class="logo-panel">
+      <div class="panel-title">LOGO 演绎</div>
+      <div class="panel-note">30 FPS · WASAPI 音频主时钟</div>
+      <div class="video-stage">
+        <video id="logo-video" preload="auto" data-predecode-frames="8"></video>
+        <div class="stage-badge">AUDIO</div>
+      </div>
+      <div class="controls">
+        <div id="logo-play" class="primary-button" data-action="play-logo">播放 LOGO</div>
+        <div class="secondary-button" data-action="pause-logo">暂停</div>
+      </div>
+      <div id="logo-status" class="status-line">LOGO：打开中</div>
+      <div id="audio-status" class="audio-line">音频：等待设备</div>
+    </div>
+  </div>
+</body>
+</html>

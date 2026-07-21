@@ -4,11 +4,12 @@
 
 ## 模块边界
 
-当前代码分成三个可复用 target：
+当前代码分成四个可复用 target：
 
 | Target | 作用 | 适用场景 |
 | --- | --- | --- |
 | `Skui` | HTML/CSS 解析、DOM、样式、Yoga 布局、事件、Skia 绘制 | 已经有窗口和 Skia canvas 的项目 |
+| `SkuiFfmpeg` | FFmpeg 软件解封装/解码、透明 WebM、音频重采样和媒体时钟 | 需要 `<video>` 播放的项目 |
 | `SkuiWin32` | Win32 消息、鼠标键盘、IME、剪贴板、光标适配 | Windows 上已有 OpenGL、Vulkan、DX12 或 CPU raster 宿主，只想复用平台事件转换 |
 | `SkuiWin32Dx12` | Win32 窗口、DX12 swapchain、D3D presenter | Windows 原生项目快速拉起一个 SkUI DX12 窗口 |
 
@@ -82,6 +83,35 @@ vcpkg manifest 示例：
 ```
 
 这个 manifest 只是 Win32/DX12 demo 的参考起点，不是 SkUI 对使用者的固定要求。如果只接入 `Skui`，不需要 Win32/DX12 窗口和渲染相关系统库；本地位图解码走 Skia codec，使用 vcpkg 时需要给 `skia` 启用目标项目真正需要的图片格式 feature，例如 `png`、`jpeg`、`webp`。接入 `SkuiWin32` 时需要 Win32 输入相关系统库，例如 `user32`、`imm32`；接入 `SkuiWin32Dx12` 时还需要 `gdi32`、`dwmapi`、`shcore`、`d3d12`、`dxgi`、`dxguid`、`d3dcompiler`、`dbghelp`、`shell32`、`usp10`、`windowscodecs`。
+
+启用视频时保持 `SKIAUI_ENABLE_FFMPEG_VIDEO=ON`，并给 FFmpeg 启用
+`avcodec`、`avformat`、`swresample`、`swscale`、`vpx`。自定义宿主链接
+`SkiaUI::SkuiFfmpeg`，并通过 `makeMediaPlayerFactory(AudioOutputFactory)` 提供音频设备；
+内置 `SkuiWin32Dx12` 会自动注入 WASAPI。首期只使用软件解码，VP8/VP9 强制选择
+`libvpx` / `libvpx-vp9`，不包含硬件解码分支。
+
+视频预加载必须显式声明：
+
+```html
+<video id="intro" src="media/intro.webm" preload="auto"
+       data-predecode-frames="4" autoplay loop></video>
+```
+
+省略 `preload="auto"` 时不会提前打开媒体；`playVideoById()` 才开始按需打开和缓冲。
+控制接口为 `prepareVideoById`、`playVideoById`、`pauseVideoById`、`seekVideoById`、
+`setVideoMutedById` 和 `videoStateById`。有音轨时以设备实际消费的 PCM 帧数为主时钟；
+无音轨时由单调时钟推进，二者都只在 `Runtime::tick()` 中按 PTS 提交当前画面。
+
+仓库内的 `SkiaVideoDemo` 使用三段真实素材验证预解码、开始片段切换到循环片段、
+循环边界和带声音播放。页面提供 10 / 30 / 60 / 120 FPS 限帧按钮；
+`Dx12WindowApp::setFrameRateLimit()` 只限制 UI Tick 和渲染调度，不限制 WASAPI 设备线程。
+`WindowOptions::onRuntimeTick` 在媒体 Tick 完成后、当帧渲染前调用，demo 在这里检查
+开始片段的 `Ended` 状态并切换到已预解码的循环片段。
+
+```powershell
+cmake --build build/ninja-vcpkg --target SkiaVideoDemo
+.\build\ninja-vcpkg\SkiaVideoDemo.exe
+```
 
 不要这样接入：
 

@@ -1,6 +1,7 @@
 #include "skui_internal.h"
 
 #include "perf_trace.h"
+#include "skui_media_controller.h"
 #include "skui_runtime_helpers.h"
 
 #include "include/core/SkCanvas.h"
@@ -577,6 +578,9 @@ ElementEvent makeElementEvent(ElementEventType type, const Node& node, const Eve
     event.scrollX = node.scrollX;
     event.scrollY = node.scrollY;
     event.button = source.button;
+    event.key = source.key;
+    event.shiftKey = source.shiftKey;
+    event.ctrlKey = source.ctrlKey;
     return event;
 }
 
@@ -1854,7 +1858,10 @@ void syncNodeAttribute(Node& node, const std::string& name) {
 class Runtime::Impl {
 public:
     explicit Impl(RuntimeOptions runtimeOptions)
-        : options(std::move(runtimeOptions)), parser(options), renderer(options) {}
+        : options(std::move(runtimeOptions)),
+          parser(options),
+          renderer(options),
+          mediaController(options) {}
 
     float logicalWidth() const {
         return static_cast<float>(width) / effectiveScale();
@@ -2108,6 +2115,10 @@ public:
             applyAnimatedStyles(*document.root);
         }
         layoutEngine.layout(document, viewportWidth, viewportHeight);
+        mediaController.sync(document);
+        if (mediaController.consumeIntrinsicSizeChange()) {
+            layoutEngine.layout(document, viewportWidth, viewportHeight);
+        }
         requestAnimationFrame();
         if (traceEnabled) {
             perf::Trace::write("skui", "layout", width, height, perf::Trace::elapsedMs(layoutStart));
@@ -2834,6 +2845,7 @@ public:
     void finishDocumentMutation() {
         renderer.clearNodeCaches();
         editableLineCache.clear();
+        mediaController.sync(document);
         if (document.root) {
             std::vector<Node*> hovered;
             std::vector<Node*> active;
@@ -2848,6 +2860,7 @@ public:
     DocumentParser parser;
     LayoutEngine layoutEngine;
     SkiaRenderer renderer;
+    MediaController mediaController;
     Document document;
     int width = 1;
     int height = 1;
@@ -2881,6 +2894,7 @@ Runtime::Runtime(RuntimeOptions options) : impl_(std::make_unique<Impl>(std::mov
 
 Runtime::~Runtime() {
     if (impl_) {
+        impl_->mediaController.close();
         impl_->renderer.shutdownCaches();
     }
 }
@@ -2892,6 +2906,7 @@ bool Runtime::loadDocument(const std::string& path) {
         impl_->lastError = std::move(error);
         return false;
     }
+    impl_->mediaController.close();
     impl_->document = std::move(next);
     impl_->renderer.clearCaches();
     impl_->editableLineCache.clear();
@@ -2928,6 +2943,7 @@ bool Runtime::loadDocumentFromString(std::string_view html, std::string_view bas
         impl_->lastError = std::move(error);
         return false;
     }
+    impl_->mediaController.close();
     impl_->document = std::move(next);
     impl_->renderer.clearCaches();
     impl_->editableLineCache.clear();
@@ -3313,6 +3329,16 @@ bool Runtime::handleEvent(const Event& event) {
         constexpr unsigned kRight = 0x27;
         constexpr unsigned kDelete = 0x2E;
 
+        if (impl_->options.onElementKeyDown) {
+            Node* target = inputEventTarget(*input);
+            const ElementEvent keyEvent = makeElementEvent(
+                ElementEventType::KeyDown, *target, event, x, y);
+            if (impl_->options.onElementKeyDown(keyEvent)) {
+                consumed = true;
+                break;
+            }
+        }
+
         if (event.ctrlKey) {
             switch (event.key) {
             case 'A':
@@ -3517,12 +3543,22 @@ bool Runtime::handleEvent(const Event& event) {
 
 bool Runtime::tick(float deltaSeconds) {
     if (!std::isfinite(deltaSeconds) || deltaSeconds < 0.0f) {
-        return impl_->hasPendingAnimationFrame();
+        return impl_->hasPendingAnimationFrame() ||
+               impl_->mediaController.needsTicks();
     }
 
     impl_->animationTimeSeconds += static_cast<double>(deltaSeconds);
     impl_->advanceAnimations();
-    return impl_->hasPendingAnimationFrame();
+    const bool mediaChanged = impl_->mediaController.tick(deltaSeconds);
+    if (impl_->mediaController.consumeIntrinsicSizeChange()) {
+        impl_->recomputeAndLayout();
+    }
+    impl_->dirty = mediaChanged || impl_->dirty;
+    const bool mediaPending = impl_->mediaController.needsTicks();
+    if (mediaPending && impl_->options.requestRedraw) {
+        impl_->options.requestRedraw();
+    }
+    return impl_->hasPendingAnimationFrame() || mediaPending;
 }
 
 void Runtime::render(SkCanvas& canvas) {
@@ -3949,6 +3985,77 @@ bool Runtime::removeElementById(std::string_view id) {
     return true;
 }
 
+bool Runtime::prepareVideoById(std::string_view id) {
+    if (!impl_->hasDocument || !impl_->document.root || id.empty()) {
+        return false;
+    }
+    Node* node = findById(*impl_->document.root, id);
+    if (!node || node->tag != "video") {
+        return false;
+    }
+    impl_->mediaController.sync(impl_->document);
+    return impl_->mediaController.prepare(*node);
+}
+
+bool Runtime::playVideoById(std::string_view id) {
+    if (!impl_->hasDocument || !impl_->document.root || id.empty()) {
+        return false;
+    }
+    Node* node = findById(*impl_->document.root, id);
+    if (!node || node->tag != "video") {
+        return false;
+    }
+    impl_->mediaController.sync(impl_->document);
+    return impl_->mediaController.play(*node);
+}
+
+bool Runtime::pauseVideoById(std::string_view id) {
+    if (!impl_->hasDocument || !impl_->document.root || id.empty()) {
+        return false;
+    }
+    Node* node = findById(*impl_->document.root, id);
+    return node && node->tag == "video" &&
+           impl_->mediaController.pause(*node);
+}
+
+bool Runtime::seekVideoById(std::string_view id, double seconds) {
+    if (!impl_->hasDocument || !impl_->document.root || id.empty() ||
+        !std::isfinite(seconds) || seconds < 0.0) {
+        return false;
+    }
+    Node* node = findById(*impl_->document.root, id);
+    return node && node->tag == "video" &&
+           impl_->mediaController.seek(*node, seconds);
+}
+
+bool Runtime::setVideoMutedById(std::string_view id, bool muted) {
+    if (!impl_->hasDocument || !impl_->document.root || id.empty()) {
+        return false;
+    }
+    Node* node = findById(*impl_->document.root, id);
+    if (!node || node->tag != "video") {
+        return false;
+    }
+    if (muted) {
+        node->attributes["muted"] = {};
+    } else {
+        node->attributes.erase("muted");
+    }
+    return impl_->mediaController.setMuted(*node, muted);
+}
+
+std::optional<MediaPlaybackState> Runtime::videoStateById(
+    std::string_view id) const {
+    if (!impl_->hasDocument || !impl_->document.root || id.empty()) {
+        return std::nullopt;
+    }
+    const Node* node = findById(*impl_->document.root, id);
+    if (!node || node->tag != "video") {
+        return std::nullopt;
+    }
+    return impl_->mediaController.state(*node);
+}
+
 bool Runtime::insertHtmlAtSelection(std::string_view editingHostId,
                                     std::string_view html) {
     if (!impl_->hasDocument || !impl_->document.root ||
@@ -4180,6 +4287,10 @@ bool Runtime::hasClassById(std::string_view id, std::string_view className) cons
 
 void Runtime::setElementEventCallback(ElementEventCallback callback) {
     impl_->options.onElementEvent = std::move(callback);
+}
+
+void Runtime::setElementKeyDownCallback(ElementKeyDownCallback callback) {
+    impl_->options.onElementKeyDown = std::move(callback);
 }
 
 bool Runtime::renderToBgraPixels(uint32_t* pixels, int width, int height, size_t rowBytes, float dpiScale) {

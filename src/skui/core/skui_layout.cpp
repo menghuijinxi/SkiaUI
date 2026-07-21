@@ -178,6 +178,43 @@ YGSize measureTextNode(YGNodeConstRef node,
     return {std::max(0.0f, measuredWidth), std::max(0.0f, measuredHeight)};
 }
 
+YGSize measureVideoNode(YGNodeConstRef node,
+                        float width,
+                        YGMeasureMode widthMode,
+                        float height,
+                        YGMeasureMode heightMode) {
+    const auto* video = static_cast<const Node*>(YGNodeGetContext(node));
+    if (!video || video->videoFrameWidth <= 0 || video->videoFrameHeight <= 0) {
+        return {0.0f, 0.0f};
+    }
+
+    const float aspectRatio = static_cast<float>(video->videoFrameWidth) /
+                              static_cast<float>(video->videoFrameHeight);
+    float measuredWidth = static_cast<float>(video->videoFrameWidth);
+    float measuredHeight = static_cast<float>(video->videoFrameHeight);
+    if (widthMode == YGMeasureModeExactly) {
+        measuredWidth = width;
+        if (heightMode != YGMeasureModeExactly) {
+            measuredHeight = measuredWidth / aspectRatio;
+        }
+    }
+    if (heightMode == YGMeasureModeExactly) {
+        measuredHeight = height;
+        if (widthMode != YGMeasureModeExactly) {
+            measuredWidth = measuredHeight * aspectRatio;
+        }
+    }
+    if (widthMode == YGMeasureModeAtMost && measuredWidth > width) {
+        measuredWidth = width;
+        measuredHeight = measuredWidth / aspectRatio;
+    }
+    if (heightMode == YGMeasureModeAtMost && measuredHeight > height) {
+        measuredHeight = height;
+        measuredWidth = measuredHeight * aspectRatio;
+    }
+    return {std::max(0.0f, measuredWidth), std::max(0.0f, measuredHeight)};
+}
+
 float resolvedEdgeOrZero(float value) {
     return std::isfinite(value) ? value : 0.0f;
 }
@@ -795,6 +832,10 @@ void LayoutEngine::buildYoga(Node& node, YGNodeRef yogaNode, bool isRoot) {
         });
     if (!hasLayoutChildren && hasText && needsTextMeasure) {
         YGNodeSetMeasureFunc(yogaNode, measureTextNode);
+    } else if (!hasLayoutChildren && node.tag == "video" &&
+               node.videoFrameWidth > 0 &&
+               node.videoFrameHeight > 0) {
+        YGNodeSetMeasureFunc(yogaNode, measureVideoNode);
     }
 
     if (usesGridCells) {

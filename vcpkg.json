@@ -13,6 +13,17 @@
         "webp"
       ]
     },
+    {
+      "name": "ffmpeg",
+      "default-features": false,
+      "features": [
+        "avcodec",
+        "avformat",
+        "swresample",
+        "swscale",
+        "vpx"
+      ]
+    },
     "lexbor",
     "yoga"
   ]

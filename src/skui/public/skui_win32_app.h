@@ -30,6 +30,7 @@ struct WindowOptions {
     RuntimeOptions runtime;
     std::function<void(Runtime&)> onRuntimeReady;
     std::function<void(Runtime&)> onRuntimeResize;
+    std::function<void(Runtime&, float)> onRuntimeTick;
     WindowMessageCallback onWindowMessage;
 };
 
@@ -40,6 +41,10 @@ public:
 
     Dx12WindowApp(const Dx12WindowApp&) = delete;
     Dx12WindowApp& operator=(const Dx12WindowApp&) = delete;
+
+    // 只限制 UI Tick/渲染调度；音频设备时钟不受影响。0 表示不额外限帧。
+    void setFrameRateLimit(double framesPerSecond);
+    [[nodiscard]] double frameRateLimit() const;
 
     int run(HINSTANCE instance, int showCmd);
 

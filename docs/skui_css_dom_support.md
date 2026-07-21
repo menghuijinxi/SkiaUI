@@ -24,6 +24,7 @@
 | `selectable` | 可框选复制文本标签，支持自动折行、`<br>` 显式换行和内联 `<a href>`；普通文本默认不可选中 |
 | `progress` | 进度条，`value` / `max` 控制填充比例 |
 | `img` | 加载本地图片资源；SVG 走 SVG DOM，位图走异步加载 |
+| `video` | FFmpeg 软件播放；支持显式预解码、音频同步、循环和 VP8/VP9 Alpha WebM |
 | `svg` | 内联 SVG，由 Skia SVG DOM 绘制 |
 
 `select` / `option` 目前没有浏览器式原生下拉控件行为。需要下拉框时，用普通节点组合按钮、菜单、遮罩和选项；C++ 侧可复用 `src/skui/public/skui_dropdown.h` 里的 `skui::DropdownState`，它负责打开/关闭、同步选中文本、切换箭头文本、显示/隐藏菜单和选中项 class。
@@ -42,7 +43,10 @@
 | `placeholder` | 输入框占位文本 |
 | `contenteditable` | 枚举属性；支持 `true`、空值、`false`、`plaintext-only` 和从父节点继承 |
 | `href` | `selectable` 内 `<a>` 的链接目标；点击时转换为 `open-url:` 动作 |
-| `src` | `img` 的资源路径 |
+| `src` | `img` / `video` 的本地资源路径；video 也可直接交给 FFmpeg 打开 URL |
+| `preload` | video 支持 `none`、`metadata`、`auto`；只有 `auto` 提前解码帧 |
+| `data-predecode-frames` | video 显式预解码的高水位帧数 |
+| `autoplay` / `loop` / `muted` | video 自动播放、有界无缝循环和静音属性 |
 | `disabled` | 禁用当前节点及其子树的指针、文本选择和输入交互；不自带灰显外观 |
 | `data-virtual-width` / `data-virtual-height` | 虚拟滚动内容尺寸，不需要真实子元素撑开 |
 
