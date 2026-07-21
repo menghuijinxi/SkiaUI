@@ -13,6 +13,12 @@ The executables are generated under `build/windows-vcpkg/Release/`.
 
 The default preset uses the VS 2026 generator and the vcpkg checkout under `../out/vcpkg`. A `ninja-vcpkg` preset is also available for command-line builds from a Visual Studio developer shell.
 
+FFmpeg video playback is excluded by default. Enable it explicitly when needed:
+
+```powershell
+cmake --preset windows-vcpkg -DSKIAUI_ENABLE_FFMPEG_VIDEO=ON
+```
+
 ## Docs
 
 - [SkUI CSS / DOM 支持说明](docs/skui_css_dom_support.md)

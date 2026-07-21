@@ -3,6 +3,7 @@
   "version-string": "0.1.5",
   "builtin-baseline": "a0400024711b283056538ac19ced80b91a83c24c",
   "dependencies": [
+    "lexbor",
     {
       "name": "skia",
       "default-features": false,
@@ -13,18 +14,24 @@
         "webp"
       ]
     },
-    {
-      "name": "ffmpeg",
-      "default-features": false,
-      "features": [
-        "avcodec",
-        "avformat",
-        "swresample",
-        "swscale",
-        "vpx"
-      ]
-    },
-    "lexbor",
     "yoga"
-  ]
+  ],
+  "features": {
+    "ffmpeg-video": {
+      "description": "Build FFmpeg video and audio playback support",
+      "dependencies": [
+        {
+          "name": "ffmpeg",
+          "default-features": false,
+          "features": [
+            "avcodec",
+            "avformat",
+            "swresample",
+            "swscale",
+            "vpx"
+          ]
+        }
+      ]
+    }
+  }
 }

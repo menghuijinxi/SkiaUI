@@ -6,6 +6,8 @@
 #endif
 
 #include "skui_win32_app.h"
+#include "skui_ffmpeg.h"
+#include "skui_win32_audio.h"
 
 #include "include/core/SkColor.h"
 #include "skui/core/skui_internal.h"
@@ -31,11 +33,11 @@ constexpr int kInitialFrameRate = 60;
 constexpr std::chrono::milliseconds kTelemetryInterval(250);
 
 const std::filesystem::path kIntroVideoPath =
-    LR"(D:\Project\Init_Ue_Project\Content\Movies\区位价值\开始.mp4)";
+    LR"(E:\Project\Init_Ue_Project_UE5_5\Content\Movies\区位价值\开始.mp4)";
 const std::filesystem::path kLoopVideoPath =
-    LR"(D:\Project\Init_Ue_Project\Content\Movies\区位价值\循环.mp4)";
+    LR"(E:\Project\Init_Ue_Project_UE5_5\Content\Movies\区位价值\循环.mp4)";
 const std::filesystem::path kLogoVideoPath =
-    LR"(D:\Project\Init_Ue_Project\Content\Movies\LOGO演绎.mp4)";
+    LR"(E:\Project\Init_Ue_Project_UE5_5\Content\Movies\LOGO演绎.mp4)";
 
 enum class SequencePhase {
     Idle,
@@ -387,6 +389,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCmd) {
     options.logicalHeight = 860;
     options.clearColor = colorRefFromSkColor(kClearColor);
     options.runtime.clearColor = kClearColor;
+    options.runtime.mediaPlayerFactory = skui::ffmpeg::makeMediaPlayerFactory(
+        skui::win32::makeWasapiAudioOutputFactory());
     options.runtime.videoPredecodeFrames = 8;
     options.onRuntimeReady = [&state](skui::Runtime& runtime) {
         installInteractions(runtime, state);

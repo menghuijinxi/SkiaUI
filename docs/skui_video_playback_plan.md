@@ -121,7 +121,8 @@ SkiaUI 实现不能直接照搬以下部分：
 - `Skui`：媒体接口、DOM 状态、播放状态机、tick 调度、Skia 绘制接入。
 - `SkuiFfmpeg`：首期负责 FFmpeg 解封装、软件解码、颜色转换和音频重采样；硬件解码在
   独立探索完成后通过后端扩展接入。
-- `SkuiWin32Dx12`：内置 Win32 宿主的 WASAPI 音频输出实现。
+- `SkuiWin32Audio`：独立的 WASAPI 音频输出实现；只由需要带声音媒体播放的目标链接。
+- `SkuiWin32Dx12`：Win32/DX12 窗口宿主，不直接链接 FFmpeg 或自动启用视频。
 - 自定义宿主：可以实现同一个 `AudioOutput` 接口，把 PCM 交给引擎或其他平台音频系统。
 
 FFmpeg 仍是可选模块依赖，纯图片/文本 SkiaUI 使用者不被强制链接 FFmpeg。CMake 增加

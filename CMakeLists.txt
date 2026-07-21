@@ -1,5 +1,15 @@
 cmake_minimum_required(VERSION 3.24)
 
+option(SKIAUI_ENABLE_FFMPEG_VIDEO
+    "Build FFmpeg video and audio playback support"
+    OFF)
+
+# vcpkg 会在 project() 加载工具链时解析清单依赖，因此必须提前选择可选 feature。
+if(SKIAUI_ENABLE_FFMPEG_VIDEO)
+    list(APPEND VCPKG_MANIFEST_FEATURES "ffmpeg-video")
+    list(REMOVE_DUPLICATES VCPKG_MANIFEST_FEATURES)
+endif()
+
 project(SkiaRelayDesk VERSION 0.1.4 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
@@ -29,14 +39,20 @@ option(SKIAUI_BUILD_TEXT_FILE_DEMO "Build the text file rendering performance de
 option(SKIAUI_BUILD_IMAGE_SCROLLER_DEMO "Build the image scroller memory demo" ${SKIAUI_BUILD_DEMOS})
 option(SKIAUI_BUILD_DYNAMIC_DOM_DEMO "Build the dynamic DOM mutation demo" ${SKIAUI_BUILD_DEMOS})
 option(SKIAUI_BUILD_HTML_PREVIEWER "Build the standalone HTML preview window" ${SKIAUI_BUILD_DEMOS})
-option(SKIAUI_BUILD_VIDEO_DEMO "Build the FFmpeg video playback demo" ${SKIAUI_BUILD_DEMOS})
+set(SKIAUI_BUILD_VIDEO_DEMO_DEFAULT OFF)
+if(SKIAUI_BUILD_DEMOS AND SKIAUI_ENABLE_FFMPEG_VIDEO)
+    set(SKIAUI_BUILD_VIDEO_DEMO_DEFAULT ON)
+endif()
+option(SKIAUI_BUILD_VIDEO_DEMO
+    "Build the FFmpeg video playback demo"
+    ${SKIAUI_BUILD_VIDEO_DEMO_DEFAULT})
+unset(SKIAUI_BUILD_VIDEO_DEMO_DEFAULT)
 option(SKIAUI_INSTALL_SKIA_UI_DESK "Install the SkiaUiDesk demo application" OFF)
 option(SKIAUI_BUILD_TESTS "Build SkiaUI tests" ${BUILD_TESTING})
 option(SKIAUI_BUILD_WIN32 "Build the Win32 SkUI platform adapter target" ON)
 option(SKIAUI_INSTALL_WIN32 "Install the Win32 SkUI platform adapter target" ON)
 option(SKIAUI_BUILD_WIN32_DX12 "Build the Win32/DX12 SkUI host target" ON)
 option(SKIAUI_INSTALL_WIN32_DX12 "Install the Win32/DX12 SkUI host target" ON)
-option(SKIAUI_ENABLE_FFMPEG_VIDEO "Build FFmpeg video and audio playback support" ON)
 set(SKIAUI_FFMPEG_TEST_MEDIA "" CACHE FILEPATH
     "Optional media file used by the FFmpeg integration test")
 option(SKIATEST_USE_SKIA_D3D "Render SkiaLayerDesk through Skia Ganesh D3D12 backend" ON)
@@ -112,6 +128,12 @@ if(SKIAUI_BUILD_WIN32)
     )
 endif()
 
+if(SKIAUI_ENABLE_FFMPEG_VIDEO AND SKIAUI_BUILD_WIN32)
+    add_library(SkuiWin32Audio STATIC
+        src/skui/platform/wasapi_audio_output.cpp
+    )
+endif()
+
 if(SKIAUI_BUILD_WIN32_DX12)
     add_library(SkuiWin32Dx12 STATIC
         src/skui/platform/frame_pacing_monitor.cpp
@@ -119,11 +141,6 @@ if(SKIAUI_BUILD_WIN32_DX12)
         src/d3d_context.cpp
         src/d3d_presenter.cpp
     )
-    if(SKIAUI_ENABLE_FFMPEG_VIDEO)
-        target_sources(SkuiWin32Dx12 PRIVATE
-            src/skui/platform/wasapi_audio_output.cpp
-        )
-    endif()
 endif()
 
 if(SKIAUI_BUILD_DEMOS)
@@ -262,6 +279,29 @@ if(SKIAUI_BUILD_WIN32)
     )
 endif()
 
+if(SKIAUI_ENABLE_FFMPEG_VIDEO AND SKIAUI_BUILD_WIN32)
+    target_include_directories(SkuiWin32Audio PUBLIC
+        "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/skui/public>"
+        "$<INSTALL_INTERFACE:include/skiaui>"
+    )
+
+    target_link_libraries(SkuiWin32Audio PUBLIC
+        Skui
+    )
+
+    target_link_libraries(SkuiWin32Audio PRIVATE
+        avrt
+        ole32
+    )
+
+    target_compile_definitions(SkuiWin32Audio PUBLIC
+        WIN32_LEAN_AND_MEAN
+        NOMINMAX
+        UNICODE
+        _UNICODE
+    )
+endif()
+
 if(SKIAUI_BUILD_WIN32_DX12)
     target_include_directories(SkuiWin32Dx12 PUBLIC
         "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>"
@@ -291,16 +331,6 @@ if(SKIAUI_BUILD_WIN32_DX12)
         windowscodecs
     )
 
-    if(SKIAUI_ENABLE_FFMPEG_VIDEO)
-        target_link_libraries(SkuiWin32Dx12 PRIVATE
-            SkuiFfmpeg
-            avrt
-        )
-        target_compile_definitions(SkuiWin32Dx12 PRIVATE
-            SKIAUI_HAS_FFMPEG_VIDEO=1
-        )
-    endif()
-
     target_compile_definitions(SkuiWin32Dx12 PUBLIC
         WIN32_LEAN_AND_MEAN
         NOMINMAX
@@ -319,6 +349,9 @@ if(MSVC)
     endif()
     if(SKIAUI_BUILD_WIN32)
         target_compile_options(SkuiWin32 PRIVATE /utf-8 /permissive- /Zc:__cplusplus)
+    endif()
+    if(SKIAUI_ENABLE_FFMPEG_VIDEO AND SKIAUI_BUILD_WIN32)
+        target_compile_options(SkuiWin32Audio PRIVATE /utf-8 /permissive- /Zc:__cplusplus)
     endif()
     if(SKIAUI_BUILD_WIN32_DX12)
         target_compile_options(SkuiWin32Dx12 PRIVATE /utf-8 /permissive- /Zc:__cplusplus)
@@ -608,6 +641,8 @@ if(SKIAUI_BUILD_VIDEO_DEMO)
 
     target_link_libraries(SkiaVideoDemo PRIVATE
         SkuiWin32Dx12
+        SkuiFfmpeg
+        SkuiWin32Audio
     )
 
     target_compile_definitions(SkiaVideoDemo PRIVATE
@@ -739,6 +774,10 @@ if(SKIAUI_INSTALL_WIN32_TARGET)
     list(APPEND SKIAUI_INSTALL_TARGETS SkuiWin32)
 endif()
 
+if(SKIAUI_ENABLE_FFMPEG_VIDEO AND SKIAUI_INSTALL_WIN32_TARGET)
+    list(APPEND SKIAUI_INSTALL_TARGETS SkuiWin32Audio)
+endif()
+
 if(SKIAUI_BUILD_WIN32_DX12 AND SKIAUI_INSTALL_WIN32_DX12)
     list(APPEND SKIAUI_INSTALL_TARGETS SkuiWin32Dx12)
 endif()
@@ -778,11 +817,12 @@ if(SKIAUI_BUILD_WIN32_DX12 AND SKIAUI_INSTALL_WIN32_DX12)
         src/d3d_presenter.h
         src/perf_trace.h
     )
-    if(SKIAUI_ENABLE_FFMPEG_VIDEO)
-        list(APPEND SKIAUI_PUBLIC_HEADERS
-            src/skui/public/skui_win32_audio.h
-        )
-    endif()
+endif()
+
+if(SKIAUI_ENABLE_FFMPEG_VIDEO AND SKIAUI_INSTALL_WIN32_TARGET)
+    list(APPEND SKIAUI_PUBLIC_HEADERS
+        src/skui/public/skui_win32_audio.h
+    )
 endif()
 
 install(FILES

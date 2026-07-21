@@ -4,13 +4,14 @@
 
 ## 模块边界
 
-当前代码分成四个可复用 target：
+当前代码分成五个可复用 target：
 
 | Target | 作用 | 适用场景 |
 | --- | --- | --- |
 | `Skui` | HTML/CSS 解析、DOM、样式、Yoga 布局、事件、Skia 绘制 | 已经有窗口和 Skia canvas 的项目 |
 | `SkuiFfmpeg` | FFmpeg 软件解封装/解码、透明 WebM、音频重采样和媒体时钟 | 需要 `<video>` 播放的项目 |
 | `SkuiWin32` | Win32 消息、鼠标键盘、IME、剪贴板、光标适配 | Windows 上已有 OpenGL、Vulkan、DX12 或 CPU raster 宿主，只想复用平台事件转换 |
+| `SkuiWin32Audio` | WASAPI 音频输出，不依赖窗口或 DX12 宿主 | Windows 上需要带声音媒体播放的项目 |
 | `SkuiWin32Dx12` | Win32 窗口、DX12 swapchain、D3D presenter | Windows 原生项目快速拉起一个 SkUI DX12 窗口 |
 
 `SkuiWin32Dx12` 只是当前仓库自带的一个宿主示例，不代表 SkUI 只能运行在 DX12 上。SkUI 核心 target 不创建窗口、不管理 swapchain，也不直接依赖 Win32/DX12；它只要求宿主在合适的时机提供一个有效的 `SkCanvas`，并把平台输入事件转成 `skui::Event`。Windows 平台的 OpenGL、Vulkan 或自研渲染后端可以链接 `SkuiWin32` 复用通用 Win32 事件适配，再自己管理 GPU 后端。
@@ -84,10 +85,19 @@ vcpkg manifest 示例：
 
 这个 manifest 只是 Win32/DX12 demo 的参考起点，不是 SkUI 对使用者的固定要求。如果只接入 `Skui`，不需要 Win32/DX12 窗口和渲染相关系统库；本地位图解码走 Skia codec，使用 vcpkg 时需要给 `skia` 启用目标项目真正需要的图片格式 feature，例如 `png`、`jpeg`、`webp`。接入 `SkuiWin32` 时需要 Win32 输入相关系统库，例如 `user32`、`imm32`；接入 `SkuiWin32Dx12` 时还需要 `gdi32`、`dwmapi`、`shcore`、`d3d12`、`dxgi`、`dxguid`、`d3dcompiler`、`dbghelp`、`shell32`、`usp10`、`windowscodecs`。
 
-启用视频时保持 `SKIAUI_ENABLE_FFMPEG_VIDEO=ON`，并给 FFmpeg 启用
-`avcodec`、`avformat`、`swresample`、`swscale`、`vpx`。自定义宿主链接
-`SkiaUI::SkuiFfmpeg`，并通过 `makeMediaPlayerFactory(AudioOutputFactory)` 提供音频设备；
-内置 `SkuiWin32Dx12` 会自动注入 WASAPI。首期只使用软件解码，VP8/VP9 强制选择
+视频播放默认关闭，普通构建不会安装或链接 FFmpeg。使用本仓库的 vcpkg manifest 时，显式
+启用 CMake 选项即可同时选择 `ffmpeg-video` manifest feature：
+
+```powershell
+cmake --preset ninja-vcpkg -DSKIAUI_ENABLE_FFMPEG_VIDEO=ON
+```
+
+目标项目维护自己的依赖清单时，还需要给 FFmpeg 启用 `avcodec`、`avformat`、
+`swresample`、`swscale`、`vpx`。自定义宿主链接
+`SkiaUI::SkuiFfmpeg`，并通过 `makeMediaPlayerFactory(AudioOutputFactory)` 提供音频设备。
+Windows 项目可以链接 `SkiaUI::SkuiWin32Audio` 并显式传入
+`makeWasapiAudioOutputFactory()`；`SkuiWin32Dx12` 本身不链接 FFmpeg，也不会自动启用视频。
+首期只使用软件解码，VP8/VP9 强制选择
 `libvpx` / `libvpx-vp9`，不包含硬件解码分支。
 
 视频预加载必须显式声明：

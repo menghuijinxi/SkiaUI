@@ -3,11 +3,6 @@
 #include "frame_pacing_monitor.h"
 #include "skui_win32_event_adapter.h"
 
-#if defined(SKIAUI_HAS_FFMPEG_VIDEO)
-#include "skui_ffmpeg.h"
-#include "skui_win32_audio.h"
-#endif
-
 #include "d3d_presenter.h"
 #include "perf_trace.h"
 
@@ -445,12 +440,6 @@ private:
     }
 
     RuntimeOptions configureRuntimeCallbacks(RuntimeOptions options) {
-#if defined(SKIAUI_HAS_FFMPEG_VIDEO)
-        if (!options.mediaPlayerFactory) {
-            options.mediaPlayerFactory = ffmpeg::makeMediaPlayerFactory(
-                makeWasapiAudioOutputFactory());
-        }
-#endif
         const RequestRedrawCallback previous = std::move(options.requestRedraw);
         options.requestRedraw = [this, previous] {
             if (previous) {
