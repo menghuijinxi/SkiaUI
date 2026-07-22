@@ -2111,7 +2111,11 @@ bool matchesMedia(const StyleRule& rule, float viewportWidth, float viewportHeig
     return true;
 }
 
-void applyRules(Node& node, const std::vector<StyleRule>& rules, float viewportWidth, float viewportHeight) {
+void applyRules(Node& node,
+                const std::vector<StyleRule>& rules,
+                float viewportWidth,
+                float viewportHeight,
+                bool important) {
     std::vector<const StyleRule*> matched;
     for (const StyleRule& rule : rules) {
         if (matchesMedia(rule, viewportWidth, viewportHeight) && matchesRule(node, rule)) {
@@ -2125,12 +2129,15 @@ void applyRules(Node& node, const std::vector<StyleRule>& rules, float viewportW
         return lhs->order < rhs->order;
     });
     for (const StyleRule* rule : matched) {
+        const Style& ruleStyle = important ? rule->importantStyle : rule->style;
         if (rule->pseudoElement == PseudoElement::Before) {
-            mergeStyle(node.beforeStyle, rule->style);
+            mergeStyle(node.beforeStyle, ruleStyle);
         } else if (rule->pseudoElement == PseudoElement::After) {
-            mergeStyle(node.afterStyle, rule->style);
+            mergeStyle(node.afterStyle, ruleStyle);
+        } else if (important) {
+            mergeStyle(node.importantStyle, ruleStyle);
         } else {
-            mergeStyle(node.style, rule->style);
+            mergeStyle(node.style, ruleStyle);
         }
     }
     node.hasBeforeStyle = node.beforeStyle.flags.content &&
@@ -2140,14 +2147,25 @@ void applyRules(Node& node, const std::vector<StyleRule>& rules, float viewportW
                          node.afterStyle.content != "none" &&
                          node.afterStyle.content != "normal";
     for (auto& child : node.children) {
-        applyRules(*child, rules, viewportWidth, viewportHeight);
+        applyRules(*child, rules, viewportWidth, viewportHeight, important);
     }
 }
 
-void applyInlineStyles(Node& node) {
-    mergeStyle(node.style, node.inlineStyle);
+void applyInlineStyles(Node& node, bool important) {
+    if (important) {
+        mergeStyle(node.importantStyle, node.inlineImportantStyle);
+    } else {
+        mergeStyle(node.style, node.inlineStyle);
+    }
     for (auto& child : node.children) {
-        applyInlineStyles(*child);
+        applyInlineStyles(*child, important);
+    }
+}
+
+void applyImportantStyles(Node& node) {
+    mergeStyle(node.style, node.importantStyle);
+    for (auto& child : node.children) {
+        applyImportantStyles(*child);
     }
 }
 
@@ -2169,6 +2187,7 @@ void applyAnimatedStylesToSelf(Node& node) {
     animated.transform = node.animatedStyle.transform;
     animated.backgroundPosition = node.animatedStyle.backgroundPosition;
     mergeStyle(node.style, animated);
+    mergeStyle(node.style, node.importantStyle);
 }
 
 void applyAnimatedStylesRecursive(Node& node) {
@@ -2241,6 +2260,7 @@ void applyInheritedStyle(Node& node, const RuntimeOptions& options) {
 
 void resetStyles(Node& node) {
     node.style = defaultStyleForNode(node);
+    node.importantStyle = Style{};
     node.beforeStyle = Style{};
     node.afterStyle = Style{};
     node.hasBeforeStyle = false;
@@ -2984,20 +3004,56 @@ void applyDeclaration(Style& style, std::string_view rawName, std::string_view r
     }
 }
 
-void parseDeclarations(std::string_view block, Style& style) {
+struct DeclarationValue {
+    std::string value;
+    bool important = false;
+};
+
+DeclarationValue parseDeclarationValue(std::string_view rawValue) {
+    DeclarationValue parsed{trim(rawValue)};
+    const size_t marker = parsed.value.rfind('!');
+    if (marker == std::string::npos ||
+        lower(trim(std::string_view(parsed.value).substr(marker + 1))) !=
+            "important") {
+        return parsed;
+    }
+
+    parsed.value = trim(std::string_view(parsed.value).substr(0, marker));
+    parsed.important = true;
+    return parsed;
+}
+
+void parseDeclarations(std::string_view block,
+                       Style& style,
+                       Style& importantStyle) {
     size_t start = 0;
     while (start < block.size()) {
         const size_t semi = block.find(';', start);
-        const std::string_view declaration = block.substr(start, semi == std::string_view::npos ? block.size() - start : semi - start);
+        const std::string_view declaration =
+            block.substr(start,
+                         semi == std::string_view::npos ? block.size() - start
+                                                        : semi - start);
         const size_t colon = declaration.find(':');
         if (colon != std::string_view::npos) {
-            applyDeclaration(style, declaration.substr(0, colon), declaration.substr(colon + 1));
+            DeclarationValue value =
+                parseDeclarationValue(declaration.substr(colon + 1));
+            if (!value.value.empty()) {
+                Style& destination = value.important ? importantStyle : style;
+                applyDeclaration(destination,
+                                 declaration.substr(0, colon),
+                                 value.value);
+            }
         }
         if (semi == std::string_view::npos) {
             break;
         }
         start = semi + 1;
     }
+}
+
+void parseDeclarations(std::string_view block, Style& style) {
+    Style ignoredImportantStyle;
+    parseDeclarations(block, style, ignoredImportantStyle);
 }
 
 std::string stripCssComments(std::string_view css) {
@@ -3432,7 +3488,7 @@ void parseStyleSheet(std::string_view css,
             rule.minViewportHeight = media.minViewportHeight;
             rule.maxViewportHeight = media.maxViewportHeight;
             rule.order = static_cast<unsigned>(rules.size());
-            parseDeclarations(block, rule.style);
+            parseDeclarations(block, rule.style, rule.importantStyle);
             rules.push_back(std::move(rule));
         }
         start = *close + 1;
@@ -3487,7 +3543,9 @@ std::unique_ptr<Node> convertElement(
     node->virtualContentHeight = std::max(0.0f, attributeFloat(node->attributes, "data-virtual-height", 0.0f));
     const std::string inlineStyle = attributeValue(node->attributes, "style");
     if (!inlineStyle.empty()) {
-        parseDeclarations(inlineStyle, node->inlineStyle);
+        parseDeclarations(inlineStyle,
+                          node->inlineStyle,
+                          node->inlineImportantStyle);
     }
 
     if (tag == "img" || tag == "video" || tag == "svg") {
@@ -3564,8 +3622,10 @@ bool readFile(const std::string& path, std::string& out) {
 
 }  // namespace
 
-void parseInlineStyle(std::string_view declarations, Style& style) {
-    parseDeclarations(declarations, style);
+void parseInlineStyle(std::string_view declarations,
+                      Style& style,
+                      Style& importantStyle) {
+    parseDeclarations(declarations, style, importantStyle);
 }
 
 DocumentParser::DocumentParser(RuntimeOptions options) : theme_(options.theme) {}
@@ -3676,9 +3736,21 @@ void recomputeStyles(Document& document, const RuntimeOptions& options, float vi
     resetStyles(*document.root);
     applyInheritedStyle(*document.root, options);
     applyPresentationStyles(*document.root);
-    applyRules(*document.root, document.rules, viewportWidth, viewportHeight);
+    applyRules(*document.root,
+               document.rules,
+               viewportWidth,
+               viewportHeight,
+               false);
     applyInheritedStyle(*document.root, options);
-    applyInlineStyles(*document.root);
+    applyInlineStyles(*document.root, false);
+    applyInheritedStyle(*document.root, options);
+    applyRules(*document.root,
+               document.rules,
+               viewportWidth,
+               viewportHeight,
+               true);
+    applyInlineStyles(*document.root, true);
+    applyImportantStyles(*document.root);
     applyInheritedStyle(*document.root, options);
 }
 

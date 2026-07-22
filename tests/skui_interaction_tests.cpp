@@ -1625,6 +1625,132 @@ int main() {
     ok = expect(selectorAttribute == solidColor(0x77, 0x88, 0x99), "attribute selector should apply after setAttributeById") && ok;
     ok = expect(selectorInline == solidColor(0xAB, 0xCD, 0xEF), "setStyleById should update inline style") && ok;
 
+    constexpr std::string_view importantHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      position: relative;
+      width: 140px;
+      height: 90px;
+      background-color: #010203;
+    }
+    .probe {
+      position: absolute;
+      top: 5px;
+      width: 20px;
+      height: 20px;
+    }
+    .stylesheet-important {
+      left: 5px;
+      background-color: #112233 !important;
+    }
+    #stylesheet-important {
+      background-color: #445566;
+    }
+    .inline-important {
+      left: 30px;
+      background-color: #112233 !important;
+    }
+    .same-block {
+      left: 55px;
+      background-color: #112233 !important;
+      background-color: #445566;
+      background-color: #778899 !important;
+    }
+    .important-parent {
+      left: 80px;
+      background-color: #112233;
+    }
+    .important-parent > * {
+      width: 20px;
+      height: 20px;
+      background-color: #ff0000;
+      visibility: hidden !important;
+    }
+    #important-child {
+      visibility: visible;
+    }
+    .opacity-important {
+      left: 105px;
+      background-color: #ff0000;
+      opacity: 0 !important;
+    }
+    #opacity-important {
+      opacity: 1;
+    }
+    .important-order {
+      left: 5px;
+      top: 35px;
+      background-color: #112233 !important;
+    }
+    #important-order {
+      background-color: #445566 !important;
+    }
+    .important-order {
+      background-color: #778899 !important;
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <div id="stylesheet-important" class="probe stylesheet-important"
+         style="background-color: #445566"></div>
+    <div id="inline-important" class="probe inline-important"
+         style="background-color: #445566 ! IMPORTANT"></div>
+    <div class="probe same-block"></div>
+    <div class="probe important-parent"><div id="important-child"></div></div>
+    <div id="opacity-important" class="probe opacity-important"></div>
+    <div id="important-order" class="probe important-order"></div>
+  </div>
+</body>
+</html>
+)html";
+
+    skui::Runtime importantRuntime(options);
+    importantRuntime.resize(kWidth, kHeight, 1.0f);
+    if (!importantRuntime.loadDocumentFromString(importantHtml, "")) {
+        std::cerr << "important load failed: " << importantRuntime.lastError()
+                  << "\n";
+        return 1;
+    }
+
+    uint32_t stylesheetImportant = 0;
+    uint32_t inlineImportant = 0;
+    uint32_t sameBlockImportant = 0;
+    uint32_t hiddenImportant = 0;
+    uint32_t opacityImportant = 0;
+    uint32_t importantOrder = 0;
+    ok = renderPixel(importantRuntime, 15, 15, stylesheetImportant) && ok;
+    ok = renderPixel(importantRuntime, 40, 15, inlineImportant) && ok;
+    ok = renderPixel(importantRuntime, 65, 15, sameBlockImportant) && ok;
+    ok = renderPixel(importantRuntime, 90, 15, hiddenImportant) && ok;
+    ok = renderPixel(importantRuntime, 115, 15, opacityImportant) && ok;
+    ok = renderPixel(importantRuntime, 15, 45, importantOrder) && ok;
+
+    ok = expect(stylesheetImportant == solidColor(0x11, 0x22, 0x33),
+                "stylesheet important should beat normal id and inline declarations") && ok;
+    ok = expect(inlineImportant == solidColor(0x44, 0x55, 0x66),
+                "inline important should beat stylesheet important") && ok;
+    ok = expect(sameBlockImportant == solidColor(0x77, 0x88, 0x99),
+                "later important declarations should replace earlier ones") && ok;
+    ok = expect(hiddenImportant == solidColor(0x11, 0x22, 0x33),
+                "important should work with child and universal selectors") && ok;
+    ok = expect(opacityImportant == solidColor(0x01, 0x02, 0x03),
+                "important should protect numeric declarations") && ok;
+    ok = expect(importantOrder == solidColor(0x44, 0x55, 0x66),
+                "important declarations should retain selector specificity") && ok;
+
+    ok = expect(importantRuntime.setStyleById(
+                    "inline-important",
+                    "background-color: #abcdef !important; "
+                    "background-color: #123456"),
+                "setStyleById should accept important declarations") && ok;
+    ok = renderPixel(importantRuntime, 40, 15, inlineImportant) && ok;
+    ok = expect(inlineImportant == solidColor(0xAB, 0xCD, 0xEF),
+                "runtime inline important should beat a later normal declaration") && ok;
+
     const std::filesystem::path stylesheetFixtureDir =
         std::filesystem::temp_directory_path() / "skui_external_stylesheet";
     std::error_code stylesheetEc;

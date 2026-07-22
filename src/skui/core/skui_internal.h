@@ -553,10 +553,12 @@ struct Node {
     std::vector<TextLink> textLinks;
     std::unordered_map<std::string, std::string> attributes;
     Style style;
+    Style importantStyle;
     Style beforeStyle;
     Style afterStyle;
     Style presentationStyle;
     Style inlineStyle;
+    Style inlineImportantStyle;
     Style animatedStyle;
     Style::Flags animatedStyleFlags;
     bool hasAnimatedStyle = false;
@@ -619,6 +621,7 @@ struct SelectorPart {
 struct StyleRule {
     std::vector<SelectorPart> selector;
     Style style;
+    Style importantStyle;
     PseudoElement pseudoElement = PseudoElement::None;
     std::optional<float> minViewportWidth;
     std::optional<float> maxViewportWidth;
@@ -934,7 +937,9 @@ std::vector<const Node*> childrenInPaintOrder(const Node& node);
 std::vector<Node*> childrenInPaintOrder(Node& node);
 std::filesystem::path pathFromUtf8(std::string_view text);
 std::string pathToUtf8(const std::filesystem::path& path);
-void parseInlineStyle(std::string_view declarations, Style& style);
+void parseInlineStyle(std::string_view declarations,
+                      Style& style,
+                      Style& importantStyle);
 void recomputeStyles(Document& document, const RuntimeOptions& options, float viewportWidth = 0.0f, float viewportHeight = 0.0f);
 void applyAnimatedStyles(Node& node);
 

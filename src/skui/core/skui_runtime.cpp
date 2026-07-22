@@ -1883,8 +1883,11 @@ void syncNodeAttribute(Node& node, const std::string& name) {
         node.virtualContentHeight = std::max(0.0f, node.virtualContentHeight);
     } else if (name == "style") {
         node.inlineStyle = {};
+        node.inlineImportantStyle = {};
         if (hasValue) {
-            parseInlineStyle(value, node.inlineStyle);
+            parseInlineStyle(value,
+                             node.inlineStyle,
+                             node.inlineImportantStyle);
         }
     }
 }
@@ -2944,6 +2947,7 @@ public:
         trailing->attributes = source.attributes;
         trailing->attributes["id"] = trailing->id;
         trailing->inlineStyle = source.inlineStyle;
+        trailing->inlineImportantStyle = source.inlineImportantStyle;
         trailing->presentationStyle = source.presentationStyle;
         trailing->value = std::move(value);
         trailing->parent = source.parent;
@@ -4351,7 +4355,10 @@ bool Runtime::setStyleById(std::string_view id, std::string_view declarations) {
         return false;
     }
     node->inlineStyle = {};
-    parseInlineStyle(declarations, node->inlineStyle);
+    node->inlineImportantStyle = {};
+    parseInlineStyle(declarations,
+                     node->inlineStyle,
+                     node->inlineImportantStyle);
     node->attributes["style"] = std::string(declarations);
     impl_->requestLayout();
     return true;
@@ -4475,7 +4482,10 @@ bool Runtime::applyUpdates(const RuntimeUpdates& updates) {
             continue;
         }
         node->inlineStyle = {};
-        parseInlineStyle(update.declarations, node->inlineStyle);
+        node->inlineImportantStyle = {};
+        parseInlineStyle(update.declarations,
+                         node->inlineStyle,
+                         node->inlineImportantStyle);
         node->attributes["style"] = update.declarations;
         changed = true;
     }
