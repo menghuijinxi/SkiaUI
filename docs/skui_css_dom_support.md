@@ -357,6 +357,7 @@ SkUI 的事件返回值表示“UI 是否实际消费了事件”，不是“DOM
 - `Ctrl+A` / `Ctrl+C` / `Ctrl+X` / `Ctrl+V` / `Ctrl+Z`
 - Backspace / Delete
 - 左右方向键
+- 上下方向键在多行 `textarea` 中按字符列跨行移动
 - Shift + 左右方向键扩展选区
 - Home / End
 - IME composition / commit
@@ -381,13 +382,18 @@ SkUI 的事件返回值表示“UI 是否实际消费了事件”，不是“DOM
 
 - `contenteditable` 的枚举值与继承；无效值按继承处理。
 - 普通 `p`、`div`、`span`、标题、`li` 和 `blockquote` 文本叶节点的光标、选区、剪贴板、撤销和 IME。
+- 上下方向键在相邻可编辑文本行之间移动，并尽量保持 UTF-8 字符列。
 - Enter 把当前文本容器拆成相邻普通段落。
 - Backspace / Delete 删除相邻 `contenteditable="false"` 原子节点，或合并相邻文本段落。
 - `Input` 事件以最外层编辑宿主为目标，和浏览器 editing host 一致。
 - `Runtime::selection()` 返回 `Selection` / `Range` 状态；`collapseSelection()` 与 `setSelectionBaseAndExtent()` 用元素 id 设置选区。
+- 同一个 editing host 内可以跨相邻文本容器拖拽选择；`Ctrl+C` 按段落边界写入换行，输入、剪切和删除会替换整个跨容器选区。
 - `insertHtmlAtSelection()` 在当前选区插入普通 HTML；块节点插入会拆分当前文本容器。
+- 编辑宿主设置 `contenteditable-flow="inline"` 后，插入的原子节点会与拆分后的前后文本按同一段落流式换行；
+  Enter 仍创建新的段落行。该模式保留直接子节点顺序，便于 C++ 按文本和附件顺序读取。
+- 从 inline 文档流删除原子节点后，相邻的前后文本片段会自动合并，恢复删除前的连续段落和光标位置。
 
-`textContentById()` 和 `childElementIdsById()` 是 C++ DOM 桥接接口，业务层可按实际文档顺序读取文本和原子节点。当前 `Selection` 只表示同一个文本容器内的范围；跨段落连续选择、嵌套内联富文本编辑、`beforeinput` / `inputType` 和浏览器完整编辑命令尚未实现。
+`textContentById()` 和 `childElementIdsById()` 是 C++ DOM 桥接接口，业务层可按实际文档顺序读取文本和原子节点。跨 editing host 选择、嵌套内联富文本编辑、`beforeinput` / `inputType` 和浏览器完整编辑命令尚未实现。
 
 ## 可复制文本
 
@@ -434,6 +440,8 @@ SkUI 的事件返回值表示“UI 是否实际消费了事件”，不是“DOM
 - `Click`
 - `Input`
 - `Scroll`
+
+鼠标事件的 `ElementEvent` 会在进入业务回调前生成快照。业务层可以在 `MouseUp` 或 `Click` 回调中删除当前事件目标；回调返回后，运行时会重新校验命中节点和滚动条节点，不会继续解引用已经从文档树移除的节点。
 
 `ElementEvent` 包含：
 

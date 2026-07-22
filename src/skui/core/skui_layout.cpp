@@ -161,7 +161,8 @@ YGSize measureTextNode(YGNodeConstRef node,
     } else if (widthMode == YGMeasureModeAtMost) {
         measuredWidth = std::min(measuredWidth, width);
     }
-    if (uiNode->tag == "selectable") {
+    if (uiNode->tag == "selectable" ||
+        isContentEditableTextNode(*uiNode)) {
         const size_t lineCount = wrappedTextLineCount(
             value,
             measuredWidth,
@@ -748,13 +749,24 @@ void LayoutEngine::buildYoga(Node& node, YGNodeRef yogaNode, bool isRoot) {
     }
 
     YGNodeSetContext(yogaNode, &node);
-    const bool isGrid = s.display == Display::Grid;
+    const bool inlineContentEditableFlow =
+        usesInlineContentEditableFlow(node);
+    const bool isGrid = s.display == Display::Grid &&
+                        !inlineContentEditableFlow;
     const bool usesGridCells = isGrid && !s.gridTemplateColumns.empty();
-    const YGFlexDirection flexDirection = isGrid
-        ? YGFlexDirectionRow
-        : s.flexDirection;
+    YGFlexDirection flexDirection = s.flexDirection;
+    if (isGrid) {
+        flexDirection = YGFlexDirectionRow;
+    }
+    if (inlineContentEditableFlow) {
+        flexDirection = YGFlexDirectionColumn;
+    }
     YGNodeStyleSetFlexDirection(yogaNode, flexDirection);
-    YGNodeStyleSetFlexWrap(yogaNode, isGrid ? YGWrapWrap : s.flexWrap);
+    YGNodeStyleSetFlexWrap(
+        yogaNode,
+        inlineContentEditableFlow
+            ? YGWrapNoWrap
+            : (isGrid ? YGWrapWrap : s.flexWrap));
     if (!isGrid) {
         setFlexGap(yogaNode, YGGutterRow, s.rowGap);
         setFlexGap(yogaNode, YGGutterColumn, s.columnGap);
@@ -910,6 +922,41 @@ void LayoutEngine::buildYoga(Node& node, YGNodeRef yogaNode, bool isRoot) {
         return;
     }
 
+    if (inlineContentEditableFlow) {
+        YGNodeRef lineRef = nullptr;
+        for (auto& child : node.children) {
+            if (child->style.display == Display::None) {
+                continue;
+            }
+            const bool startsLine =
+                lineRef == nullptr ||
+                child->contentEditableFlowPosition ==
+                    ContentEditableFlowPosition::ParagraphStart;
+            if (startsLine) {
+                lineRef = YGNodeNew();
+                YGNodeStyleSetWidthPercent(lineRef, 100.0f);
+                YGNodeStyleSetFlexDirection(
+                    lineRef, YGFlexDirectionRow);
+                YGNodeStyleSetFlexWrap(lineRef, YGWrapWrap);
+                YGNodeStyleSetAlignItems(lineRef, YGAlignFlexStart);
+                setFlexGap(lineRef, YGGutterRow, s.rowGap);
+                setFlexGap(lineRef, YGGutterColumn, s.columnGap);
+                YGNodeInsertChild(
+                    yogaNode,
+                    lineRef,
+                    YGNodeGetChildCount(yogaNode));
+            }
+
+            YGNodeRef childRef = YGNodeNew();
+            buildYoga(*child, childRef, false);
+            YGNodeInsertChild(
+                lineRef,
+                childRef,
+                YGNodeGetChildCount(lineRef));
+        }
+        return;
+    }
+
     for (auto& child : node.children) {
         if (child->style.display == Display::None ||
             (contentEditableTextNode && child->tag == "br")) {
@@ -950,6 +997,39 @@ void LayoutEngine::readYoga(Node& node, YGNodeRef yogaNode, float offsetX, float
                 childYoga,
                 node.layout.x + YGNodeLayoutGetLeft(cellYoga),
                 node.layout.y + YGNodeLayoutGetTop(cellYoga));
+        }
+        return;
+    }
+
+    if (usesInlineContentEditableFlow(node)) {
+        uint32_t lineIndex = 0;
+        uint32_t childIndexInLine = 0;
+        YGNodeRef lineYoga = nullptr;
+        for (auto& child : node.children) {
+            if (child->style.display == Display::None) {
+                continue;
+            }
+            const bool startsLine =
+                lineYoga == nullptr ||
+                child->contentEditableFlowPosition ==
+                    ContentEditableFlowPosition::ParagraphStart;
+            if (startsLine) {
+                lineYoga = YGNodeGetChild(yogaNode, lineIndex++);
+                childIndexInLine = 0;
+            }
+            if (!lineYoga) {
+                continue;
+            }
+            YGNodeRef childYoga =
+                YGNodeGetChild(lineYoga, childIndexInLine++);
+            if (!childYoga) {
+                continue;
+            }
+            readYoga(
+                *child,
+                childYoga,
+                node.layout.x + YGNodeLayoutGetLeft(lineYoga),
+                node.layout.y + YGNodeLayoutGetTop(lineYoga));
         }
         return;
     }

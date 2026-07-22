@@ -132,7 +132,11 @@ void appendEditableTextContent(const Node& node,
     }
     const bool textNode = isContentEditableTextNode(node);
     if (textNode) {
-        if (!result.empty()) {
+        const bool startsParagraph =
+            node.contentEditableFlowPosition ==
+            ContentEditableFlowPosition::ParagraphStart;
+        if (!result.empty() &&
+            (!usesInlineContentEditableFlow(host) || startsParagraph)) {
             result.push_back('\n');
         }
         result += node.value;
@@ -248,6 +252,14 @@ bool isContentEditable(const Node& node) {
 bool isContentEditableEditingHost(const Node& node) {
     return isContentEditable(node) &&
            (!node.parent || !isContentEditable(*node.parent));
+}
+
+bool usesInlineContentEditableFlow(const Node& node) {
+    if (!isContentEditableEditingHost(node)) {
+        return false;
+    }
+    const auto flow = node.attributes.find("contenteditable-flow");
+    return flow != node.attributes.end() && trim(flow->second) == "inline";
 }
 
 bool isContentEditableTextNode(const Node& node) {

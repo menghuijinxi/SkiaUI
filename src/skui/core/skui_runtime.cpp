@@ -676,6 +676,42 @@ size_t currentLineEnd(const std::string& value, size_t cursor) {
     return newline == std::string::npos ? value.size() : newline;
 }
 
+size_t utf8ColumnAtIndex(std::string_view value,
+                         size_t lineStart,
+                         size_t index) {
+    size_t column = 0;
+    size_t cursor = std::min(lineStart, value.size());
+    const size_t end = std::min(index, value.size());
+    while (cursor < end) {
+        ++cursor;
+        while (cursor < end &&
+               isUtf8Continuation(
+                   static_cast<unsigned char>(value[cursor]))) {
+            ++cursor;
+        }
+        ++column;
+    }
+    return column;
+}
+
+size_t utf8IndexAtColumn(std::string_view value,
+                         size_t lineStart,
+                         size_t lineEnd,
+                         size_t column) {
+    size_t index = std::min(lineStart, value.size());
+    const size_t end = std::min(lineEnd, value.size());
+    while (index < end && column > 0) {
+        ++index;
+        while (index < end &&
+               isUtf8Continuation(
+                   static_cast<unsigned char>(value[index]))) {
+            ++index;
+        }
+        --column;
+    }
+    return std::min(index, end);
+}
+
 void clampInputCursor(Node& node) {
     node.cursorIndex = clampUtf8Index(node.value, node.cursorIndex);
     node.selectionAnchor = clampUtf8Index(node.value, node.selectionAnchor);
@@ -2437,9 +2473,119 @@ public:
         dirty = true;
     }
 
-    bool setFocusedNode(Node* next) {
-        if (focusedNode == next) {
+    struct OrderedContentEditableSelection {
+        std::vector<Node*> nodes;
+        size_t startNodeIndex = 0;
+        size_t endNodeIndex = 0;
+        size_t startOffset = 0;
+        size_t endOffset = 0;
+    };
+
+    std::vector<Node*> contentEditableTextNodes(Node& host) const {
+        std::vector<Node*> nodes;
+        const auto visit = [&](const auto& self, Node& node) -> void {
+            if (&node != &host && !isContentEditable(node)) {
+                return;
+            }
+            if (isContentEditableTextNode(node)) {
+                nodes.push_back(&node);
+                return;
+            }
+            for (auto& child : node.children) {
+                self(self, *child);
+            }
+        };
+        visit(visit, host);
+        return nodes;
+    }
+
+    bool hasCrossContentEditableSelection() const {
+        return contentEditableSelectionAnchor != nullptr &&
+               contentEditableSelectionFocus != nullptr &&
+               contentEditableSelectionAnchor !=
+                   contentEditableSelectionFocus;
+    }
+
+    std::optional<OrderedContentEditableSelection>
+    orderedContentEditableSelection() const {
+        if (!hasCrossContentEditableSelection()) {
+            return std::nullopt;
+        }
+        Node* host = contentEditableEditingHost(
+            contentEditableSelectionAnchor);
+        if (!host || contentEditableEditingHost(
+                         contentEditableSelectionFocus) != host) {
+            return std::nullopt;
+        }
+
+        OrderedContentEditableSelection selection;
+        selection.nodes = contentEditableTextNodes(*host);
+        const auto anchor = std::find(
+            selection.nodes.begin(),
+            selection.nodes.end(),
+            contentEditableSelectionAnchor);
+        const auto focus = std::find(
+            selection.nodes.begin(),
+            selection.nodes.end(),
+            contentEditableSelectionFocus);
+        if (anchor == selection.nodes.end() ||
+            focus == selection.nodes.end()) {
+            return std::nullopt;
+        }
+
+        const size_t anchorIndex = static_cast<size_t>(
+            std::distance(selection.nodes.begin(), anchor));
+        const size_t focusIndex = static_cast<size_t>(
+            std::distance(selection.nodes.begin(), focus));
+        if (anchorIndex < focusIndex) {
+            selection.startNodeIndex = anchorIndex;
+            selection.endNodeIndex = focusIndex;
+            selection.startOffset = contentEditableSelectionAnchorOffset;
+            selection.endOffset = contentEditableSelectionFocusOffset;
+        } else {
+            selection.startNodeIndex = focusIndex;
+            selection.endNodeIndex = anchorIndex;
+            selection.startOffset = contentEditableSelectionFocusOffset;
+            selection.endOffset = contentEditableSelectionAnchorOffset;
+        }
+        selection.startOffset = clampUtf8Index(
+            selection.nodes[selection.startNodeIndex]->value,
+            selection.startOffset);
+        selection.endOffset = clampUtf8Index(
+            selection.nodes[selection.endNodeIndex]->value,
+            selection.endOffset);
+        return selection;
+    }
+
+    bool clearCrossContentEditableSelection() {
+        if (!hasCrossContentEditableSelection()) {
+            contentEditableSelectionAnchor = nullptr;
+            contentEditableSelectionFocus = nullptr;
+            contentEditableSelectionAnchorOffset = 0;
+            contentEditableSelectionFocusOffset = 0;
             return false;
+        }
+
+        bool changed = false;
+        Node* host = contentEditableEditingHost(
+            contentEditableSelectionAnchor);
+        if (host) {
+            for (Node* node : contentEditableTextNodes(*host)) {
+                changed = clearInputSelection(*node) || changed;
+            }
+        }
+        contentEditableSelectionAnchor = nullptr;
+        contentEditableSelectionFocus = nullptr;
+        contentEditableSelectionAnchorOffset = 0;
+        contentEditableSelectionFocusOffset = 0;
+        return changed;
+    }
+
+    bool setFocusedNode(Node* next) {
+        const bool selectionChanged =
+            clearCrossContentEditableSelection();
+        if (focusedNode == next) {
+            return selectionChanged;
         }
         if (focusedNode) {
             if (!focusedNode->compositionText.empty()) {
@@ -2466,6 +2612,193 @@ public:
             clampInputCursor(*focusedNode);
             clearInputSelection(*focusedNode);
         }
+        return true;
+    }
+
+    bool setContentEditableSelection(Node& anchorNode,
+                                     size_t anchorOffset,
+                                     Node& focusNode,
+                                     size_t focusOffset) {
+        Node* host = contentEditableEditingHost(&anchorNode);
+        if (!host || contentEditableEditingHost(&focusNode) != host) {
+            return false;
+        }
+        anchorOffset = clampUtf8Index(anchorNode.value, anchorOffset);
+        focusOffset = clampUtf8Index(focusNode.value, focusOffset);
+        if (&anchorNode == &focusNode) {
+            bool changed = clearCrossContentEditableSelection();
+            changed = setFocusedNode(&focusNode) || changed;
+            return setInputSelection(
+                       focusNode, anchorOffset, focusOffset) ||
+                   changed;
+        }
+
+        std::vector<Node*> nodes = contentEditableTextNodes(*host);
+        const auto anchor = std::find(
+            nodes.begin(), nodes.end(), &anchorNode);
+        const auto focus = std::find(
+            nodes.begin(), nodes.end(), &focusNode);
+        if (anchor == nodes.end() || focus == nodes.end()) {
+            return false;
+        }
+
+        bool changed = clearCrossContentEditableSelection();
+        changed = setFocusedNode(&focusNode) || changed;
+        for (Node* node : nodes) {
+            changed = clearInputSelection(*node) || changed;
+        }
+
+        contentEditableSelectionAnchor = &anchorNode;
+        contentEditableSelectionAnchorOffset = anchorOffset;
+        contentEditableSelectionFocus = &focusNode;
+        contentEditableSelectionFocusOffset = focusOffset;
+
+        const size_t anchorIndex = static_cast<size_t>(
+            std::distance(nodes.begin(), anchor));
+        const size_t focusIndex = static_cast<size_t>(
+            std::distance(nodes.begin(), focus));
+        const size_t startIndex = std::min(anchorIndex, focusIndex);
+        const size_t endIndex = std::max(anchorIndex, focusIndex);
+        const size_t startOffset = anchorIndex < focusIndex
+            ? anchorOffset
+            : focusOffset;
+        const size_t endOffset = anchorIndex < focusIndex
+            ? focusOffset
+            : anchorOffset;
+        for (size_t index = startIndex; index <= endIndex; ++index) {
+            Node& node = *nodes[index];
+            node.selectionStart = index == startIndex
+                ? startOffset
+                : 0;
+            node.selectionEnd = index == endIndex
+                ? endOffset
+                : node.value.size();
+            node.selectionAnchor = node.selectionStart;
+            node.cursorIndex = node.selectionEnd;
+            changed = true;
+        }
+        anchorNode.selectionAnchor = anchorOffset;
+        focusNode.cursorIndex = focusOffset;
+        return changed;
+    }
+
+    bool setEditingSelection(Node& anchorNode,
+                             size_t anchorOffset,
+                             Node& focusNode,
+                             size_t focusOffset) {
+        if (&anchorNode == &focusNode &&
+            !contentEditableEditingHost(&anchorNode)) {
+            bool changed = setFocusedNode(&focusNode);
+            return setInputSelection(
+                       focusNode, anchorOffset, focusOffset) ||
+                   changed;
+        }
+        return setContentEditableSelection(
+            anchorNode, anchorOffset, focusNode, focusOffset);
+    }
+
+    std::string selectedContentEditableText() const {
+        const std::optional<OrderedContentEditableSelection> selection =
+            orderedContentEditableSelection();
+        if (!selection.has_value()) {
+            return {};
+        }
+
+        std::string text;
+        for (size_t index = selection->startNodeIndex;
+             index <= selection->endNodeIndex;
+             ++index) {
+            const Node& node = *selection->nodes[index];
+            if (index > selection->startNodeIndex &&
+                node.contentEditableFlowPosition ==
+                    ContentEditableFlowPosition::ParagraphStart) {
+                text += '\n';
+            }
+            const size_t start = index == selection->startNodeIndex
+                ? selection->startOffset
+                : 0;
+            const size_t end = index == selection->endNodeIndex
+                ? selection->endOffset
+                : node.value.size();
+            if (start < end) {
+                text.append(node.value, start, end - start);
+            }
+        }
+        return text;
+    }
+
+    bool selectAllContentEditable(Node& node) {
+        Node* host = contentEditableEditingHost(&node);
+        if (!host) {
+            return false;
+        }
+        std::vector<Node*> nodes = contentEditableTextNodes(*host);
+        if (nodes.empty()) {
+            return false;
+        }
+        return setContentEditableSelection(
+            *nodes.front(), 0, *nodes.back(), nodes.back()->value.size());
+    }
+
+    bool collapseCrossContentEditableSelection(bool toEnd) {
+        const std::optional<OrderedContentEditableSelection> selection =
+            orderedContentEditableSelection();
+        if (!selection.has_value()) {
+            return false;
+        }
+        Node* target = selection->nodes[
+            toEnd ? selection->endNodeIndex : selection->startNodeIndex];
+        const size_t offset = toEnd
+            ? selection->endOffset
+            : selection->startOffset;
+        bool changed = clearCrossContentEditableSelection();
+        changed = setFocusedNode(target) || changed;
+        return setInputCursor(*target, offset) || changed;
+    }
+
+    bool eraseCrossContentEditableSelection() {
+        const std::optional<OrderedContentEditableSelection> selection =
+            orderedContentEditableSelection();
+        if (!selection.has_value()) {
+            return false;
+        }
+        Node* startNode =
+            selection->nodes[selection->startNodeIndex];
+        Node* endNode = selection->nodes[selection->endNodeIndex];
+        if (!startNode->parent || startNode->parent != endNode->parent) {
+            return false;
+        }
+        Node* parent = startNode->parent;
+        const std::optional<size_t> startChildIndex =
+            childIndex(*parent, *startNode);
+        const std::optional<size_t> endChildIndex =
+            childIndex(*parent, *endNode);
+        if (!startChildIndex || !endChildIndex ||
+            *startChildIndex >= *endChildIndex) {
+            return false;
+        }
+
+        const std::string suffix =
+            endNode->value.substr(selection->endOffset);
+        clearCrossContentEditableSelection();
+        setFocusedNode(startNode);
+        pushInputUndo(*startNode);
+        startNode->value.resize(selection->startOffset);
+        startNode->value += suffix;
+        markTextChanged(*startNode);
+
+        size_t remainingEndIndex = *endChildIndex;
+        while (remainingEndIndex > *startChildIndex) {
+            Node& removed =
+                *parent->children[*startChildIndex + 1];
+            clearReferencesTo(removed);
+            parent->children.erase(
+                parent->children.begin() +
+                static_cast<ptrdiff_t>(*startChildIndex + 1));
+            --remainingEndIndex;
+        }
+        setInputCursor(*startNode, selection->startOffset);
+        finishDocumentMutation();
         return true;
     }
 
@@ -2536,7 +2869,7 @@ public:
         return entry.lines;
     }
 
-    Node* editingTargetAtPoint(Node* hit, float y) {
+    Node* editingTargetAtPoint(Node* hit, float x, float y) {
         if (Node* target = inputTarget(hit)) {
             return target;
         }
@@ -2545,20 +2878,32 @@ public:
         }
 
         Node* closest = nullptr;
-        float closestDistance = std::numeric_limits<float>::max();
+        float closestVerticalDistance =
+            std::numeric_limits<float>::max();
+        float closestHorizontalDistance =
+            std::numeric_limits<float>::max();
         const auto visit = [&](const auto& self, Node& node) -> void {
             if (&node != hit && !isContentEditable(node)) {
                 return;
             }
             if (isContentEditableTextNode(node)) {
+                const float left = visualX(node);
                 const float top = visualY(node);
+                const float right = left + node.layout.w;
                 const float bottom = top + node.layout.h;
-                const float distance = y < top
+                const float horizontalDistance = x < left
+                    ? left - x
+                    : (x > right ? x - right : 0.0f);
+                const float verticalDistance = y < top
                     ? top - y
                     : (y > bottom ? y - bottom : 0.0f);
-                if (distance < closestDistance) {
+                if (verticalDistance < closestVerticalDistance - 0.5f ||
+                    (std::abs(verticalDistance -
+                              closestVerticalDistance) <= 0.5f &&
+                     horizontalDistance < closestHorizontalDistance)) {
                     closest = &node;
-                    closestDistance = distance;
+                    closestVerticalDistance = verticalDistance;
+                    closestHorizontalDistance = horizontalDistance;
                 }
                 return;
             }
@@ -2582,9 +2927,16 @@ public:
         return candidate;
     }
 
-    std::unique_ptr<Node> makeTrailingTextNode(const Node& source,
-                                               Node& host,
-                                               std::string value) {
+    enum class ContentEditableSplitMode {
+        NewParagraph,
+        InlineInsertion
+    };
+
+    std::unique_ptr<Node> makeTrailingTextNode(
+        const Node& source,
+        Node& host,
+        std::string value,
+        ContentEditableFlowPosition flowPosition) {
         auto trailing = std::make_unique<Node>();
         trailing->tag = source.tag;
         trailing->id = nextContentEditableNodeId(host);
@@ -2595,12 +2947,14 @@ public:
         trailing->presentationStyle = source.presentationStyle;
         trailing->value = std::move(value);
         trailing->parent = source.parent;
+        trailing->contentEditableFlowPosition = flowPosition;
         syncContentEditablePlaceholder(*trailing);
         return trailing;
     }
 
     bool splitContentEditableTextNode(
         Node& node,
+        ContentEditableSplitMode splitMode,
         std::vector<std::unique_ptr<Node>> insertedNodes = {}) {
         Node* host = contentEditableEditingHost(&node);
         if (!host || !node.parent || host == &node) {
@@ -2621,13 +2975,22 @@ public:
         setInputCursor(node, node.value.size());
         markTextChanged(node);
 
-        std::unique_ptr<Node> trailing =
-            makeTrailingTextNode(node, *host, std::move(trailingValue));
+        const ContentEditableFlowPosition trailingFlowPosition =
+            splitMode == ContentEditableSplitMode::InlineInsertion
+            ? ContentEditableFlowPosition::InlineContinuation
+            : ContentEditableFlowPosition::ParagraphStart;
+        std::unique_ptr<Node> trailing = makeTrailingTextNode(
+            node,
+            *host,
+            std::move(trailingValue),
+            trailingFlowPosition);
         Node* trailingPointer = trailing.get();
         auto position = parent->children.begin() +
                         static_cast<ptrdiff_t>(*index + 1);
         for (auto& inserted : insertedNodes) {
             rebindParents(*inserted, parent);
+            inserted->contentEditableFlowPosition =
+                ContentEditableFlowPosition::InlineContinuation;
             prepareContentEditableTree(*inserted);
             position = parent->children.insert(position, std::move(inserted));
             ++position;
@@ -2637,6 +3000,56 @@ public:
         setFocusedNode(trailingPointer);
         setInputCursor(*trailingPointer, 0);
         finishDocumentMutation();
+        return true;
+    }
+
+    bool normalizeInlineContentEditableRemoval(Node& parent,
+                                                size_t removalIndex) {
+        if (!usesInlineContentEditableFlow(parent) ||
+            removalIndex == 0 ||
+            removalIndex >= parent.children.size()) {
+            if (usesInlineContentEditableFlow(parent) &&
+                removalIndex == 0 && !parent.children.empty() &&
+                isContentEditableTextNode(*parent.children.front())) {
+                parent.children.front()->contentEditableFlowPosition =
+                    ContentEditableFlowPosition::ParagraphStart;
+            }
+            return false;
+        }
+
+        Node* previous = parent.children[removalIndex - 1].get();
+        Node* next = parent.children[removalIndex].get();
+        if (!isContentEditableTextNode(*previous) ||
+            !isContentEditableTextNode(*next) ||
+            next->contentEditableFlowPosition !=
+                ContentEditableFlowPosition::InlineContinuation ||
+            contentEditableEditingHost(previous) !=
+                contentEditableEditingHost(next)) {
+            return false;
+        }
+
+        pushInputUndo(*previous);
+        const size_t joinOffset = previous->value.size();
+        previous->value += next->value;
+        markTextChanged(*previous);
+        if (focusedNode == next) {
+            previous->editingFocused = true;
+            next->editingFocused = false;
+            focusedNode = previous;
+            previous->cursorIndex = joinOffset + next->cursorIndex;
+            previous->selectionAnchor =
+                joinOffset + next->selectionAnchor;
+            previous->selectionStart = joinOffset + next->selectionStart;
+            previous->selectionEnd = joinOffset + next->selectionEnd;
+            clampInputCursor(*previous);
+        }
+        if (selectingInput == next) {
+            selectingInput = previous;
+        }
+        clearReferencesTo(*next);
+        parent.children.erase(
+            parent.children.begin() +
+            static_cast<ptrdiff_t>(removalIndex));
         return true;
     }
 
@@ -2656,6 +3069,8 @@ public:
             clearReferencesTo(*previous);
             parent->children.erase(
                 parent->children.begin() + static_cast<ptrdiff_t>(*index - 1));
+            (void)normalizeInlineContentEditableRemoval(
+                *parent, *index - 1);
             finishDocumentMutation();
             return true;
         }
@@ -2693,6 +3108,8 @@ public:
             clearReferencesTo(*next);
             parent->children.erase(
                 parent->children.begin() + static_cast<ptrdiff_t>(*index + 1));
+            (void)normalizeInlineContentEditableRemoval(
+                *parent, *index + 1);
             finishDocumentMutation();
             return true;
         }
@@ -2741,6 +3158,77 @@ public:
         return false;
     }
 
+    bool moveVertically(Node& node, bool forward) {
+        const size_t cursor = clampUtf8Index(node.value, node.cursorIndex);
+        const size_t lineStart = currentLineStart(node.value, cursor);
+        const size_t lineEnd = currentLineEnd(node.value, cursor);
+        const size_t column =
+            utf8ColumnAtIndex(node.value, lineStart, cursor);
+        if (!forward && lineStart > 0) {
+            const size_t previousLineEnd = lineStart - 1;
+            const size_t previousLineStart =
+                currentLineStart(node.value, previousLineEnd);
+            return setInputCursor(
+                node,
+                utf8IndexAtColumn(node.value,
+                                  previousLineStart,
+                                  previousLineEnd,
+                                  column));
+        }
+        if (forward && lineEnd < node.value.size()) {
+            const size_t nextLineStart = lineEnd + 1;
+            const size_t nextLineEnd =
+                currentLineEnd(node.value, nextLineStart);
+            return setInputCursor(
+                node,
+                utf8IndexAtColumn(node.value,
+                                  nextLineStart,
+                                  nextLineEnd,
+                                  column));
+        }
+
+        Node* host = contentEditableEditingHost(&node);
+        if (!host || !node.parent) {
+            return false;
+        }
+        const float currentY =
+            visualY(node) + node.resolvedPadding.top;
+        Node* target = nullptr;
+        float targetDistance = std::numeric_limits<float>::max();
+        for (const std::unique_ptr<Node>& child : node.parent->children) {
+            Node* candidate = child.get();
+            if (candidate == &node ||
+                !isContentEditableTextNode(*candidate) ||
+                contentEditableEditingHost(candidate) != host) {
+                continue;
+            }
+            const float candidateY =
+                visualY(*candidate) + candidate->resolvedPadding.top;
+            const float delta = candidateY - currentY;
+            if ((!forward && delta >= -0.5f) ||
+                (forward && delta <= 0.5f)) {
+                continue;
+            }
+            const float distance = std::abs(delta);
+            if (distance < targetDistance) {
+                target = candidate;
+                targetDistance = distance;
+            }
+        }
+        if (!target) {
+            return false;
+        }
+        bool changed = setFocusedNode(target);
+        changed = setInputCursor(
+                      *target,
+                      utf8IndexAtColumn(target->value,
+                                        0,
+                                        target->value.size(),
+                                        column)) ||
+                  changed;
+        return changed;
+    }
+
     bool loadFragment(std::string_view html,
                       std::vector<std::unique_ptr<Node>>& nodes,
                       std::vector<StyleRule>& rules) {
@@ -2771,6 +3259,10 @@ public:
         clearAnimationsForNode(activeAnimations, const_cast<Node*>(&subtree));
         clearKeyframeAnimationsForNode(keyframeAnimations,
                                        const_cast<Node*>(&subtree));
+        if (containsNode(subtree, contentEditableSelectionAnchor) ||
+            containsNode(subtree, contentEditableSelectionFocus)) {
+            clearCrossContentEditableSelection();
+        }
         if (containsNode(subtree, focusedNode)) {
             setFocusedNode(nullptr);
         }
@@ -2785,6 +3277,7 @@ public:
         }
         if (containsNode(subtree, selectingInput)) {
             selectingInput = nullptr;
+            selectingInputAnchorOffset = 0;
         }
         if (containsNode(subtree, selectingText)) {
             selectingText = nullptr;
@@ -2807,6 +3300,10 @@ public:
     }
 
     void clearInteractionForDisabledSubtree(const Node& subtree) {
+        if (containsNode(subtree, contentEditableSelectionAnchor) ||
+            containsNode(subtree, contentEditableSelectionFocus)) {
+            clearCrossContentEditableSelection();
+        }
         if (containsNode(subtree, focusedNode)) {
             setFocusedNode(nullptr);
         }
@@ -2821,6 +3318,7 @@ public:
         }
         if (containsNode(subtree, selectingInput)) {
             selectingInput = nullptr;
+            selectingInputAnchorOffset = 0;
         }
         if (containsNode(subtree, selectingText)) {
             selectingText = nullptr;
@@ -2875,8 +3373,13 @@ public:
     Node* pressedLeaf = nullptr;
     Node* focusedNode = nullptr;
     Node* selectingInput = nullptr;
+    size_t selectingInputAnchorOffset = 0;
     Node* selectingText = nullptr;
     Node* selectedText = nullptr;
+    Node* contentEditableSelectionAnchor = nullptr;
+    size_t contentEditableSelectionAnchorOffset = 0;
+    Node* contentEditableSelectionFocus = nullptr;
+    size_t contentEditableSelectionFocusOffset = 0;
     Node* scrollingNode = nullptr;
     ScrollbarAxis scrollingAxis = ScrollbarAxis::None;
     float scrollbarDragOffset = 0.0f;
@@ -2925,8 +3428,13 @@ bool Runtime::loadDocument(const std::string& path) {
     impl_->pressedLeaf = nullptr;
     impl_->focusedNode = nullptr;
     impl_->selectingInput = nullptr;
+    impl_->selectingInputAnchorOffset = 0;
     impl_->selectingText = nullptr;
     impl_->selectedText = nullptr;
+    impl_->contentEditableSelectionAnchor = nullptr;
+    impl_->contentEditableSelectionAnchorOffset = 0;
+    impl_->contentEditableSelectionFocus = nullptr;
+    impl_->contentEditableSelectionFocusOffset = 0;
     impl_->scrollingNode = nullptr;
     impl_->scrollingAxis = ScrollbarAxis::None;
     impl_->scrollbarDragOffset = 0.0f;
@@ -2962,8 +3470,13 @@ bool Runtime::loadDocumentFromString(std::string_view html, std::string_view bas
     impl_->pressedLeaf = nullptr;
     impl_->focusedNode = nullptr;
     impl_->selectingInput = nullptr;
+    impl_->selectingInputAnchorOffset = 0;
     impl_->selectingText = nullptr;
     impl_->selectedText = nullptr;
+    impl_->contentEditableSelectionAnchor = nullptr;
+    impl_->contentEditableSelectionAnchorOffset = 0;
+    impl_->contentEditableSelectionFocus = nullptr;
+    impl_->contentEditableSelectionFocusOffset = 0;
     impl_->scrollingNode = nullptr;
     impl_->scrollingAxis = ScrollbarAxis::None;
     impl_->scrollbarDragOffset = 0.0f;
@@ -3057,11 +3570,19 @@ bool Runtime::handleEvent(const Event& event) {
             scrolledNode = scrollChanged ? impl_->scrollingNode : scrolledNode;
             consumed = true;
         } else if (impl_->selectingInput && impl_->mousePressed) {
-            const size_t index = impl_->editableIndexAtPoint(*impl_->selectingInput, x, y);
-            stateChanged = setInputSelection(*impl_->selectingInput,
-                                             impl_->selectingInput->selectionAnchor,
-                                             index) || stateChanged;
-            consumed = true;
+            Node* focus = impl_->editingTargetAtPoint(hit, x, y);
+            if (focus &&
+                contentEditableEditingHost(focus) ==
+                    contentEditableEditingHost(impl_->selectingInput)) {
+                const size_t index =
+                    impl_->editableIndexAtPoint(*focus, x, y);
+                stateChanged = impl_->setEditingSelection(
+                    *impl_->selectingInput,
+                    impl_->selectingInputAnchorOffset,
+                    *focus,
+                    index) || stateChanged;
+                consumed = true;
+            }
         } else if (impl_->selectingText && impl_->mousePressed) {
             const size_t index = impl_->selectableIndexAtPoint(*impl_->selectingText, x, y);
             stateChanged = setSelectableSelection(*impl_->selectingText,
@@ -3107,20 +3628,37 @@ bool Runtime::handleEvent(const Event& event) {
                                                       impl_->scrollbarDragOffset) || scrollChanged;
             scrolledNode = scrollChanged ? impl_->scrollingNode : scrolledNode;
             consumed = true;
-        } else if (Node* input = impl_->editingTargetAtPoint(hit, y)) {
+        } else if (Node* input = impl_->editingTargetAtPoint(hit, x, y)) {
             const bool wasFocused = impl_->focusedNode == input;
-            const size_t selectionAnchor = wasFocused
-                ? (hasInputSelection(*input) ? input->selectionAnchor : input->cursorIndex)
-                : input->value.size();
-            stateChanged = impl_->setFocusedNode(input) || stateChanged;
-            layoutNeeded = true;
             const size_t index = impl_->editableIndexAtPoint(*input, x, y);
-            if (event.shiftKey) {
-                stateChanged = setInputSelection(*input, selectionAnchor, index) || stateChanged;
+            Node* anchorNode = input;
+            size_t anchorOffset = index;
+            if (event.shiftKey && impl_->hasCrossContentEditableSelection()) {
+                anchorNode = impl_->contentEditableSelectionAnchor;
+                anchorOffset = impl_->contentEditableSelectionAnchorOffset;
+            } else if (event.shiftKey && wasFocused) {
+                anchorOffset = hasInputSelection(*input)
+                    ? input->selectionAnchor
+                    : input->cursorIndex;
+            } else if (event.shiftKey && impl_->focusedNode &&
+                       contentEditableEditingHost(impl_->focusedNode) ==
+                           contentEditableEditingHost(input)) {
+                anchorNode = impl_->focusedNode;
+                anchorOffset = hasInputSelection(*anchorNode)
+                    ? anchorNode->selectionAnchor
+                    : anchorNode->cursorIndex;
             } else {
-                stateChanged = setInputCursor(*input, index) || stateChanged;
+                anchorNode = input;
+                anchorOffset = index;
             }
-            impl_->selectingInput = input;
+            stateChanged = impl_->setEditingSelection(
+                *anchorNode,
+                anchorOffset,
+                *input,
+                index) || stateChanged;
+            layoutNeeded = true;
+            impl_->selectingInput = anchorNode;
+            impl_->selectingInputAnchorOffset = anchorOffset;
             impl_->selectingText = nullptr;
             if (impl_->selectedText) {
                 stateChanged = clearSelectableSelection(*impl_->selectedText) || stateChanged;
@@ -3161,10 +3699,10 @@ bool Runtime::handleEvent(const Event& event) {
             stateChanged = impl_->setFocusedNode(nullptr) || stateChanged;
             layoutNeeded = layoutNeeded || stateChanged;
         }
+        consumed = consumed || isPointerConsumingTarget(hit);
         if (Node* target = mouseEventTarget(hit); target && impl_->options.onElementEvent) {
             impl_->options.onElementEvent(makeElementEvent(ElementEventType::MouseDown, *target, event, x, y));
         }
-        consumed = consumed || isPointerConsumingTarget(hit);
         stateChanged = true;
         layoutNeeded = true;
         break;
@@ -3176,7 +3714,7 @@ bool Runtime::handleEvent(const Event& event) {
         impl_->pressedButton = event.button;
         impl_->pressedLeaf = hit;
         impl_->hoveredLeaf = hit;
-        if (Node* input = impl_->editingTargetAtPoint(hit, y)) {
+        if (Node* input = impl_->editingTargetAtPoint(hit, x, y)) {
             stateChanged = impl_->setFocusedNode(input) || stateChanged;
             layoutNeeded = true;
             const size_t index = impl_->editableIndexAtPoint(*input, x, y);
@@ -3209,6 +3747,7 @@ bool Runtime::handleEvent(const Event& event) {
         } else {
             consumed = isPointerConsumingTarget(hit);
         }
+        consumed = consumed || isPointerConsumingTarget(hit);
         if (Node* target = mouseEventTarget(hit); target && impl_->options.onElementEvent) {
             impl_->options.onElementEvent(makeElementEvent(ElementEventType::MouseDown, *target, event, x, y));
         }
@@ -3223,12 +3762,23 @@ bool Runtime::handleEvent(const Event& event) {
         Node* pressedAction = actionTarget(pressed);
         Node* releasedAction = actionTarget(hit);
         const bool click = pressedAction && pressedAction == releasedAction && event.button == impl_->pressedButton;
+        const bool pressedConsumesPointer = isPointerConsumingTarget(pressed);
+        const bool hitConsumesPointer = isPointerConsumingTarget(hit);
         if (impl_->selectingInput) {
-            const size_t index = impl_->editableIndexAtPoint(*impl_->selectingInput, x, y);
-            stateChanged = setInputSelection(*impl_->selectingInput,
-                                             impl_->selectingInput->selectionAnchor,
-                                             index) || stateChanged;
+            Node* focus = impl_->editingTargetAtPoint(hit, x, y);
+            if (focus &&
+                contentEditableEditingHost(focus) ==
+                    contentEditableEditingHost(impl_->selectingInput)) {
+                const size_t index =
+                    impl_->editableIndexAtPoint(*focus, x, y);
+                stateChanged = impl_->setEditingSelection(
+                    *impl_->selectingInput,
+                    impl_->selectingInputAnchorOffset,
+                    *focus,
+                    index) || stateChanged;
+            }
             impl_->selectingInput = nullptr;
+            impl_->selectingInputAnchorOffset = 0;
         }
         if (impl_->selectingText) {
             const size_t index = impl_->selectableIndexAtPoint(*impl_->selectingText, x, y);
@@ -3237,22 +3787,24 @@ bool Runtime::handleEvent(const Event& event) {
                                                   index) || stateChanged;
             impl_->selectingText = nullptr;
         }
-        if (Node* target = releasedAction ? releasedAction : pressedAction; target && impl_->options.onElementEvent) {
-            impl_->options.onElementEvent(makeElementEvent(ElementEventType::MouseUp, *target, event, x, y));
+        std::optional<ElementEvent> mouseUpEvent;
+        std::optional<ElementEvent> clickEvent;
+        std::optional<ElementEvent> selectableLinkEvent;
+        if (Node* target = releasedAction ? releasedAction : pressedAction;
+            target && impl_->options.onElementEvent) {
+            mouseUpEvent = makeElementEvent(
+                ElementEventType::MouseUp, *target, event, x, y);
         } else if (event.button == MouseButton::Right && impl_->options.onElementEvent) {
             Node* selectable = selectableTextTarget(pressed);
             if (selectable && selectable == selectableTextTarget(hit)) {
-                impl_->options.onElementEvent(
-                    makeElementEvent(ElementEventType::MouseUp,
-                                     *selectable,
-                                     event,
-                                     x,
-                                     y));
+                mouseUpEvent = makeElementEvent(
+                    ElementEventType::MouseUp, *selectable, event, x, y);
             }
         }
         if (click) {
             if (impl_->options.onElementEvent) {
-                impl_->options.onElementEvent(makeElementEvent(ElementEventType::Click, *pressedAction, event, x, y));
+                clickEvent = makeElementEvent(
+                    ElementEventType::Click, *pressedAction, event, x, y);
             }
         } else if (event.button == MouseButton::Left) {
             Node* selectable = selectableTextTarget(pressed);
@@ -3264,16 +3816,30 @@ bool Runtime::handleEvent(const Event& event) {
                 const size_t index = impl_->selectableIndexAtPoint(*selectable, x, y);
                 if (!selectedText) {
                     if (const Node::TextLink* link = selectableLinkAtIndex(*selectable, index)) {
-                        impl_->options.onElementEvent(makeSelectableLinkEvent(*selectable, *link, event, x, y));
+                        selectableLinkEvent = makeSelectableLinkEvent(
+                            *selectable, *link, event, x, y);
                     }
                 }
             } else {
-                consumed = isPointerConsumingTarget(pressed) || isPointerConsumingTarget(hit);
+                consumed = pressedConsumesPointer || hitConsumesPointer;
             }
         }
-        consumed = consumed ||
-                   isPointerConsumingTarget(hit) ||
-                   isPointerConsumingTarget(pressed);
+        if (mouseUpEvent) {
+            impl_->options.onElementEvent(*mouseUpEvent);
+        }
+        if (clickEvent) {
+            impl_->options.onElementEvent(*clickEvent);
+        } else if (selectableLinkEvent) {
+            impl_->options.onElementEvent(*selectableLinkEvent);
+        }
+        consumed = consumed || hitConsumesPointer || pressedConsumesPointer;
+        if (!containsNode(*impl_->document.root, hit)) {
+            hit = nullptr;
+        }
+        if (scrollbarHit &&
+            !containsNode(*impl_->document.root, scrollbarHit->node)) {
+            scrollbarHit.reset();
+        }
         impl_->mousePressed = false;
         impl_->pressedButton = MouseButton::None;
         impl_->pressedLeaf = nullptr;
@@ -3326,7 +3892,9 @@ bool Runtime::handleEvent(const Event& event) {
         constexpr unsigned kEnd = 0x23;
         constexpr unsigned kHome = 0x24;
         constexpr unsigned kLeft = 0x25;
+        constexpr unsigned kUp = 0x26;
         constexpr unsigned kRight = 0x27;
+        constexpr unsigned kDown = 0x28;
         constexpr unsigned kDelete = 0x2E;
 
         if (impl_->options.onElementKeyDown) {
@@ -3342,26 +3910,60 @@ bool Runtime::handleEvent(const Event& event) {
         if (event.ctrlKey) {
             switch (event.key) {
             case 'A':
-                stateChanged = selectAllInput(*input) || stateChanged;
+                if (contentEditableEditingHost(input)) {
+                    stateChanged =
+                        impl_->selectAllContentEditable(*input) ||
+                        stateChanged;
+                } else {
+                    stateChanged =
+                        selectAllInput(*input) || stateChanged;
+                }
                 consumed = true;
                 break;
             case 'C':
-                if (impl_->options.writeClipboardText && hasInputSelection(*input)) {
-                    impl_->options.writeClipboardText(selectedInputText(*input));
+                if (impl_->hasCrossContentEditableSelection()) {
+                    if (impl_->options.writeClipboardText) {
+                        impl_->options.writeClipboardText(
+                            impl_->selectedContentEditableText());
+                    }
+                    consumed = true;
+                } else {
+                    if (impl_->options.writeClipboardText &&
+                        hasInputSelection(*input)) {
+                        impl_->options.writeClipboardText(
+                            selectedInputText(*input));
+                    }
+                    consumed = hasInputSelection(*input);
                 }
-                consumed = hasInputSelection(*input);
                 break;
             case 'X':
-                if (impl_->options.writeClipboardText && hasInputSelection(*input)) {
-                    impl_->options.writeClipboardText(selectedInputText(*input));
+                if (impl_->hasCrossContentEditableSelection()) {
+                    if (impl_->options.writeClipboardText) {
+                        impl_->options.writeClipboardText(
+                            impl_->selectedContentEditableText());
+                    }
+                    textChanged =
+                        impl_->eraseCrossContentEditableSelection();
+                } else {
+                    if (impl_->options.writeClipboardText &&
+                        hasInputSelection(*input)) {
+                        impl_->options.writeClipboardText(
+                            selectedInputText(*input));
+                    }
+                    textChanged = eraseInputSelection(*input);
                 }
-                textChanged = eraseInputSelection(*input);
                 consumed = true;
                 break;
             case 'V':
                 if (impl_->options.readClipboardText) {
+                    if (impl_->hasCrossContentEditableSelection()) {
+                        textChanged =
+                            impl_->eraseCrossContentEditableSelection();
+                        input = impl_->focusedNode;
+                    }
                     const std::string text = editableText(*input, impl_->options.readClipboardText());
-                    textChanged = insertInputText(*input, text);
+                    textChanged = insertInputText(*input, text) ||
+                                  textChanged;
                 }
                 consumed = true;
                 break;
@@ -3379,32 +3981,62 @@ bool Runtime::handleEvent(const Event& event) {
 
         switch (event.key) {
         case kBackspace:
-            textChanged = erasePreviousInputChar(*input);
+            if (impl_->hasCrossContentEditableSelection()) {
+                textChanged =
+                    impl_->eraseCrossContentEditableSelection();
+                input = impl_->focusedNode;
+            } else {
+                textChanged = erasePreviousInputChar(*input);
+            }
             if (!textChanged && contentEditableEditingHost(input)) {
                 textChanged = impl_->erasePreviousContentEditableUnit(*input);
             }
             consumed = true;
             break;
         case kEnter:
+            if (impl_->hasCrossContentEditableSelection()) {
+                textChanged =
+                    impl_->eraseCrossContentEditableSelection();
+                input = impl_->focusedNode;
+            }
             if (isTextareaNode(input)) {
-                textChanged = insertInputText(*input, "\n");
+                textChanged = insertInputText(*input, "\n") ||
+                              textChanged;
                 consumed = true;
                 break;
             }
             if (contentEditableEditingHost(input)) {
-                textChanged = impl_->splitContentEditableTextNode(*input);
+                textChanged =
+                    impl_->splitContentEditableTextNode(
+                        *input,
+                        Impl::ContentEditableSplitMode::NewParagraph) ||
+                    textChanged;
                 consumed = true;
                 break;
             }
             return false;
         case kDelete:
-            textChanged = eraseNextInputChar(*input);
+            if (impl_->hasCrossContentEditableSelection()) {
+                textChanged =
+                    impl_->eraseCrossContentEditableSelection();
+                input = impl_->focusedNode;
+            } else {
+                textChanged = eraseNextInputChar(*input);
+            }
             if (!textChanged && contentEditableEditingHost(input)) {
                 textChanged = impl_->eraseNextContentEditableUnit(*input);
             }
             consumed = true;
             break;
         case kLeft: {
+            if (!event.shiftKey &&
+                impl_->hasCrossContentEditableSelection()) {
+                stateChanged =
+                    impl_->collapseCrossContentEditableSelection(false) ||
+                    stateChanged;
+                consumed = true;
+                break;
+            }
             const size_t previous = event.shiftKey
                 ? previousUtf8Index(input->value, input->cursorIndex)
                 : (hasInputSelection(*input) ? input->selectionStart : previousUtf8Index(input->value, input->cursorIndex));
@@ -3424,6 +4056,14 @@ bool Runtime::handleEvent(const Event& event) {
             break;
         }
         case kRight: {
+            if (!event.shiftKey &&
+                impl_->hasCrossContentEditableSelection()) {
+                stateChanged =
+                    impl_->collapseCrossContentEditableSelection(true) ||
+                    stateChanged;
+                consumed = true;
+                break;
+            }
             const size_t next = event.shiftKey
                 ? nextUtf8Index(input->value, input->cursorIndex)
                 : (hasInputSelection(*input) ? input->selectionEnd : nextUtf8Index(input->value, input->cursorIndex));
@@ -3442,6 +4082,33 @@ bool Runtime::handleEvent(const Event& event) {
             consumed = true;
             break;
         }
+        case kUp:
+        case kDown:
+            if (event.shiftKey) {
+                return false;
+            }
+            if (impl_->hasCrossContentEditableSelection()) {
+                stateChanged =
+                    impl_->collapseCrossContentEditableSelection(
+                        event.key == kDown) ||
+                    stateChanged;
+            } else if (hasInputSelection(*input)) {
+                stateChanged = setInputCursor(
+                                   *input,
+                                   event.key == kUp
+                                       ? input->selectionStart
+                                       : input->selectionEnd) ||
+                               stateChanged;
+            } else if (isTextareaNode(input) ||
+                       contentEditableEditingHost(input)) {
+                stateChanged = impl_->moveVertically(
+                                   *input, event.key == kDown) ||
+                               stateChanged;
+            } else {
+                return false;
+            }
+            consumed = true;
+            break;
         case kHome:
             if (const size_t target = isTextareaNode(input) ? currentLineStart(input->value, input->cursorIndex) : 0;
                 input->cursorIndex != target || hasInputSelection(*input)) {
@@ -3480,7 +4147,14 @@ bool Runtime::handleEvent(const Event& event) {
         if (!isEditableNode(impl_->focusedNode) || event.text.empty()) {
             return false;
         }
-        textChanged = insertInputText(*impl_->focusedNode, editableText(*impl_->focusedNode, event.text));
+        if (impl_->hasCrossContentEditableSelection()) {
+            textChanged =
+                impl_->eraseCrossContentEditableSelection();
+        }
+        textChanged = insertInputText(
+                          *impl_->focusedNode,
+                          editableText(*impl_->focusedNode, event.text)) ||
+                      textChanged;
         layoutNeeded = textChanged;
         consumed = true;
         break;
@@ -3980,6 +4654,7 @@ bool Runtime::removeElementById(std::string_view id) {
 
     impl_->clearReferencesTo(*node);
     parent->children.erase(parent->children.begin() + static_cast<ptrdiff_t>(*index));
+    (void)impl_->normalizeInlineContentEditableRemoval(*parent, *index);
     impl_->lastError.clear();
     impl_->finishDocumentMutation();
     return true;
@@ -4068,10 +4743,26 @@ bool Runtime::insertHtmlAtSelection(std::string_view editingHostId,
         return false;
     }
 
+    std::vector<std::unique_ptr<Node>> nodes;
+    std::vector<StyleRule> rules;
+    if (!impl_->loadFragment(html, nodes, rules) || nodes.empty()) {
+        return false;
+    }
+    if (impl_->hasCrossContentEditableSelection()) {
+        if (contentEditableEditingHost(
+                impl_->contentEditableSelectionAnchor) != host ||
+            !impl_->eraseCrossContentEditableSelection()) {
+            impl_->lastError =
+                "failed to replace the current cross-container selection";
+            return false;
+        }
+    }
+
     Node* target = impl_->focusedNode;
     if (!target || contentEditableEditingHost(target) != host) {
         target = impl_->editingTargetAtPoint(
             host,
+            Impl::visualX(*host) + host->layout.w,
             Impl::visualY(*host) + host->layout.h);
     }
     if (!target || target == host || !target->parent) {
@@ -4080,13 +4771,11 @@ bool Runtime::insertHtmlAtSelection(std::string_view editingHostId,
         return false;
     }
 
-    std::vector<std::unique_ptr<Node>> nodes;
-    std::vector<StyleRule> rules;
-    if (!impl_->loadFragment(html, nodes, rules) || nodes.empty()) {
-        return false;
-    }
     impl_->appendStyleRules(std::move(rules));
-    if (!impl_->splitContentEditableTextNode(*target, std::move(nodes))) {
+    if (!impl_->splitContentEditableTextNode(
+            *target,
+            Impl::ContentEditableSplitMode::InlineInsertion,
+            std::move(nodes))) {
         impl_->lastError = "failed to insert HTML at the current selection";
         return false;
     }
@@ -4115,20 +4804,28 @@ bool Runtime::setSelectionBaseAndExtent(std::string_view anchorNodeId,
                                         std::string_view focusNodeId,
                                         size_t focusOffset) {
     if (!impl_->hasDocument || !impl_->document.root ||
-        anchorNodeId.empty() || anchorNodeId != focusNodeId) {
+        anchorNodeId.empty() || focusNodeId.empty()) {
         return false;
     }
-    Node* node = findById(*impl_->document.root, anchorNodeId);
-    if (!isEditableNode(node)) {
+    Node* anchorNode = findById(*impl_->document.root, anchorNodeId);
+    Node* focusNode = findById(*impl_->document.root, focusNodeId);
+    if (!isEditableNode(anchorNode) || !isEditableNode(focusNode)) {
         return false;
     }
-    const bool focusChanged = impl_->setFocusedNode(node);
-    const bool selectionChanged =
-        setInputSelection(*node, anchorOffset, focusOffset);
-    if (focusChanged || selectionChanged) {
+    const bool selectionChanged = impl_->setEditingSelection(
+        *anchorNode,
+        anchorOffset,
+        *focusNode,
+        focusOffset);
+    if (selectionChanged) {
         impl_->requestLayout();
     }
-    return true;
+    return selectionChanged ||
+           (anchorNode == focusNode &&
+            anchorNode->selectionAnchor ==
+                clampUtf8Index(anchorNode->value, anchorOffset) &&
+            anchorNode->cursorIndex ==
+                clampUtf8Index(anchorNode->value, focusOffset));
 }
 
 bool Runtime::setVisibleById(std::string_view id, bool visible) {
@@ -4258,6 +4955,30 @@ std::vector<std::string> Runtime::childElementIdsById(
 
 Selection Runtime::selection() const {
     Selection result;
+    const std::optional<Impl::OrderedContentEditableSelection>
+        orderedSelection = impl_->orderedContentEditableSelection();
+    if (orderedSelection.has_value()) {
+        result.anchorNodeId =
+            impl_->contentEditableSelectionAnchor->id;
+        result.anchorOffset =
+            impl_->contentEditableSelectionAnchorOffset;
+        result.focusNodeId =
+            impl_->contentEditableSelectionFocus->id;
+        result.focusOffset =
+            impl_->contentEditableSelectionFocusOffset;
+        result.rangeCount = 1;
+        Range range;
+        range.startContainerId = orderedSelection->nodes[
+            orderedSelection->startNodeIndex]->id;
+        range.startOffset = orderedSelection->startOffset;
+        range.endContainerId = orderedSelection->nodes[
+            orderedSelection->endNodeIndex]->id;
+        range.endOffset = orderedSelection->endOffset;
+        range.collapsed = false;
+        result.range = std::move(range);
+        return result;
+    }
+
     const Node* node = impl_->focusedNode;
     if (!isEditableNode(node)) {
         return result;

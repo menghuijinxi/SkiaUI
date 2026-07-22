@@ -983,6 +983,50 @@ int main() {
                     "event callback class mutations should remain applied") && ok;
     }
 
+    constexpr std::string_view eventRemovalHtml = R"html(
+<!doctype html>
+<html>
+<body>
+  <div id="removal-root" style="width:140px;height:90px;background-color:#000000">
+    <button id="remove-target" data-action="remove-target" style="width:80px;height:40px;background-color:#335577"></button>
+  </div>
+</body>
+</html>
+)html";
+    {
+        skui::Runtime eventRemovalRuntime(options);
+        eventRemovalRuntime.resize(kWidth, kHeight, 1.0f);
+        ok = expect(
+                 eventRemovalRuntime.loadDocumentFromString(eventRemovalHtml),
+                 "event removal document should load") &&
+             ok;
+        eventRemovalRuntime.setElementEventCallback(
+            [&](const skui::ElementEvent& event) {
+                if (event.type != skui::ElementEventType::Click ||
+                    event.action != "remove-target") {
+                    return;
+                }
+                (void)eventRemovalRuntime.removeElementById("remove-target");
+                (void)eventRemovalRuntime.appendHtmlById(
+                    "removal-root",
+                    R"html(<button id="replacement-target" style="width:80px;height:40px;background-color:#557799"></button>)html");
+            });
+        sendMouse(eventRemovalRuntime,
+                  skui::EventType::MouseDown,
+                  20.0f,
+                  20.0f);
+        sendMouse(eventRemovalRuntime,
+                  skui::EventType::MouseUp,
+                  20.0f,
+                  20.0f);
+        ok = expect(
+                 !eventRemovalRuntime.hasClassById("remove-target", "active") &&
+                     eventRemovalRuntime.childElementIdsById("removal-root") ==
+                         std::vector<std::string>{"replacement-target"},
+                 "click callbacks should safely remove their event target") &&
+             ok;
+    }
+
     constexpr std::string_view buttonActionHtml = R"html(
 <!doctype html>
 <html>
@@ -6618,12 +6662,12 @@ int main() {
       background-color: #334455;
     }
     .editor p {
-      width: 120px;
+      width: auto;
       min-height: 20px;
       margin: 0;
     }
     .file-node {
-      width: 120px;
+      width: 40px;
       height: 24px;
       background-color: #225544;
     }
@@ -6631,7 +6675,7 @@ int main() {
 </head>
 <body>
   <div class="root">
-    <div id="editor" class="editor" contenteditable="true">
+    <div id="editor" class="editor" contenteditable="true" contenteditable-flow="inline">
       <p id="paragraph-a">hello</p>
     </div>
     <div id="plaintext-host" contenteditable="plaintext-only" style="display:none">
@@ -6644,7 +6688,13 @@ int main() {
 
     std::string contentEditableEventId;
     std::string contentEditableEventValue;
-    skui::Runtime contentEditableRuntime(options);
+    std::string contentEditableClipboard;
+    skui::RuntimeOptions contentEditableOptions = options;
+    contentEditableOptions.writeClipboardText =
+        [&](std::string_view text) {
+            contentEditableClipboard = std::string(text);
+        };
+    skui::Runtime contentEditableRuntime(contentEditableOptions);
     contentEditableRuntime.resize(kWidth, kHeight, 1.0f);
     contentEditableRuntime.setElementEventCallback(
         [&](const skui::ElementEvent& event) {
@@ -6709,6 +6759,28 @@ int main() {
                         std::optional<std::string>("lo!"),
                 "inserting a block at a text selection should split the paragraph") &&
          ok;
+    uint32_t inlineAttachmentPixel = 0;
+    ok = renderPixel(
+             contentEditableRuntime, 50, 4, inlineAttachmentPixel) &&
+         expect(inlineAttachmentPixel == solidColor(0x22, 0x55, 0x44),
+                "inline contenteditable flow should keep text and atomic "
+                "nodes on the same line") &&
+         ok;
+    sendMouse(
+        contentEditableRuntime, skui::EventType::MouseDown, 112.0f, 4.0f);
+    sendMouse(
+        contentEditableRuntime, skui::EventType::MouseUp, 112.0f, 4.0f);
+    contentEditableSelection = contentEditableRuntime.selection();
+    ok = expect(contentEditableSelection.focusNodeId ==
+                    contentEditableChildren[2] &&
+                    contentEditableSelection.focusOffset == 3,
+                "clicking inline flow whitespace should choose the nearest "
+                "text fragment") &&
+         ok;
+    ok = expect(contentEditableRuntime.collapseSelection(
+                    contentEditableChildren[2], 0),
+                "contenteditable should restore the caret after inline hit testing") &&
+         ok;
     ok = expect(!contentEditableRuntime.collapseSelection("file-a", 0),
                 "contenteditable=false nodes should not accept a text selection") &&
          ok;
@@ -6717,22 +6789,24 @@ int main() {
                 "HTML insertion should reject a non-host target") &&
          ok;
 
-    sendKey(contentEditableRuntime, 0x08);
+    ok = expect(contentEditableRuntime.removeElementById("file-a"),
+                "removing an inline attachment should update the document") &&
+         ok;
     contentEditableChildren =
         contentEditableRuntime.childElementIdsById("editor");
-    ok = expect(contentEditableChildren.size() == 2 &&
-                    std::find(contentEditableChildren.begin(),
-                              contentEditableChildren.end(),
-                              "file-a") == contentEditableChildren.end(),
-                "Backspace beside contenteditable=false should delete the atomic node") &&
-         ok;
-    ok = expect(contentEditableEventId == "editor",
-                "deleting an atomic node should emit input on the editing host") &&
+    contentEditableSelection = contentEditableRuntime.selection();
+    ok = expect(contentEditableChildren.size() == 1 &&
+                    contentEditableChildren.front() == "paragraph-a" &&
+                    contentEditableRuntime.textContentById("paragraph-a") ==
+                        std::optional<std::string>("hello!") &&
+                    contentEditableSelection.focusNodeId == "paragraph-a" &&
+                    contentEditableSelection.focusOffset == 3,
+                "removing an inline attachment should merge its split text fragments") &&
          ok;
 
     const std::string secondParagraphId =
         contentEditableRuntime.selection().focusNodeId;
-    ok = expect(contentEditableRuntime.collapseSelection(secondParagraphId, 2),
+    ok = expect(contentEditableRuntime.collapseSelection(secondParagraphId, 5),
                 "contenteditable should place the caret inside the split paragraph") &&
          ok;
     sendKey(contentEditableRuntime, 0x0D);
@@ -6740,9 +6814,9 @@ int main() {
         contentEditableRuntime.childElementIdsById("editor");
     const std::string thirdParagraphId =
         contentEditableRuntime.selection().focusNodeId;
-    ok = expect(contentEditableChildren.size() == 3 &&
+    ok = expect(contentEditableChildren.size() == 2 &&
                     contentEditableRuntime.textContentById(secondParagraphId) ==
-                        std::optional<std::string>("lo") &&
+                        std::optional<std::string>("hello") &&
                     contentEditableRuntime.textContentById(thirdParagraphId) ==
                         std::optional<std::string>("!"),
                 "Enter in contenteditable should create an adjacent ordinary paragraph") &&
@@ -6756,9 +6830,129 @@ int main() {
                     std::optional<std::string>("done!"),
                 "contenteditable paragraphs should share the existing IME input pipeline") &&
          ok;
-    ok = expect(!contentEditableRuntime.setSelectionBaseAndExtent(
-                    "paragraph-a", 0, thirdParagraphId, 1),
-                "cross-container selection should fail until the runtime can represent it") &&
+    ok = expect(contentEditableRuntime.appendHtmlById(
+                    "editor",
+                    R"html(<p id="vertical-a">abcdef</p><p id="vertical-b">xy</p>)html"),
+                "contenteditable should append paragraphs for vertical navigation") &&
+         ok;
+    ok = expect(contentEditableRuntime.collapseSelection("vertical-b", 2),
+                "contenteditable should place the caret before vertical navigation") &&
+         ok;
+    sendKey(contentEditableRuntime, 0x26);
+    contentEditableSelection = contentEditableRuntime.selection();
+    ok = expect(contentEditableSelection.focusNodeId == "vertical-a" &&
+                    contentEditableSelection.focusOffset == 2,
+                "Up should move the contenteditable caret to the previous visual line") &&
+         ok;
+    sendKey(contentEditableRuntime, 0x28);
+    contentEditableSelection = contentEditableRuntime.selection();
+    ok = expect(contentEditableSelection.focusNodeId == "vertical-b" &&
+                    contentEditableSelection.focusOffset == 2,
+                "Down should move the contenteditable caret to the next visual line") &&
+         ok;
+    uint32_t crossSelectionAnchorBefore = 0;
+    uint32_t crossSelectionFocusBefore = 0;
+    ok = renderPixel(contentEditableRuntime,
+                     10,
+                     45,
+                     crossSelectionAnchorBefore) &&
+         ok;
+    ok = renderPixel(contentEditableRuntime,
+                     5,
+                     65,
+                     crossSelectionFocusBefore) &&
+         ok;
+    sendMouse(contentEditableRuntime,
+              skui::EventType::MouseDown,
+              2.0f,
+              45.0f);
+    sendMouse(contentEditableRuntime,
+              skui::EventType::MouseMove,
+              110.0f,
+              65.0f);
+    sendMouse(contentEditableRuntime,
+              skui::EventType::MouseUp,
+              110.0f,
+              65.0f);
+    contentEditableSelection = contentEditableRuntime.selection();
+    ok = expect(contentEditableSelection.anchorNodeId == "vertical-a" &&
+                    contentEditableSelection.anchorOffset == 0 &&
+                    contentEditableSelection.focusNodeId == "vertical-b" &&
+                    contentEditableSelection.focusOffset == 2,
+                "mouse dragging should select across contenteditable paragraphs") &&
+         ok;
+    uint32_t crossSelectionAnchorAfter = 0;
+    uint32_t crossSelectionFocusAfter = 0;
+    ok = renderPixel(contentEditableRuntime,
+                     10,
+                     45,
+                     crossSelectionAnchorAfter) &&
+         ok;
+    ok = renderPixel(contentEditableRuntime,
+                     5,
+                     65,
+                     crossSelectionFocusAfter) &&
+         ok;
+    ok = expect(crossSelectionAnchorAfter != crossSelectionAnchorBefore &&
+                    crossSelectionFocusAfter != crossSelectionFocusBefore,
+                "cross-node selection should highlight every selected paragraph") &&
+         ok;
+    contentEditableClipboard.clear();
+    sendKey(contentEditableRuntime, 'C', false, true);
+    ok = expect(contentEditableClipboard == "abcdef\nxy",
+                "Ctrl+C should preserve paragraph boundaries in a cross-node selection") &&
+         ok;
+
+    ok = expect(contentEditableRuntime.setSelectionBaseAndExtent(
+                    "paragraph-a", 1, thirdParagraphId, 2),
+                "contenteditable should expose a cross-container selection") &&
+         ok;
+    contentEditableSelection = contentEditableRuntime.selection();
+    ok = expect(contentEditableSelection.anchorNodeId == "paragraph-a" &&
+                    contentEditableSelection.anchorOffset == 1 &&
+                    contentEditableSelection.focusNodeId == thirdParagraphId &&
+                    contentEditableSelection.focusOffset == 2 &&
+                    contentEditableSelection.range &&
+                    contentEditableSelection.range->startContainerId ==
+                        "paragraph-a" &&
+                    contentEditableSelection.range->startOffset == 1 &&
+                    contentEditableSelection.range->endContainerId ==
+                        thirdParagraphId &&
+                    contentEditableSelection.range->endOffset == 2,
+                "cross-container Selection should retain both endpoints") &&
+         ok;
+    sendText(contentEditableRuntime, "X");
+    contentEditableChildren =
+        contentEditableRuntime.childElementIdsById("editor");
+    ok = expect(contentEditableRuntime.textContentById("paragraph-a") ==
+                    std::optional<std::string>("hXne!") &&
+                    std::find(contentEditableChildren.begin(),
+                              contentEditableChildren.end(),
+                              thirdParagraphId) ==
+                        contentEditableChildren.end(),
+                "text input should replace a cross-container selection") &&
+         ok;
+    ok = expect(contentEditableRuntime.setSelectionBaseAndExtent(
+                    "paragraph-a", 1, "vertical-a", 2),
+                "contenteditable should select text before inserting HTML") &&
+         ok;
+    ok = expect(contentEditableRuntime.insertHtmlAtSelection(
+                    "editor",
+                    R"html(<div id="file-cross" contenteditable="false">cross.zip</div>)html"),
+                "HTML insertion should replace a cross-container selection") &&
+         ok;
+    contentEditableChildren =
+        contentEditableRuntime.childElementIdsById("editor");
+    contentEditableSelection = contentEditableRuntime.selection();
+    ok = expect(contentEditableChildren.size() == 4 &&
+                    contentEditableChildren[0] == "paragraph-a" &&
+                    contentEditableChildren[1] == "file-cross" &&
+                    contentEditableRuntime.textContentById("paragraph-a") ==
+                        std::optional<std::string>("h") &&
+                    contentEditableRuntime.textContentById(
+                        contentEditableSelection.focusNodeId) ==
+                        std::optional<std::string>("cdef"),
+                "cross-container HTML insertion should preserve only the unselected text") &&
          ok;
 
     ok = expect(contentEditableRuntime.collapseSelection(

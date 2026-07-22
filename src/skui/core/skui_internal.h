@@ -508,6 +508,11 @@ struct KeyframesDefinition {
     std::vector<Keyframe> frames;
 };
 
+enum class ContentEditableFlowPosition {
+    ParagraphStart,
+    InlineContinuation
+};
+
 struct Node {
     struct InputSnapshot {
         std::string value;
@@ -570,6 +575,8 @@ struct Node {
     bool active = false;
     bool focused = false;
     bool editingFocused = false;
+    ContentEditableFlowPosition contentEditableFlowPosition =
+        ContentEditableFlowPosition::ParagraphStart;
     size_t cursorIndex = 0;
     size_t selectionAnchor = 0;
     size_t selectionStart = 0;
@@ -901,6 +908,7 @@ enum class ContentEditableState {
 ContentEditableState contentEditableState(const Node& node);
 bool isContentEditable(const Node& node);
 bool isContentEditableEditingHost(const Node& node);
+bool usesInlineContentEditableFlow(const Node& node);
 bool isContentEditableTextNode(const Node& node);
 bool isTextEditingNode(const Node& node);
 Node* contentEditableEditingHost(Node* node);

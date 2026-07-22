@@ -2062,7 +2062,11 @@ bool SkiaRenderer::drawSvgDom(SkCanvas& canvas, const std::string& svg, const Re
 }
 
 void SkiaRenderer::drawInputSelection(SkCanvas& canvas, const Node& node) {
-    if (!isEditableNode(node) || !node.editingFocused || node.selectionStart == node.selectionEnd || node.value.empty()) {
+    const Node* editingHost = contentEditableEditingHost(&node);
+    const bool selectionVisible = node.editingFocused ||
+                                  (editingHost && editingHost->focused);
+    if (!isEditableNode(node) || !selectionVisible ||
+        node.selectionStart == node.selectionEnd || node.value.empty()) {
         return;
     }
 
