@@ -15,6 +15,7 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <unordered_set>
 
 namespace skui {
 namespace {
@@ -597,6 +598,180 @@ void parseSelectableContent(lxb_dom_element_t* element, Node& node) {
     }
     if (!node.text.empty()) {
         ++node.textRevision;
+    }
+}
+
+bool isClipboardBlockTag(std::string_view tag) {
+    return tag == "address" || tag == "article" || tag == "aside" ||
+           tag == "blockquote" || tag == "div" || tag == "footer" ||
+           tag == "h1" || tag == "h2" || tag == "h3" || tag == "h4" ||
+           tag == "h5" || tag == "h6" || tag == "header" || tag == "li" ||
+           tag == "main" || tag == "nav" || tag == "ol" || tag == "p" ||
+           tag == "section" || tag == "table" || tag == "tr" || tag == "ul";
+}
+
+void appendClipboardText(std::vector<ClipboardItem>& items,
+                         std::string_view text) {
+    std::string normalized;
+    normalized.reserve(text.size());
+    bool pendingSpace = false;
+    for (const char character : text) {
+        if (std::isspace(static_cast<unsigned char>(character)) != 0) {
+            pendingSpace = !normalized.empty() || !items.empty();
+            continue;
+        }
+        if (pendingSpace) {
+            normalized.push_back(' ');
+            pendingSpace = false;
+        }
+        normalized.push_back(character);
+    }
+    if (pendingSpace) {
+        normalized.push_back(' ');
+    }
+    if (normalized.empty()) {
+        return;
+    }
+    if (!items.empty() && items.back().type == ClipboardItemType::Text) {
+        items.back().text += normalized;
+        return;
+    }
+    items.push_back({ClipboardItemType::Text, std::move(normalized), {}});
+}
+
+void appendClipboardLineBreak(std::vector<ClipboardItem>& items) {
+    while (!items.empty() && items.back().type == ClipboardItemType::Text) {
+        std::string& text = items.back().text;
+        while (!text.empty() && text.back() == ' ') {
+            text.pop_back();
+        }
+        if (!text.empty()) {
+            break;
+        }
+        items.pop_back();
+    }
+    if (items.empty()) {
+        return;
+    }
+    if (items.back().type != ClipboardItemType::Text) {
+        items.push_back({ClipboardItemType::Text, "\n", {}});
+        return;
+    }
+    if (!items.back().text.ends_with('\n')) {
+        items.back().text.push_back('\n');
+    }
+}
+
+void appendDomText(lxb_dom_node_t* node, std::string& output) {
+    if (!node) {
+        return;
+    }
+    if (node->type == LXB_DOM_NODE_TYPE_TEXT) {
+        auto* data = lxb_dom_interface_character_data(node);
+        if (data && data->data.data && data->data.length > 0) {
+            output.append(
+                reinterpret_cast<const char*>(data->data.data),
+                data->data.length);
+        }
+        return;
+    }
+    for (lxb_dom_node_t* child = node->first_child;
+         child;
+         child = child->next) {
+        appendDomText(child, output);
+    }
+}
+
+void collectClipboardItems(lxb_dom_node_t* domNode,
+                           std::vector<ClipboardItem>& items) {
+    if (!domNode) {
+        return;
+    }
+    if (domNode->type == LXB_DOM_NODE_TYPE_TEXT) {
+        auto* data = lxb_dom_interface_character_data(domNode);
+        if (data && data->data.data && data->data.length > 0) {
+            appendClipboardText(
+                items,
+                std::string_view(
+                    reinterpret_cast<const char*>(data->data.data),
+                    data->data.length));
+        }
+        return;
+    }
+    if (domNode->type != LXB_DOM_NODE_TYPE_ELEMENT) {
+        return;
+    }
+
+    auto* element = lxb_dom_interface_element(domNode);
+    const std::string tag = nodeName(element);
+    if (tag == "br") {
+        appendClipboardLineBreak(items);
+        return;
+    }
+    if (tag == "img") {
+        const std::string source = attr(element, "src");
+        if (!source.empty()) {
+            items.push_back({
+                ClipboardItemType::Image,
+                attr(element, "alt"),
+                source,
+            });
+        }
+        return;
+    }
+    if (tag == "a") {
+        const std::string source = attr(element, "href");
+        const std::string downloadName = attr(element, "download");
+        if (!source.empty() &&
+            (!downloadName.empty() || source.starts_with("file:"))) {
+            std::string label;
+            appendDomText(domNode, label);
+            label = trim(label);
+            items.push_back({
+                ClipboardItemType::File,
+                downloadName.empty() ? std::move(label) : downloadName,
+                source,
+            });
+            return;
+        }
+    }
+
+    const bool block = isClipboardBlockTag(tag);
+    if (block) {
+        appendClipboardLineBreak(items);
+    }
+    for (lxb_dom_node_t* child = domNode->first_child;
+         child;
+         child = child->next) {
+        collectClipboardItems(child, items);
+    }
+    if (block) {
+        appendClipboardLineBreak(items);
+    }
+}
+
+void trimClipboardBoundaryLineBreaks(std::vector<ClipboardItem>& items) {
+    while (!items.empty() && items.front().type == ClipboardItemType::Text) {
+        std::string& text = items.front().text;
+        while (!text.empty() &&
+               (text.front() == '\n' || text.front() == ' ')) {
+            text.erase(text.begin());
+        }
+        if (!text.empty()) {
+            break;
+        }
+        items.erase(items.begin());
+    }
+    while (!items.empty() && items.back().type == ClipboardItemType::Text) {
+        std::string& text = items.back().text;
+        while (!text.empty() &&
+               (text.back() == '\n' || text.back() == ' ')) {
+            text.pop_back();
+        }
+        if (!text.empty()) {
+            break;
+        }
+        items.pop_back();
     }
 }
 
@@ -2582,6 +2757,71 @@ void collectStyleSheets(lxb_dom_node_t* root,
     }
 }
 
+bool collectDocumentType(lxb_dom_node_t* root,
+                         std::optional<DocumentType>& declaredType,
+                         std::string& error) {
+    if (!root) {
+        return true;
+    }
+    if (root->type == LXB_DOM_NODE_TYPE_ELEMENT) {
+        lxb_dom_element_t* element = lxb_dom_interface_element(root);
+        if (nodeName(element) == "meta" &&
+            lower(trim(attr(element, "name"))) == "skui-document-type") {
+            const std::string value = lower(trim(attr(element, "content")));
+            std::optional<DocumentType> currentType;
+            if (value == "page") {
+                currentType = DocumentType::Page;
+            } else if (value == "layout") {
+                currentType = DocumentType::Layout;
+            } else {
+                error = "invalid skui-document-type: " + value;
+                return false;
+            }
+            if (declaredType && *declaredType != *currentType) {
+                error = "conflicting skui-document-type declarations";
+                return false;
+            }
+            declaredType = currentType;
+        }
+    }
+    for (lxb_dom_node_t* child = root->first_child; child; child = child->next) {
+        if (!collectDocumentType(child, declaredType, error)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool validateDocumentNode(const Node& node,
+                          DocumentType documentType,
+                          std::unordered_set<std::string>& pageIds,
+                          std::string& error) {
+    if (node.tag == "skui-page") {
+        if (documentType != DocumentType::Layout) {
+            error = "<skui-page> is only valid in layout documents";
+            return false;
+        }
+        if (node.id.empty()) {
+            error = "<skui-page> requires a non-empty id attribute";
+            return false;
+        }
+        if (node.src.empty()) {
+            error = "<skui-page id=\"" + node.id + "\"> requires a src attribute";
+            return false;
+        }
+        if (!pageIds.insert(node.id).second) {
+            error = "duplicate <skui-page> id: " + node.id;
+            return false;
+        }
+    }
+    for (const auto& child : node.children) {
+        if (!validateDocumentNode(*child, documentType, pageIds, error)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 void applyDeclaration(Style& style, std::string_view rawName, std::string_view rawValue) {
     const std::string name = lower(trim(rawName));
     const std::string value = trim(rawValue);
@@ -3664,7 +3904,12 @@ bool DocumentParser::loadString(std::string_view html,
 
     std::vector<StyleRule> rules;
     std::unordered_map<std::string, KeyframesDefinition> keyframes;
+    std::optional<DocumentType> declaredType;
     if (lxb_html_head_element_t* head = lxb_html_document_head_element(htmlDocument.get())) {
+        if (!collectDocumentType(
+                lxb_dom_interface_node(head), declaredType, error)) {
+            return false;
+        }
         collectStyleSheets(lxb_dom_interface_node(head), basePath, rules, keyframes, error);
         if (!error.empty()) {
             return false;
@@ -3687,10 +3932,17 @@ bool DocumentParser::loadString(std::string_view html,
         return false;
     }
 
+    const DocumentType documentType = declaredType.value_or(DocumentType::Page);
+    std::unordered_set<std::string> pageIds;
+    if (!validateDocumentNode(*root, documentType, pageIds, error)) {
+        return false;
+    }
+
     outDocument.root = std::move(root);
     outDocument.rules = std::move(rules);
     outDocument.keyframes = std::move(keyframes);
     outDocument.basePath = std::string(basePath);
+    outDocument.type = documentType;
     RuntimeOptions styleOptions;
     styleOptions.theme = theme_;
     recomputeStyles(outDocument, styleOptions);
@@ -3726,6 +3978,42 @@ bool DocumentParser::loadFragment(std::string_view html,
     for (auto& node : outNodes) {
         rebindParents(*node, nullptr);
     }
+    return true;
+}
+
+bool DocumentParser::parseClipboardHtml(
+    std::string_view html,
+    std::vector<ClipboardItem>& outItems,
+    std::string& error) {
+    HtmlDocumentPtr htmlDocument(lxb_html_document_create());
+    if (!htmlDocument) {
+        error = "Lexbor 创建剪贴板文档失败";
+        return false;
+    }
+    if (lxb_html_document_parse(
+            htmlDocument.get(),
+            reinterpret_cast<const lxb_char_t*>(html.data()),
+            html.size()) != LXB_STATUS_OK) {
+        error = "Lexbor 解析剪贴板 HTML 失败";
+        return false;
+    }
+
+    lxb_html_body_element_t* body =
+        lxb_html_document_body_element(htmlDocument.get());
+    if (!body) {
+        error = "剪贴板 HTML 没有 body";
+        return false;
+    }
+
+    outItems.clear();
+    for (lxb_dom_node_t* child =
+             lxb_dom_interface_node(body)->first_child;
+         child;
+         child = child->next) {
+        collectClipboardItems(child, outItems);
+    }
+    trimClipboardBoundaryLineBreaks(outItems);
+    error.clear();
     return true;
 }
 

@@ -87,10 +87,32 @@ struct ElementEvent {
     bool ctrlKey = false;
 };
 
+enum class ClipboardItemType {
+    Text,
+    Image,
+    File
+};
+
+struct ClipboardItem {
+    ClipboardItemType type = ClipboardItemType::Text;
+    std::string text;
+    std::string source;
+};
+
+struct ClipboardContent {
+    std::string text;
+    std::string html;
+    std::vector<std::string> filePaths;
+    std::vector<ClipboardItem> items;
+};
+
 using ElementEventCallback = std::function<void(const ElementEvent&)>;
 using ElementKeyDownCallback = std::function<bool(const ElementEvent&)>;
 using ClipboardReadCallback = std::function<std::string()>;
 using ClipboardWriteCallback = std::function<void(std::string_view)>;
+using ClipboardContentReadCallback = std::function<ClipboardContent()>;
+using ClipboardContentWriteCallback =
+    std::function<void(const ClipboardContent&)>;
 using RequestRedrawCallback = std::function<void()>;
 
 struct StyleUpdate {
@@ -183,6 +205,8 @@ struct RuntimeOptions {
     ElementKeyDownCallback onElementKeyDown;
     ClipboardReadCallback readClipboardText;
     ClipboardWriteCallback writeClipboardText;
+    ClipboardContentReadCallback readClipboardContent;
+    ClipboardContentWriteCallback writeClipboardContent;
     RequestRedrawCallback requestRedraw;
 };
 
@@ -204,6 +228,41 @@ struct RuntimeRenderRegion {
     bool drawBackground = true;
 };
 
+enum class DocumentType {
+    Page,
+    Layout
+};
+
+struct LayoutRect {
+    float x = 0.0f;
+    float y = 0.0f;
+    float width = 0.0f;
+    float height = 0.0f;
+};
+
+struct LayoutTransform {
+    float m11 = 1.0f;
+    float m12 = 0.0f;
+    float m21 = 0.0f;
+    float m22 = 1.0f;
+    float translationX = 0.0f;
+    float translationY = 0.0f;
+};
+
+struct LayoutPageSnapshot {
+    std::string id;
+    std::string source;
+    std::string resolvedSource;
+    LayoutRect rect;
+    LayoutTransform transform;
+    std::optional<LayoutRect> clipRect;
+    float opacity = 1.0f;
+    int zIndex = 0;
+    size_t paintOrder = 0;
+    bool visible = true;
+    bool hitTestable = true;
+};
+
 class RendererBackend {
 public:
     virtual ~RendererBackend() = default;
@@ -219,7 +278,11 @@ public:
     Runtime& operator=(const Runtime&) = delete;
 
     bool loadDocument(const std::string& path);
+    bool loadDocument(const std::string& path, DocumentType expectedType);
     bool loadDocumentFromString(std::string_view html, std::string_view basePath = {});
+    bool loadDocumentFromString(std::string_view html,
+                                DocumentType expectedType,
+                                std::string_view basePath = {});
     void resize(int width, int height, float dpiScale);
     void beginUpdate();
     void endUpdate();
@@ -272,6 +335,7 @@ public:
     [[nodiscard]] std::optional<std::string> textContentById(std::string_view id) const;
     [[nodiscard]] std::vector<std::string> childElementIdsById(std::string_view id) const;
     [[nodiscard]] Selection selection() const;
+    [[nodiscard]] ClipboardContent readClipboardContent();
     [[nodiscard]] bool hasClassById(std::string_view id, std::string_view className) const;
     void setElementEventCallback(ElementEventCallback callback);
     void setElementKeyDownCallback(ElementKeyDownCallback callback);
@@ -286,6 +350,8 @@ public:
     [[nodiscard]] std::string memoryReport() const;
     [[nodiscard]] Cursor cursor() const;
     [[nodiscard]] bool dirty() const;
+    [[nodiscard]] std::optional<DocumentType> documentType() const;
+    [[nodiscard]] std::vector<LayoutPageSnapshot> layoutPageSnapshots() const;
     [[nodiscard]] std::string lastError() const;
     void clearDirty();
 

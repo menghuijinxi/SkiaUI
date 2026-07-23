@@ -1042,6 +1042,9 @@ void SkiaRenderer::drawNode(SkCanvas& canvas, const Document& document, const No
     if (clipsChildren) {
         canvas.restore();
     }
+    if (drawsSelf) {
+        drawAtomicSelection(canvas, node);
+    }
     const auto scrollbarStart = traceRender_ ? perf::Trace::now() : perf::Trace::Clock::time_point{};
     drawScrollbars(canvas, node);
     if (traceRender_) {
@@ -2148,7 +2151,9 @@ void SkiaRenderer::drawInputSelection(SkCanvas& canvas, const Node& node) {
 }
 
 void SkiaRenderer::drawSelectableSelection(SkCanvas& canvas, const Node& node) {
-    if (node.tag != "selectable" || node.selectionStart == node.selectionEnd) {
+    if (node.tag != "selectable" ||
+        isEditableNode(node) ||
+        node.selectionStart == node.selectionEnd) {
         return;
     }
 
@@ -2215,6 +2220,24 @@ void SkiaRenderer::drawSelectableSelection(SkCanvas& canvas, const Node& node) {
     }
     if (clipsOverflow) {
         canvas.restore();
+    }
+}
+
+void SkiaRenderer::drawAtomicSelection(SkCanvas& canvas, const Node& node) {
+    if (!node.atomicSelectionSelected ||
+        node.layout.w <= 0.0f ||
+        node.layout.h <= 0.0f) {
+        return;
+    }
+
+    const SkPaint selectionPaint =
+        fill(SkColorSetARGB(96, 36, 232, 219));
+    if (node.style.borderRadius.any()) {
+        canvas.drawRRect(
+            makeRRect(node.layout, node.style.borderRadius),
+            selectionPaint);
+    } else {
+        canvas.drawRect(node.layout.sk(), selectionPaint);
     }
 }
 

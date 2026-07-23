@@ -577,6 +577,7 @@ struct Node {
     bool active = false;
     bool focused = false;
     bool editingFocused = false;
+    bool atomicSelectionSelected = false;
     ContentEditableFlowPosition contentEditableFlowPosition =
         ContentEditableFlowPosition::ParagraphStart;
     size_t cursorIndex = 0;
@@ -636,6 +637,7 @@ struct Document {
     std::vector<StyleRule> rules;
     std::unordered_map<std::string, KeyframesDefinition> keyframes;
     std::string basePath;
+    DocumentType type = DocumentType::Page;
 };
 
 class YogaNode {
@@ -663,6 +665,9 @@ public:
                       std::vector<std::unique_ptr<Node>>& outNodes,
                       std::vector<StyleRule>& outRules,
                       std::string& error);
+    bool parseClipboardHtml(std::string_view html,
+                            std::vector<ClipboardItem>& outItems,
+                            std::string& error);
 
 private:
     Theme theme_;
@@ -840,6 +845,7 @@ private:
     void drawSvgMarkup(SkCanvas& canvas, const std::string& svg, const Rect& rect, SkColor currentColor);
     bool drawSvgDom(SkCanvas& canvas, const std::string& svg, const Rect& rect, SkColor currentColor);
     void drawInputSelection(SkCanvas& canvas, const Node& node);
+    void drawAtomicSelection(SkCanvas& canvas, const Node& node);
     void drawText(SkCanvas& canvas, const Node& node);
     void drawStyledTextBlob(SkCanvas& canvas,
                             const Node& node,

@@ -207,6 +207,9 @@ if(SKIAUI_BUILD_TESTS)
     add_executable(SkuiMediaRuntimeTests
         tests/skui_media_runtime_tests.cpp
     )
+    add_executable(SkuiLayoutDocumentTests
+        tests/skui_layout_document_tests.cpp
+    )
     if(SKIAUI_ENABLE_FFMPEG_VIDEO)
         add_executable(SkuiFfmpegPlayerTests
             tests/skui_ffmpeg_player_tests.cpp
@@ -269,6 +272,7 @@ if(SKIAUI_BUILD_WIN32)
     target_link_libraries(SkuiWin32 PRIVATE
         user32
         imm32
+        shell32
     )
 
     target_compile_definitions(SkuiWin32 PUBLIC
@@ -678,6 +682,10 @@ if(SKIAUI_BUILD_TESTS)
         Skui
         usp10
     )
+    target_link_libraries(SkuiLayoutDocumentTests PRIVATE
+        Skui
+        usp10
+    )
     if(SKIAUI_ENABLE_FFMPEG_VIDEO)
         target_link_libraries(SkuiFfmpegPlayerTests PRIVATE
             SkuiFfmpeg
@@ -699,6 +707,11 @@ if(SKIAUI_BUILD_TESTS)
         )
         target_compile_options(SkuiSelectableLinkTests PRIVATE /utf-8 /permissive- /Zc:__cplusplus)
         target_compile_options(SkuiMediaRuntimeTests PRIVATE /utf-8 /permissive- /Zc:__cplusplus)
+        target_compile_options(SkuiLayoutDocumentTests PRIVATE
+            /utf-8
+            /permissive-
+            /Zc:__cplusplus
+        )
         if(SKIAUI_ENABLE_FFMPEG_VIDEO)
             target_compile_options(SkuiFfmpegPlayerTests PRIVATE /utf-8 /permissive- /Zc:__cplusplus)
         endif()
@@ -709,6 +722,7 @@ if(SKIAUI_BUILD_TESTS)
         add_test(NAME SkuiKeyboardEventTests COMMAND SkuiKeyboardEventTests)
         add_test(NAME SkuiSelectableLinkTests COMMAND SkuiSelectableLinkTests)
         add_test(NAME SkuiMediaRuntimeTests COMMAND SkuiMediaRuntimeTests)
+        add_test(NAME SkuiLayoutDocumentTests COMMAND SkuiLayoutDocumentTests)
         if(SKIAUI_ENABLE_FFMPEG_VIDEO)
             add_test(NAME SkuiFfmpegPlayerTests
                 COMMAND SkuiFfmpegPlayerTests
@@ -724,6 +738,7 @@ if(SKIAUI_BUILD_TESTS)
             SkuiKeyboardEventTests
             SkuiSelectableLinkTests
             SkuiMediaRuntimeTests
+            SkuiLayoutDocumentTests
             PROPERTIES
             WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
         )

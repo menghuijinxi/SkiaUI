@@ -267,6 +267,131 @@ bool expect(bool condition, std::string_view message) {
     return true;
 }
 
+bool testRichClipboard(const skui::RuntimeOptions& baseOptions) {
+    constexpr std::string_view kClipboardHtml = R"html(
+<html><body>
+  <div id="clipboard-host" contenteditable="true" aria-readonly="true">
+    <p id="clipboard-before">before</p>
+    <div id="clipboard-image" contenteditable="false"
+         data-clipboard-kind="image"
+         data-clipboard-path="C:/fixtures/reference image.png"
+         data-clipboard-name="reference image.png"></div>
+    <p id="clipboard-middle">middle</p>
+    <div id="clipboard-file" contenteditable="false"
+         data-clipboard-kind="file"
+         data-clipboard-path="C:/fixtures/specification.txt"
+         data-clipboard-name="specification.txt"></div>
+    <p id="clipboard-after">after</p>
+  </div>
+</body></html>
+)html";
+
+    skui::ClipboardContent copiedContent;
+    skui::RuntimeOptions copyOptions = baseOptions;
+    copyOptions.writeClipboardContent =
+        [&](const skui::ClipboardContent& content) {
+            copiedContent = content;
+        };
+    skui::Runtime copyRuntime(copyOptions);
+    copyRuntime.resize(400, 240, 1.0f);
+
+    bool ok = expect(copyRuntime.loadDocumentFromString(kClipboardHtml),
+                     "clipboard document should load");
+    ok = expect(copyRuntime.setSelectionBaseAndExtent(
+                    "clipboard-before", 0, "clipboard-after", 5),
+                "clipboard selection should span ordered text and attachments") &&
+         ok;
+    sendKey(copyRuntime, 'C', false, true);
+    ok = expect(copiedContent.items.size() == 5u,
+                "rich clipboard copy should expose five ordered items") &&
+         ok;
+    if (copiedContent.items.size() == 5u) {
+        ok = expect(copiedContent.items[0].type ==
+                        skui::ClipboardItemType::Text &&
+                        copiedContent.items[1].type ==
+                        skui::ClipboardItemType::Image &&
+                        copiedContent.items[2].type ==
+                        skui::ClipboardItemType::Text &&
+                        copiedContent.items[3].type ==
+                        skui::ClipboardItemType::File &&
+                        copiedContent.items[4].type ==
+                        skui::ClipboardItemType::Text,
+                    "rich clipboard item types should retain document order") &&
+             ok;
+        ok = expect(copiedContent.items[0].text == "before" &&
+                        copiedContent.items[1].source ==
+                            "C:/fixtures/reference image.png" &&
+                        copiedContent.items[2].text == "\nmiddle" &&
+                        copiedContent.items[3].source ==
+                            "C:/fixtures/specification.txt" &&
+                        copiedContent.items[4].text == "\nafter",
+                    "rich clipboard item values should retain document order") &&
+             ok;
+    }
+    const std::size_t imagePosition = copiedContent.html.find("<img ");
+    const std::size_t middlePosition = copiedContent.html.find("middle");
+    const std::size_t filePosition = copiedContent.html.find("<a ");
+    ok = expect(imagePosition < middlePosition &&
+                    middlePosition < filePosition,
+                "standard clipboard HTML should retain document order") &&
+         ok;
+    ok = expect(copiedContent.filePaths ==
+                    std::vector<std::string>{
+                        "C:/fixtures/reference image.png",
+                        "C:/fixtures/specification.txt",
+                    },
+                "CF_HDROP fallback paths should include selected attachments") &&
+         ok;
+
+    skui::RuntimeOptions readOptions = baseOptions;
+    readOptions.readClipboardContent = [&] {
+        skui::ClipboardContent content = copiedContent;
+        content.items.clear();
+        return content;
+    };
+    skui::Runtime readRuntime(readOptions);
+    const skui::ClipboardContent parsedContent =
+        readRuntime.readClipboardContent();
+    ok = expect(parsedContent.items.size() == 5u,
+                "standard clipboard HTML should round-trip five items") &&
+         ok;
+    if (parsedContent.items.size() == 5u) {
+        ok = expect(parsedContent.items[0].text == "before" &&
+                        parsedContent.items[1].type ==
+                            skui::ClipboardItemType::Image &&
+                        parsedContent.items[2].text == "\nmiddle" &&
+                        parsedContent.items[3].type ==
+                            skui::ClipboardItemType::File &&
+                        parsedContent.items[4].text == "\nafter",
+                    "parsed standard clipboard HTML should retain item order") &&
+             ok;
+    }
+
+    readOptions.readClipboardContent = [] {
+        skui::ClipboardContent content;
+        content.html =
+            "<p>Hello <strong>world</strong></p>"
+            "<img src=\"file:///C:/fixtures/picture.png\" alt=\"picture\">"
+            "<p>after</p>";
+        return content;
+    };
+    skui::Runtime standardHtmlRuntime(readOptions);
+    const skui::ClipboardContent standardHtmlContent =
+        standardHtmlRuntime.readClipboardContent();
+    ok = expect(standardHtmlContent.items.size() == 3u,
+                "standard HTML should parse text, image, and trailing text") &&
+         ok;
+    if (standardHtmlContent.items.size() == 3u) {
+        ok = expect(standardHtmlContent.items[0].text == "Hello world\n" &&
+                        standardHtmlContent.items[1].type ==
+                            skui::ClipboardItemType::Image &&
+                        standardHtmlContent.items[2].text == "\nafter",
+                    "standard HTML should preserve inline whitespace and blocks") &&
+             ok;
+    }
+    return ok;
+}
+
 bool writeBytesFixture(const std::filesystem::path& path, const unsigned char* data, size_t size) {
     std::ofstream file(path, std::ios::binary);
     if (!file) {
@@ -7113,6 +7238,156 @@ int main() {
                     contentEditableEventId == "plaintext-host",
                 "plaintext-only descendants should inherit editing and target their host") &&
          ok;
+
+    constexpr std::string_view atomicSelectionHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    html, body { width: 220px; height: 140px; margin: 0; background-color: #000000; }
+    .selection-host { position: absolute; display: flex; flex-direction: row; left: 0; width: 180px; height: 30px; }
+    #editable-selection-host { top: 0; }
+    #readonly-selection-host { top: 50px; }
+    #atomic-only-selection-host { top: 100px; }
+    .selection-text { width: 40px; height: 24px; color: #ffffff; }
+    .selection-atomic { width: 40px; height: 24px; background-color: #225544; }
+  </style>
+</head>
+<body>
+  <div id="editable-selection-host" class="selection-host" contenteditable="true">
+    <p id="editable-selection-before" class="selection-text">before</p>
+    <div id="editable-selection-atomic" class="selection-atomic" contenteditable="false"></div>
+    <p id="editable-selection-after" class="selection-text">after</p>
+  </div>
+  <div id="readonly-selection-host" class="selection-host" contenteditable="true" aria-readonly="true">
+    <p id="readonly-selection-before" class="selection-text">before</p>
+    <div id="readonly-selection-atomic" class="selection-atomic" contenteditable="false"></div>
+    <p id="readonly-selection-after" class="selection-text">after</p>
+  </div>
+  <div id="atomic-only-selection-host" class="selection-host" contenteditable="true" aria-readonly="true">
+    <div id="atomic-only-selection-target" class="selection-atomic" contenteditable="false"></div>
+  </div>
+</body>
+</html>
+)html";
+    skui::Runtime atomicSelectionRuntime(options);
+    atomicSelectionRuntime.resize(220, 140, 1.0f);
+    ok = expect(atomicSelectionRuntime.loadDocumentFromString(
+                    atomicSelectionHtml),
+                "atomic selection document should load") &&
+         ok;
+    uint32_t editableAtomicBefore = 0;
+    uint32_t readonlyAtomicBefore = 0;
+    ok = renderPixel(atomicSelectionRuntime,
+                     60,
+                     12,
+                     editableAtomicBefore) &&
+         renderPixel(atomicSelectionRuntime,
+                     60,
+                     62,
+                     readonlyAtomicBefore) &&
+         ok;
+    ok = expect(atomicSelectionRuntime.setSelectionBaseAndExtent(
+                    "editable-selection-before",
+                    0,
+                    "editable-selection-after",
+                    5),
+                "contenteditable should select across an atomic attachment") &&
+         ok;
+    uint32_t editableAtomicAfter = 0;
+    ok = renderPixel(atomicSelectionRuntime,
+                     60,
+                     12,
+                     editableAtomicAfter) &&
+         expect(editableAtomicAfter != editableAtomicBefore,
+                "cross-node selection should highlight atomic attachments") &&
+         ok;
+    ok = expect(atomicSelectionRuntime.setSelectionBaseAndExtent(
+                    "readonly-selection-before",
+                    0,
+                    "readonly-selection-after",
+                    5),
+                "read-only contenteditable should expose document selection") &&
+         ok;
+    uint32_t readonlyAtomicAfter = 0;
+    ok = renderPixel(atomicSelectionRuntime,
+                     60,
+                     62,
+                     readonlyAtomicAfter) &&
+         expect(readonlyAtomicAfter != readonlyAtomicBefore,
+                "read-only document selection should highlight atomic content") &&
+         ok;
+    sendText(atomicSelectionRuntime, "X");
+    ok = expect(atomicSelectionRuntime.textContentById(
+                    "readonly-selection-before") ==
+                    std::optional<std::string>("before") &&
+                    atomicSelectionRuntime.textContentById(
+                        "readonly-selection-after") ==
+                    std::optional<std::string>("after"),
+                "aria-readonly contenteditable should reject text mutation") &&
+         ok;
+    ok = expect(atomicSelectionRuntime.collapseSelection(
+                    "editable-selection-before", 0),
+                "atomic selection test should reset the editable caret") &&
+         ok;
+    uint32_t editableAtomicBeforeDrag = 0;
+    ok = renderPixel(atomicSelectionRuntime,
+                     60,
+                     12,
+                     editableAtomicBeforeDrag) &&
+         ok;
+    sendMouse(atomicSelectionRuntime,
+              skui::EventType::MouseDown,
+              2.0f,
+              12.0f);
+    sendMouse(atomicSelectionRuntime,
+              skui::EventType::MouseMove,
+              118.0f,
+              12.0f);
+    sendMouse(atomicSelectionRuntime,
+              skui::EventType::MouseUp,
+              118.0f,
+              12.0f);
+    uint32_t editableAtomicAfterDrag = 0;
+    ok = renderPixel(atomicSelectionRuntime,
+                     60,
+                     12,
+                     editableAtomicAfterDrag) &&
+         expect(editableAtomicAfterDrag != editableAtomicBeforeDrag,
+                "mouse dragging should include an atomic attachment") &&
+         ok;
+    uint32_t atomicOnlyBeforeDrag = 0;
+    ok = renderPixelAt(atomicSelectionRuntime,
+                       220,
+                       140,
+                       20,
+                       112,
+                       atomicOnlyBeforeDrag) &&
+         ok;
+    sendMouse(atomicSelectionRuntime,
+              skui::EventType::MouseDown,
+              4.0f,
+              112.0f);
+    sendMouse(atomicSelectionRuntime,
+              skui::EventType::MouseMove,
+              36.0f,
+              112.0f);
+    sendMouse(atomicSelectionRuntime,
+              skui::EventType::MouseUp,
+              36.0f,
+              112.0f);
+    uint32_t atomicOnlyAfterDrag = 0;
+    ok = renderPixelAt(atomicSelectionRuntime,
+                       220,
+                       140,
+                       20,
+                       112,
+                       atomicOnlyAfterDrag) &&
+         expect(atomicOnlyAfterDrag != atomicOnlyBeforeDrag,
+                "an atomic-only read-only document should support dragging selection") &&
+         ok;
+
+    ok = testRichClipboard(options) && ok;
 
     constexpr std::string_view cssRenderingParityHtml = R"html(
 <!doctype html>

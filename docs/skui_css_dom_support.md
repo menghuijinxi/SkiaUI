@@ -390,6 +390,9 @@ SkUI 的事件返回值表示“UI 是否实际消费了事件”，不是“DOM
 - `Input` 事件以最外层编辑宿主为目标，和浏览器 editing host 一致。
 - `Runtime::selection()` 返回 `Selection` / `Range` 状态；`collapseSelection()` 与 `setSelectionBaseAndExtent()` 用元素 id 设置选区。
 - 同一个 editing host 内可以跨相邻文本容器拖拽选择；`Ctrl+C` 按段落边界写入换行，输入、剪切和删除会替换整个跨容器选区。
+- 跨节点选区经过 `contenteditable="false"` 子树时，会把该子树作为不可拆分的原子内容整块高亮；只有原子内容、没有文本叶节点的宿主也支持鼠标拖选。
+- 原子节点设置 `data-clipboard-kind="image|file"`、`data-clipboard-path` 和可选的 `data-clipboard-name` 后，跨节点复制会按文档顺序生成标准 HTML、纯文本和文件列表剪贴板载荷。
+- `aria-readonly="true"` 可把 editing host 用作只读文档选区：保留鼠标拖选、方向键和复制，屏蔽文本输入、粘贴、剪切删除、撤销、Backspace、Delete 和 Enter。
 - `insertHtmlAtSelection()` 在当前选区插入普通 HTML；块节点插入会拆分当前文本容器。
 - 编辑宿主设置 `contenteditable-flow="inline"` 后，插入的原子节点会与拆分后的前后文本按同一段落流式换行；
   Enter 仍创建新的段落行。该模式保留直接子节点顺序，便于 C++ 按文本和附件顺序读取。
@@ -405,7 +408,7 @@ SkUI 的事件返回值表示“UI 是否实际消费了事件”，不是“DOM
 <selectable class="message-text">能把最新的 Q2 报告发我吗?</selectable>
 ```
 
-`selectable` 支持拖拽选择、双击选中单词或单个非 ASCII 字符、`Ctrl+A`、`Ctrl+C`。文本会按节点宽度自动折行，`<br>` 会产生显式换行。同一个 `selectable` 内的普通文本、`<br>` 和 `<a>` 会合并成统一文本流，因此绘制、链接命中、选择高亮和复制使用相同的行布局；当前不支持跨多个 `selectable` 连续框选。
+`selectable` 支持拖拽选择、双击选中单词或单个非 ASCII 字符、`Ctrl+A`、`Ctrl+C`。文本会按节点宽度自动折行，`<br>` 会产生显式换行。同一个 `selectable` 内的普通文本、`<br>` 和 `<a>` 会合并成统一文本流，因此绘制、链接命中、选择高亮和复制使用相同的行布局。多个 `selectable` 放在同一个 `contenteditable` editing host 中时，可以作为文本叶节点连续框选；宿主外的独立 `selectable` 仍各自维护选区。
 
 静态 HTML 中应直接使用 `<a href>`。点击链接且没有拖出选区时，会向 `RuntimeOptions::onElementEvent` 发出 `Click` 事件，`event.action` 为 `open-url:` 加 `href`，`event.text` 为链接文本，`event.value` 为完整文本。拖拽选择仍按普通 `selectable` 处理，`Ctrl+C` 会复制完整选区文本，不会被链接拆断。
 
@@ -530,6 +533,6 @@ SkUI 的事件返回值表示“UI 是否实际消费了事件”，不是“DOM
 - Grid 是面向卡片/指标面板的布局子集；伪元素只支持绝对定位装饰盒和空 `content`，不参与 Yoga 布局或事件命中。
 - 多层渐变共享当前 `background-size` / `background-repeat`；水平和垂直线性渐变支持按指定尺寸平铺，径向和任意角度渐变尚不支持完整二维平铺。`mask-image` 当前只支持单层渐变 alpha 遮罩，不支持 URL、多层遮罩和独立的遮罩尺寸、位置或重复属性。
 - `img` 只支持本地资源路径；位图支持 PNG、JPEG、WebP 和 BMP。懒加载属性使用浏览器一致的 `loading="lazy"`，不支持旧式 `data-loading`。暂不支持网络 URL、`srcset` 和浏览器图片事件。
-- 文本排版是单行、`selectable` 显式多行或简单多行编辑框，不是富文本排版引擎；`selectable` 暂不支持跨 DOM 节点连续选择。
+- 文本排版是单行、`selectable` 显式多行或简单多行编辑框，不是完整富文本排版引擎；跨节点连续选择仅支持同一个 `contenteditable` editing host 内的文本叶节点和原子子树。
 - 中文双击选词目前按单个非 ASCII 字符处理，不做自然语言分词。
 - 虚拟滚动需要业务层提供数据源并根据 `Scroll` 刷新池化 DOM；SkUI 提供滚动范围、裁剪、事件，以及 `VirtualWindowState` / `VirtualTableAdapter` 辅助类，但不会自动从任意 DOM 推导大数据源。

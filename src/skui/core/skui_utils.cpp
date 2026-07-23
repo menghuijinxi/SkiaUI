@@ -94,6 +94,7 @@ bool isContentEditableTextTag(std::string_view tag) {
     return tag == "div" ||
            tag == "p" ||
            tag == "span" ||
+           tag == "selectable" ||
            tag == "blockquote" ||
            tag == "li" ||
            tag == "h1" ||

@@ -15,6 +15,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdint>
+#include <filesystem>
 #include <iomanip>
 #include <limits>
 #include <optional>
@@ -67,6 +68,225 @@ bool isRenderableNode(const Node& node) {
            node.style.visibility != Visibility::Hidden &&
            node.layout.w > 0.0f &&
            node.layout.h > 0.0f;
+}
+
+LayoutTransform multiplyTransform(const LayoutTransform& lhs,
+                                  const LayoutTransform& rhs) {
+    return {
+        lhs.m11 * rhs.m11 + lhs.m21 * rhs.m12,
+        lhs.m12 * rhs.m11 + lhs.m22 * rhs.m12,
+        lhs.m11 * rhs.m21 + lhs.m21 * rhs.m22,
+        lhs.m12 * rhs.m21 + lhs.m22 * rhs.m22,
+        lhs.m11 * rhs.translationX + lhs.m21 * rhs.translationY +
+            lhs.translationX,
+        lhs.m12 * rhs.translationX + lhs.m22 * rhs.translationY +
+            lhs.translationY,
+    };
+}
+
+LayoutTransform translationTransform(float x, float y) {
+    LayoutTransform transform;
+    transform.translationX = x;
+    transform.translationY = y;
+    return transform;
+}
+
+float resolveTransformLength(const Length& length, float reference) {
+    if (length.unit == LengthUnit::Percent) {
+        return reference * length.value * 0.01f;
+    }
+    return length.unit == LengthUnit::Auto ? 0.0f : length.value;
+}
+
+LayoutTransform operationTransform(const TransformOperation& operation,
+                                   const Rect& layout) {
+    if (operation.kind == TransformOperationKind::Translate) {
+        return translationTransform(
+            resolveTransformLength(operation.translateX, layout.w),
+            resolveTransformLength(operation.translateY, layout.h));
+    }
+    if (operation.kind == TransformOperationKind::Scale) {
+        LayoutTransform transform;
+        transform.m11 = operation.scaleX;
+        transform.m22 = operation.scaleY;
+        return transform;
+    }
+
+    constexpr float kDegreesToRadians = 3.14159265358979323846f / 180.0f;
+    const float radians = operation.rotateDeg * kDegreesToRadians;
+    const float cosine = std::cos(radians);
+    const float sine = std::sin(radians);
+    LayoutTransform transform;
+    transform.m11 = cosine;
+    transform.m12 = sine;
+    transform.m21 = -sine;
+    transform.m22 = cosine;
+    return transform;
+}
+
+LayoutTransform nodeTransform(const Node& node) {
+    if (node.style.transform.isIdentity()) {
+        return {};
+    }
+
+    const float originX = node.layout.x +
+        resolveTransformLength(node.style.transformOrigin.x, node.layout.w);
+    const float originY = node.layout.y +
+        resolveTransformLength(node.style.transformOrigin.y, node.layout.h);
+    LayoutTransform transform = translationTransform(originX, originY);
+    for (const TransformOperation& operation : node.style.transform.operations) {
+        transform = multiplyTransform(
+            transform, operationTransform(operation, node.layout));
+    }
+    return multiplyTransform(
+        transform, translationTransform(-originX, -originY));
+}
+
+LayoutRect transformedBounds(const Rect& rect,
+                             const LayoutTransform& transform) {
+    const auto transformPoint = [&transform](float x, float y) {
+        return std::pair{
+            transform.m11 * x + transform.m21 * y + transform.translationX,
+            transform.m12 * x + transform.m22 * y + transform.translationY,
+        };
+    };
+    const auto topLeft = transformPoint(rect.x, rect.y);
+    const auto topRight = transformPoint(rect.x + rect.w, rect.y);
+    const auto bottomLeft = transformPoint(rect.x, rect.y + rect.h);
+    const auto bottomRight = transformPoint(rect.x + rect.w, rect.y + rect.h);
+    const float left = std::min({
+        topLeft.first, topRight.first, bottomLeft.first, bottomRight.first});
+    const float top = std::min({
+        topLeft.second, topRight.second, bottomLeft.second, bottomRight.second});
+    const float right = std::max({
+        topLeft.first, topRight.first, bottomLeft.first, bottomRight.first});
+    const float bottom = std::max({
+        topLeft.second, topRight.second, bottomLeft.second, bottomRight.second});
+    return {left, top, right - left, bottom - top};
+}
+
+std::optional<LayoutRect> intersectClip(
+    const std::optional<LayoutRect>& current,
+    const LayoutRect& next) {
+    if (!current) {
+        return next;
+    }
+    const float left = std::max(current->x, next.x);
+    const float top = std::max(current->y, next.y);
+    const float right = std::min(
+        current->x + current->width, next.x + next.width);
+    const float bottom = std::min(
+        current->y + current->height, next.y + next.height);
+    return LayoutRect{
+        left,
+        top,
+        std::max(0.0f, right - left),
+        std::max(0.0f, bottom - top),
+    };
+}
+
+bool intersectsClip(const LayoutRect& bounds,
+                    const std::optional<LayoutRect>& clip) {
+    if (!clip) {
+        return true;
+    }
+    return bounds.x < clip->x + clip->width &&
+           bounds.x + bounds.width > clip->x &&
+           bounds.y < clip->y + clip->height &&
+           bounds.y + bounds.height > clip->y;
+}
+
+std::string resolveLayoutPageSource(const Document& document,
+                                    std::string_view source) {
+    std::filesystem::path path = pathFromUtf8(source);
+    if (!path.is_absolute() && !document.basePath.empty()) {
+        path = pathFromUtf8(document.basePath) / path;
+    }
+    return pathToUtf8(path.lexically_normal());
+}
+
+struct LayoutSnapshotTraversal {
+    LayoutTransform transform;
+    std::optional<LayoutRect> clipRect;
+    float opacity = 1.0f;
+};
+
+void collectLayoutPageSnapshots(
+    const Document& document,
+    const Node& node,
+    const LayoutSnapshotTraversal& parent,
+    std::vector<LayoutPageSnapshot>& snapshots) {
+    if (node.style.display == Display::None) {
+        return;
+    }
+
+    LayoutTransform transform = parent.transform;
+    const float stickyOffsetY = stickyVisualOffsetY(node);
+    if (stickyOffsetY != 0.0f) {
+        transform = multiplyTransform(
+            transform, translationTransform(0.0f, stickyOffsetY));
+    }
+    transform = multiplyTransform(transform, nodeTransform(node));
+    const float opacity = parent.opacity *
+        clampf(node.style.opacity, 0.0f, 1.0f);
+
+    if (node.tag == "skui-page") {
+        LayoutPageSnapshot snapshot;
+        snapshot.id = node.id;
+        snapshot.source = node.src;
+        snapshot.resolvedSource = resolveLayoutPageSource(document, node.src);
+        snapshot.rect = {
+            node.layout.x,
+            node.layout.y,
+            node.layout.w,
+            node.layout.h,
+        };
+        snapshot.transform = transform;
+        snapshot.clipRect = parent.clipRect;
+        snapshot.opacity = opacity;
+        snapshot.zIndex = node.style.zIndex;
+        snapshot.paintOrder = snapshots.size();
+        const LayoutRect visualBounds = transformedBounds(node.layout, transform);
+        snapshot.visible = node.style.visibility == Visibility::Visible &&
+                           opacity > 0.0f &&
+                           node.layout.w > 0.0f &&
+                           node.layout.h > 0.0f &&
+                           intersectsClip(visualBounds, parent.clipRect);
+        snapshot.hitTestable = snapshot.visible &&
+                               node.style.pointerEvents != PointerEvents::None;
+        snapshots.push_back(std::move(snapshot));
+    }
+
+    LayoutSnapshotTraversal childTraversal;
+    childTraversal.transform = transform;
+    childTraversal.clipRect = parent.clipRect;
+    childTraversal.opacity = opacity;
+    const bool clipsChildren = node.style.overflowX != Overflow::Visible ||
+                               node.style.overflowY != Overflow::Visible ||
+                               node.scrollX > 0.0f ||
+                               node.scrollY > 0.0f;
+    if (clipsChildren) {
+        childTraversal.clipRect = intersectClip(
+            childTraversal.clipRect,
+            transformedBounds(scrollContentClipRect(node), transform));
+        childTraversal.transform = multiplyTransform(
+            childTraversal.transform,
+            translationTransform(-node.scrollX, -node.scrollY));
+    }
+
+    if (requiresZIndexOrdering(node)) {
+        const std::vector<const Node*> orderedChildren =
+            childrenInPaintOrder(node);
+        for (const Node* child : orderedChildren) {
+            collectLayoutPageSnapshots(
+                document, *child, childTraversal, snapshots);
+        }
+    } else {
+        for (const auto& child : node.children) {
+            collectLayoutPageSnapshots(
+                document, *child, childTraversal, snapshots);
+        }
+    }
 }
 
 Node* hitTest(Node& node, float x, float y) {
@@ -144,6 +364,158 @@ std::string classAttributeValue(const std::vector<std::string>& classes) {
         value += className;
     }
     return value;
+}
+
+std::string escapeClipboardHtml(std::string_view value) {
+    std::string escaped;
+    escaped.reserve(value.size());
+    for (const char character : value) {
+        switch (character) {
+        case '&':
+            escaped += "&amp;";
+            break;
+        case '<':
+            escaped += "&lt;";
+            break;
+        case '>':
+            escaped += "&gt;";
+            break;
+        case '"':
+            escaped += "&quot;";
+            break;
+        default:
+            escaped.push_back(character);
+            break;
+        }
+    }
+    return escaped;
+}
+
+bool isUriUnreserved(unsigned char character) {
+    return std::isalnum(character) != 0 || character == '-' ||
+           character == '.' || character == '_' || character == '~';
+}
+
+std::string clipboardSourceUrl(std::string_view source) {
+    if (source.find("://") != std::string_view::npos ||
+        source.starts_with("data:") || source.starts_with("file:")) {
+        return std::string(source);
+    }
+
+    constexpr char kHexDigits[] = "0123456789ABCDEF";
+    std::string url = "file:///";
+    url.reserve(url.size() + source.size());
+    for (unsigned char character : source) {
+        if (character == '\\') {
+            url.push_back('/');
+        } else if (isUriUnreserved(character) || character == '/' ||
+                   character == ':') {
+            url.push_back(static_cast<char>(character));
+        } else {
+            url.push_back('%');
+            url.push_back(kHexDigits[character >> 4u]);
+            url.push_back(kHexDigits[character & 0x0Fu]);
+        }
+    }
+    return url;
+}
+
+std::optional<ClipboardItem> clipboardItemFromAtomicNode(const Node& node) {
+    const auto kind = node.attributes.find("data-clipboard-kind");
+    const auto source = node.attributes.find("data-clipboard-path");
+    if (kind != node.attributes.end() && source != node.attributes.end() &&
+        !source->second.empty()) {
+        const auto name = node.attributes.find("data-clipboard-name");
+        const ClipboardItemType type = lowerAscii(kind->second) == "image"
+            ? ClipboardItemType::Image
+            : ClipboardItemType::File;
+        return ClipboardItem{
+            type,
+            name == node.attributes.end() ? std::string{} : name->second,
+            source->second,
+        };
+    }
+
+    if (node.tag == "img" && !node.src.empty()) {
+        const auto alternative = node.attributes.find("alt");
+        return ClipboardItem{
+            ClipboardItemType::Image,
+            alternative == node.attributes.end()
+                ? std::string{}
+                : alternative->second,
+            node.src,
+        };
+    }
+    if (node.tag == "a") {
+        const auto sourceAttribute = node.attributes.find("href");
+        if (sourceAttribute != node.attributes.end() &&
+            !sourceAttribute->second.empty()) {
+            const auto download = node.attributes.find("download");
+            return ClipboardItem{
+                ClipboardItemType::File,
+                download == node.attributes.end()
+                    ? textContent(node)
+                    : download->second,
+                sourceAttribute->second,
+            };
+        }
+    }
+    for (const std::unique_ptr<Node>& child : node.children) {
+        if (std::optional<ClipboardItem> item =
+                clipboardItemFromAtomicNode(*child)) {
+            return item;
+        }
+    }
+    return std::nullopt;
+}
+
+void appendClipboardItem(ClipboardContent& content, ClipboardItem item) {
+    if (item.type == ClipboardItemType::Text && item.text.empty()) {
+        return;
+    }
+    if (item.type == ClipboardItemType::Text && !content.items.empty() &&
+        content.items.back().type == ClipboardItemType::Text) {
+        content.items.back().text += item.text;
+    } else {
+        content.items.push_back(item);
+    }
+
+    if (item.type == ClipboardItemType::Text) {
+        content.text += item.text;
+        const std::string escaped = escapeClipboardHtml(item.text);
+        for (size_t index = 0; index < escaped.size(); ++index) {
+            if (escaped[index] == '\n') {
+                content.html += "<br>";
+            } else if (escaped[index] != '\r') {
+                content.html.push_back(escaped[index]);
+            }
+        }
+        return;
+    }
+
+    const std::string sourceUrl = clipboardSourceUrl(item.source);
+    if (item.type == ClipboardItemType::Image) {
+        content.html += "<img src=\"";
+        content.html += escapeClipboardHtml(sourceUrl);
+        content.html += "\" alt=\"";
+        content.html += escapeClipboardHtml(item.text);
+        content.html += "\">";
+    } else {
+        content.html += "<a href=\"";
+        content.html += escapeClipboardHtml(sourceUrl);
+        content.html += "\" download=\"";
+        content.html += escapeClipboardHtml(item.text);
+        content.html += "\">";
+        content.html += escapeClipboardHtml(item.text);
+        content.html += "</a>";
+    }
+    content.text += item.text;
+    if (!item.source.empty() &&
+        item.source.find("://") == std::string::npos &&
+        !item.source.starts_with("data:") &&
+        !item.source.starts_with("file:")) {
+        content.filePaths.push_back(item.source);
+    }
 }
 
 Node* findById(Node& node, std::string_view id) {
@@ -237,6 +609,16 @@ bool isTextareaNode(const Node* node) {
     return node && node->tag == "textarea";
 }
 
+bool isReadOnlyContentEditable(const Node* node) {
+    const Node* host = contentEditableEditingHost(node);
+    if (!host) {
+        return false;
+    }
+    const auto readOnly = host->attributes.find("aria-readonly");
+    return readOnly != host->attributes.end() &&
+           lowerAscii(trim(readOnly->second)) == "true";
+}
+
 Node* inputTarget(Node* leaf) {
     if (disabledTarget(leaf)) {
         return nullptr;
@@ -247,6 +629,29 @@ Node* inputTarget(Node* leaf) {
         }
         if (contentEditableState(*current) == ContentEditableState::False) {
             return nullptr;
+        }
+    }
+    return nullptr;
+}
+
+Node* contentEditableAtomicTarget(Node* leaf) {
+    Node* atomic = nullptr;
+    for (Node* current = leaf; current; current = current->parent) {
+        if (contentEditableState(*current) ==
+            ContentEditableState::False) {
+            atomic = current;
+        }
+        if (isContentEditableEditingHost(*current)) {
+            return atomic;
+        }
+    }
+    return nullptr;
+}
+
+Node* contentEditableHostAround(Node* leaf) {
+    for (Node* current = leaf; current; current = current->parent) {
+        if (isContentEditableEditingHost(*current)) {
+            return current;
         }
     }
     return nullptr;
@@ -2145,7 +2550,9 @@ public:
         startTransitions(snapshots);
         syncKeyframeAnimations(animationTimeSeconds);
         applyKeyframeAnimations(animationTimeSeconds);
-        renderer.requestBitmapImages(document);
+        if (document.type == DocumentType::Page) {
+            renderer.requestBitmapImages(document);
+        }
         if (traceEnabled) {
             perf::Trace::write("skui", "style_recompute", width, height, perf::Trace::elapsedMs(styleStart));
         }
@@ -2154,9 +2561,11 @@ public:
             applyAnimatedStyles(*document.root);
         }
         layoutEngine.layout(document, viewportWidth, viewportHeight);
-        mediaController.sync(document);
-        if (mediaController.consumeIntrinsicSizeChange()) {
-            layoutEngine.layout(document, viewportWidth, viewportHeight);
+        if (document.type == DocumentType::Page) {
+            mediaController.sync(document);
+            if (mediaController.consumeIntrinsicSizeChange()) {
+                layoutEngine.layout(document, viewportWidth, viewportHeight);
+            }
         }
         requestAnimationFrame();
         if (traceEnabled) {
@@ -2502,6 +2911,82 @@ public:
         return nodes;
     }
 
+    std::vector<Node*> contentEditableSelectionUnits(Node& host) const {
+        std::vector<Node*> units;
+        const auto visit = [&](const auto& self, Node& node) -> void {
+            if (&node != &host && !isContentEditable(node)) {
+                units.push_back(&node);
+                return;
+            }
+            if (isContentEditableTextNode(node)) {
+                units.push_back(&node);
+                return;
+            }
+            for (auto& child : node.children) {
+                self(self, *child);
+            }
+        };
+        visit(visit, host);
+        return units;
+    }
+
+    bool clearContentEditableAtomicSelection(Node& host) {
+        bool changed = false;
+        for (Node* unit : contentEditableSelectionUnits(host)) {
+            if (isContentEditableTextNode(*unit) ||
+                !unit->atomicSelectionSelected) {
+                continue;
+            }
+            unit->atomicSelectionSelected = false;
+            changed = true;
+        }
+        return changed;
+    }
+
+    bool updateContentEditableAtomicUnitSelection(
+        Node& host,
+        Node* anchorUnit,
+        Node* focusUnit) {
+        std::vector<Node*> units = contentEditableSelectionUnits(host);
+        const auto anchor = std::find(
+            units.begin(), units.end(), anchorUnit);
+        const auto focus = std::find(
+            units.begin(), units.end(), focusUnit);
+        bool changed = clearContentEditableAtomicSelection(host);
+        contentEditableAtomicSelectionHost = nullptr;
+        if (anchor == units.end() || focus == units.end()) {
+            return changed;
+        }
+        const auto start = std::min(anchor, focus);
+        const auto end = std::max(anchor, focus);
+        bool selectedAtomic = false;
+        for (auto unit = start; unit <= end; ++unit) {
+            if (isContentEditableTextNode(**unit) ||
+                (*unit)->atomicSelectionSelected) {
+                continue;
+            }
+            (*unit)->atomicSelectionSelected = true;
+            selectedAtomic = true;
+            changed = true;
+        }
+        if (selectedAtomic) {
+            contentEditableAtomicSelectionHost = &host;
+        }
+        return changed;
+    }
+
+    bool updateContentEditableAtomicSelection(
+        Node& host,
+        Node& anchorNode,
+        Node& focusNode,
+        Node* anchorAtomic = nullptr,
+        Node* focusAtomic = nullptr) {
+        return updateContentEditableAtomicUnitSelection(
+            host,
+            anchorAtomic ? anchorAtomic : &anchorNode,
+            focusAtomic ? focusAtomic : &focusNode);
+    }
+
     bool hasCrossContentEditableSelection() const {
         return contentEditableSelectionAnchor != nullptr &&
                contentEditableSelectionFocus != nullptr &&
@@ -2561,17 +3046,24 @@ public:
     }
 
     bool clearCrossContentEditableSelection() {
+        bool changed = false;
+        Node* host = contentEditableEditingHost(
+            contentEditableSelectionAnchor);
+        if (!host) {
+            host = contentEditableAtomicSelectionHost;
+        }
+        if (host) {
+            changed = clearContentEditableAtomicSelection(*host) || changed;
+        }
+        contentEditableAtomicSelectionHost = nullptr;
         if (!hasCrossContentEditableSelection()) {
             contentEditableSelectionAnchor = nullptr;
             contentEditableSelectionFocus = nullptr;
             contentEditableSelectionAnchorOffset = 0;
             contentEditableSelectionFocusOffset = 0;
-            return false;
+            return changed;
         }
 
-        bool changed = false;
-        Node* host = contentEditableEditingHost(
-            contentEditableSelectionAnchor);
         if (host) {
             for (Node* node : contentEditableTextNodes(*host)) {
                 changed = clearInputSelection(*node) || changed;
@@ -2682,6 +3174,9 @@ public:
         }
         anchorNode.selectionAnchor = anchorOffset;
         focusNode.cursorIndex = focusOffset;
+        changed = updateContentEditableAtomicSelection(
+                      *host, anchorNode, focusNode) ||
+                  changed;
         return changed;
     }
 
@@ -2728,6 +3223,62 @@ public:
             }
         }
         return text;
+    }
+
+    ClipboardContent selectedContentEditableClipboardContent() const {
+        Node* host = contentEditableEditingHost(
+            contentEditableSelectionAnchor);
+        if (!host) {
+            host = contentEditableAtomicSelectionHost;
+        }
+        if (!host) {
+            return {};
+        }
+
+        ClipboardContent content;
+        bool hasSelectedUnit = false;
+        for (Node* unit : contentEditableSelectionUnits(*host)) {
+            if (isContentEditableTextNode(*unit)) {
+                const size_t start = std::min(
+                    unit->selectionStart, unit->value.size());
+                const size_t end = std::min(
+                    unit->selectionEnd, unit->value.size());
+                if (start >= end) {
+                    continue;
+                }
+                if (hasSelectedUnit &&
+                    unit->contentEditableFlowPosition ==
+                        ContentEditableFlowPosition::ParagraphStart) {
+                    appendClipboardItem(
+                        content,
+                        {ClipboardItemType::Text, "\n", {}});
+                }
+                appendClipboardItem(
+                    content,
+                    {ClipboardItemType::Text,
+                     unit->value.substr(start, end - start),
+                     {}});
+                hasSelectedUnit = true;
+                continue;
+            }
+            if (!unit->atomicSelectionSelected) {
+                continue;
+            }
+            if (std::optional<ClipboardItem> item =
+                    clipboardItemFromAtomicNode(*unit)) {
+                appendClipboardItem(content, std::move(item.value()));
+                hasSelectedUnit = true;
+            }
+        }
+        return content;
+    }
+
+    void writeClipboardContent(const ClipboardContent& content) const {
+        if (options.writeClipboardContent) {
+            options.writeClipboardContent(content);
+        } else if (options.writeClipboardText && !content.text.empty()) {
+            options.writeClipboardText(content.text);
+        }
     }
 
     bool selectAllContentEditable(Node& node) {
@@ -2876,7 +3427,8 @@ public:
         if (Node* target = inputTarget(hit)) {
             return target;
         }
-        if (!hit || !isContentEditableEditingHost(*hit)) {
+        Node* host = contentEditableHostAround(hit);
+        if (!host) {
             return nullptr;
         }
 
@@ -2914,7 +3466,7 @@ public:
                 self(self, *child);
             }
         };
-        visit(visit, *hit);
+        visit(visit, *host);
         return closest;
     }
 
@@ -3264,7 +3816,8 @@ public:
         clearKeyframeAnimationsForNode(keyframeAnimations,
                                        const_cast<Node*>(&subtree));
         if (containsNode(subtree, contentEditableSelectionAnchor) ||
-            containsNode(subtree, contentEditableSelectionFocus)) {
+            containsNode(subtree, contentEditableSelectionFocus) ||
+            containsNode(subtree, contentEditableAtomicSelectionHost)) {
             clearCrossContentEditableSelection();
         }
         if (containsNode(subtree, focusedNode)) {
@@ -3282,6 +3835,14 @@ public:
         if (containsNode(subtree, selectingInput)) {
             selectingInput = nullptr;
             selectingInputAnchorOffset = 0;
+        }
+        if (containsNode(subtree, selectingInputAtomicAnchor)) {
+            selectingInputAtomicAnchor = nullptr;
+            selectingInputDragged = false;
+        }
+        if (containsNode(subtree, selectingAtomicHost)) {
+            selectingAtomicHost = nullptr;
+            selectingInputDragged = false;
         }
         if (containsNode(subtree, selectingText)) {
             selectingText = nullptr;
@@ -3305,7 +3866,8 @@ public:
 
     void clearInteractionForDisabledSubtree(const Node& subtree) {
         if (containsNode(subtree, contentEditableSelectionAnchor) ||
-            containsNode(subtree, contentEditableSelectionFocus)) {
+            containsNode(subtree, contentEditableSelectionFocus) ||
+            containsNode(subtree, contentEditableAtomicSelectionHost)) {
             clearCrossContentEditableSelection();
         }
         if (containsNode(subtree, focusedNode)) {
@@ -3323,6 +3885,14 @@ public:
         if (containsNode(subtree, selectingInput)) {
             selectingInput = nullptr;
             selectingInputAnchorOffset = 0;
+        }
+        if (containsNode(subtree, selectingInputAtomicAnchor)) {
+            selectingInputAtomicAnchor = nullptr;
+            selectingInputDragged = false;
+        }
+        if (containsNode(subtree, selectingAtomicHost)) {
+            selectingAtomicHost = nullptr;
+            selectingInputDragged = false;
         }
         if (containsNode(subtree, selectingText)) {
             selectingText = nullptr;
@@ -3347,7 +3917,9 @@ public:
     void finishDocumentMutation() {
         renderer.clearNodeCaches();
         editableLineCache.clear();
-        mediaController.sync(document);
+        if (document.type == DocumentType::Page) {
+            mediaController.sync(document);
+        }
         if (document.root) {
             std::vector<Node*> hovered;
             std::vector<Node*> active;
@@ -3356,6 +3928,55 @@ public:
             updateStateTree(*document.root, hovered, active);
         }
         requestLayout();
+    }
+
+    bool installDocument(Document next, DocumentType expectedType) {
+        if (next.type != expectedType) {
+            const std::string expected =
+                expectedType == DocumentType::Layout ? "layout" : "page";
+            const std::string actual =
+                next.type == DocumentType::Layout ? "layout" : "page";
+            lastError = "expected " + expected + " document, found " + actual;
+            return false;
+        }
+
+        mediaController.close();
+        document = std::move(next);
+        renderer.clearCaches();
+        editableLineCache.clear();
+        activeAnimations.clear();
+        keyframeAnimations.clear();
+        keyframeFramePending = false;
+        if (document.root) {
+            rebindParents(*document.root, nullptr);
+            prepareContentEditableTree(*document.root);
+        }
+        hasDocument = true;
+        dirty = true;
+        mousePressed = false;
+        pressedButton = MouseButton::None;
+        hoveredLeaf = nullptr;
+        pressedLeaf = nullptr;
+        focusedNode = nullptr;
+        selectingInput = nullptr;
+        selectingInputAnchorOffset = 0;
+        selectingInputAtomicAnchor = nullptr;
+        selectingAtomicHost = nullptr;
+        selectingInputDragged = false;
+        selectingText = nullptr;
+        selectedText = nullptr;
+        contentEditableSelectionAnchor = nullptr;
+        contentEditableSelectionAnchorOffset = 0;
+        contentEditableSelectionFocus = nullptr;
+        contentEditableSelectionFocusOffset = 0;
+        contentEditableAtomicSelectionHost = nullptr;
+        scrollingNode = nullptr;
+        scrollingAxis = ScrollbarAxis::None;
+        scrollbarDragOffset = 0.0f;
+        currentCursor = Cursor::Default;
+        lastError.clear();
+        recomputeAndLayout();
+        return true;
     }
 
     RuntimeOptions options;
@@ -3378,12 +3999,16 @@ public:
     Node* focusedNode = nullptr;
     Node* selectingInput = nullptr;
     size_t selectingInputAnchorOffset = 0;
+    Node* selectingInputAtomicAnchor = nullptr;
+    Node* selectingAtomicHost = nullptr;
+    bool selectingInputDragged = false;
     Node* selectingText = nullptr;
     Node* selectedText = nullptr;
     Node* contentEditableSelectionAnchor = nullptr;
     size_t contentEditableSelectionAnchorOffset = 0;
     Node* contentEditableSelectionFocus = nullptr;
     size_t contentEditableSelectionFocusOffset = 0;
+    Node* contentEditableAtomicSelectionHost = nullptr;
     Node* scrollingNode = nullptr;
     ScrollbarAxis scrollingAxis = ScrollbarAxis::None;
     float scrollbarDragOffset = 0.0f;
@@ -3407,87 +4032,34 @@ Runtime::~Runtime() {
 }
 
 bool Runtime::loadDocument(const std::string& path) {
+    return loadDocument(path, DocumentType::Page);
+}
+
+bool Runtime::loadDocument(const std::string& path,
+                           DocumentType expectedType) {
     Document next;
     std::string error;
     if (!impl_->parser.loadFile(path, next, error)) {
         impl_->lastError = std::move(error);
         return false;
     }
-    impl_->mediaController.close();
-    impl_->document = std::move(next);
-    impl_->renderer.clearCaches();
-    impl_->editableLineCache.clear();
-    impl_->activeAnimations.clear();
-    impl_->keyframeAnimations.clear();
-    impl_->keyframeFramePending = false;
-    if (impl_->document.root) {
-        rebindParents(*impl_->document.root, nullptr);
-        prepareContentEditableTree(*impl_->document.root);
-    }
-    impl_->hasDocument = true;
-    impl_->dirty = true;
-    impl_->mousePressed = false;
-    impl_->pressedButton = MouseButton::None;
-    impl_->hoveredLeaf = nullptr;
-    impl_->pressedLeaf = nullptr;
-    impl_->focusedNode = nullptr;
-    impl_->selectingInput = nullptr;
-    impl_->selectingInputAnchorOffset = 0;
-    impl_->selectingText = nullptr;
-    impl_->selectedText = nullptr;
-    impl_->contentEditableSelectionAnchor = nullptr;
-    impl_->contentEditableSelectionAnchorOffset = 0;
-    impl_->contentEditableSelectionFocus = nullptr;
-    impl_->contentEditableSelectionFocusOffset = 0;
-    impl_->scrollingNode = nullptr;
-    impl_->scrollingAxis = ScrollbarAxis::None;
-    impl_->scrollbarDragOffset = 0.0f;
-    impl_->currentCursor = Cursor::Default;
-    impl_->lastError.clear();
-    impl_->recomputeAndLayout();
-    return true;
+    return impl_->installDocument(std::move(next), expectedType);
 }
 
 bool Runtime::loadDocumentFromString(std::string_view html, std::string_view basePath) {
+    return loadDocumentFromString(html, DocumentType::Page, basePath);
+}
+
+bool Runtime::loadDocumentFromString(std::string_view html,
+                                     DocumentType expectedType,
+                                     std::string_view basePath) {
     Document next;
     std::string error;
     if (!impl_->parser.loadString(html, basePath, next, error)) {
         impl_->lastError = std::move(error);
         return false;
     }
-    impl_->mediaController.close();
-    impl_->document = std::move(next);
-    impl_->renderer.clearCaches();
-    impl_->editableLineCache.clear();
-    impl_->activeAnimations.clear();
-    impl_->keyframeAnimations.clear();
-    impl_->keyframeFramePending = false;
-    if (impl_->document.root) {
-        rebindParents(*impl_->document.root, nullptr);
-        prepareContentEditableTree(*impl_->document.root);
-    }
-    impl_->hasDocument = true;
-    impl_->dirty = true;
-    impl_->mousePressed = false;
-    impl_->pressedButton = MouseButton::None;
-    impl_->hoveredLeaf = nullptr;
-    impl_->pressedLeaf = nullptr;
-    impl_->focusedNode = nullptr;
-    impl_->selectingInput = nullptr;
-    impl_->selectingInputAnchorOffset = 0;
-    impl_->selectingText = nullptr;
-    impl_->selectedText = nullptr;
-    impl_->contentEditableSelectionAnchor = nullptr;
-    impl_->contentEditableSelectionAnchorOffset = 0;
-    impl_->contentEditableSelectionFocus = nullptr;
-    impl_->contentEditableSelectionFocusOffset = 0;
-    impl_->scrollingNode = nullptr;
-    impl_->scrollingAxis = ScrollbarAxis::None;
-    impl_->scrollbarDragOffset = 0.0f;
-    impl_->currentCursor = Cursor::Default;
-    impl_->lastError.clear();
-    impl_->recomputeAndLayout();
-    return true;
+    return impl_->installDocument(std::move(next), expectedType);
 }
 
 void Runtime::resize(int width, int height, float dpiScale) {
@@ -3520,7 +4092,8 @@ void Runtime::endUpdate() {
 }
 
 bool Runtime::handleEvent(const Event& event) {
-    if (!impl_->hasDocument || !impl_->document.root) {
+    if (!impl_->hasDocument || !impl_->document.root ||
+        impl_->document.type == DocumentType::Layout) {
         return false;
     }
 
@@ -3585,6 +4158,31 @@ bool Runtime::handleEvent(const Event& event) {
                     impl_->selectingInputAnchorOffset,
                     *focus,
                     index) || stateChanged;
+                if (Node* host = contentEditableEditingHost(focus)) {
+                    stateChanged =
+                        impl_->updateContentEditableAtomicSelection(
+                            *host,
+                            *impl_->selectingInput,
+                            *focus,
+                            impl_->selectingInputAtomicAnchor,
+                            contentEditableAtomicTarget(hit)) ||
+                        stateChanged;
+                }
+                impl_->selectingInputDragged = true;
+                consumed = true;
+            }
+        } else if (impl_->selectingAtomicHost && impl_->mousePressed) {
+            Node* focusAtomic = contentEditableAtomicTarget(hit);
+            if (focusAtomic &&
+                contentEditableHostAround(hit) ==
+                    impl_->selectingAtomicHost) {
+                stateChanged =
+                    impl_->updateContentEditableAtomicUnitSelection(
+                        *impl_->selectingAtomicHost,
+                        impl_->selectingInputAtomicAnchor,
+                        focusAtomic) ||
+                    stateChanged;
+                impl_->selectingInputDragged = true;
                 consumed = true;
             }
         } else if (impl_->selectingText && impl_->mousePressed) {
@@ -3624,6 +4222,9 @@ bool Runtime::handleEvent(const Event& event) {
             impl_->scrollingAxis = scrollbarHit->axis;
             impl_->scrollbarDragOffset = scrollbarHit->dragOffset;
             impl_->selectingInput = nullptr;
+            impl_->selectingInputAtomicAnchor = nullptr;
+            impl_->selectingAtomicHost = nullptr;
+            impl_->selectingInputDragged = false;
             impl_->selectingText = nullptr;
             const float pointer = impl_->scrollingAxis == ScrollbarAxis::Vertical ? y : x;
             scrollChanged = updateScrollFromScrollbar(*impl_->scrollingNode,
@@ -3663,6 +4264,10 @@ bool Runtime::handleEvent(const Event& event) {
             layoutNeeded = true;
             impl_->selectingInput = anchorNode;
             impl_->selectingInputAnchorOffset = anchorOffset;
+            impl_->selectingInputAtomicAnchor =
+                contentEditableAtomicTarget(hit);
+            impl_->selectingAtomicHost = nullptr;
+            impl_->selectingInputDragged = false;
             impl_->selectingText = nullptr;
             if (impl_->selectedText) {
                 stateChanged = clearSelectableSelection(*impl_->selectedText) || stateChanged;
@@ -3671,6 +4276,20 @@ bool Runtime::handleEvent(const Event& event) {
             }
             stateChanged = true;
             layoutNeeded = true;
+        } else if (Node* atomic = contentEditableAtomicTarget(hit)) {
+            stateChanged = impl_->setFocusedNode(nullptr) || stateChanged;
+            layoutNeeded = true;
+            if (impl_->selectedText) {
+                stateChanged =
+                    clearSelectableSelection(*impl_->selectedText) ||
+                    stateChanged;
+                impl_->selectedText = nullptr;
+            }
+            impl_->selectingInput = nullptr;
+            impl_->selectingInputAtomicAnchor = atomic;
+            impl_->selectingAtomicHost = contentEditableHostAround(hit);
+            impl_->selectingInputDragged = false;
+            impl_->selectingText = nullptr;
         } else if (Node* selectable = selectableTextTarget(hit)) {
             stateChanged = impl_->setFocusedNode(nullptr) || stateChanged;
             layoutNeeded = true;
@@ -3688,12 +4307,18 @@ bool Runtime::handleEvent(const Event& event) {
                 setSelectableCursor(*selectable, index);
             }
             impl_->selectingInput = nullptr;
+            impl_->selectingInputAtomicAnchor = nullptr;
+            impl_->selectingAtomicHost = nullptr;
+            impl_->selectingInputDragged = false;
             impl_->selectingText = selectable;
             impl_->selectedText = selectable;
             stateChanged = true;
             layoutNeeded = true;
         } else {
             impl_->selectingInput = nullptr;
+            impl_->selectingInputAtomicAnchor = nullptr;
+            impl_->selectingAtomicHost = nullptr;
+            impl_->selectingInputDragged = false;
             impl_->selectingText = nullptr;
             if (impl_->selectedText) {
                 stateChanged = clearSelectableSelection(*impl_->selectedText) || stateChanged;
@@ -3724,6 +4349,9 @@ bool Runtime::handleEvent(const Event& event) {
             const size_t index = impl_->editableIndexAtPoint(*input, x, y);
             selectInputWordAt(*input, index);
             impl_->selectingInput = nullptr;
+            impl_->selectingInputAtomicAnchor = nullptr;
+            impl_->selectingAtomicHost = nullptr;
+            impl_->selectingInputDragged = false;
             impl_->selectingText = nullptr;
             consumed = true;
             stateChanged = true;
@@ -3743,6 +4371,9 @@ bool Runtime::handleEvent(const Event& event) {
                 selectAllSelectable(*selectable);
             }
             impl_->selectingInput = nullptr;
+            impl_->selectingInputAtomicAnchor = nullptr;
+            impl_->selectingAtomicHost = nullptr;
+            impl_->selectingInputDragged = false;
             impl_->selectingText = nullptr;
             impl_->selectedText = selectable;
             consumed = true;
@@ -3765,7 +4396,10 @@ bool Runtime::handleEvent(const Event& event) {
         Node* pressed = impl_->pressedLeaf;
         Node* pressedAction = actionTarget(pressed);
         Node* releasedAction = actionTarget(hit);
-        const bool click = pressedAction && pressedAction == releasedAction && event.button == impl_->pressedButton;
+        const bool click = pressedAction &&
+                           pressedAction == releasedAction &&
+                           event.button == impl_->pressedButton &&
+                           !impl_->selectingInputDragged;
         const bool pressedConsumesPointer = isPointerConsumingTarget(pressed);
         const bool hitConsumesPointer = isPointerConsumingTarget(hit);
         if (impl_->selectingInput) {
@@ -3780,9 +4414,23 @@ bool Runtime::handleEvent(const Event& event) {
                     impl_->selectingInputAnchorOffset,
                     *focus,
                     index) || stateChanged;
+                if (impl_->selectingInputDragged) {
+                    if (Node* host = contentEditableEditingHost(focus)) {
+                        stateChanged =
+                            impl_->updateContentEditableAtomicSelection(
+                                *host,
+                                *impl_->selectingInput,
+                                *focus,
+                                impl_->selectingInputAtomicAnchor,
+                                contentEditableAtomicTarget(hit)) ||
+                            stateChanged;
+                    }
+                }
             }
             impl_->selectingInput = nullptr;
             impl_->selectingInputAnchorOffset = 0;
+            impl_->selectingInputAtomicAnchor = nullptr;
+            impl_->selectingInputDragged = false;
         }
         if (impl_->selectingText) {
             const size_t index = impl_->selectableIndexAtPoint(*impl_->selectingText, x, y);
@@ -3848,6 +4496,9 @@ bool Runtime::handleEvent(const Event& event) {
         impl_->pressedButton = MouseButton::None;
         impl_->pressedLeaf = nullptr;
         impl_->selectingText = nullptr;
+        impl_->selectingInputAtomicAnchor = nullptr;
+        impl_->selectingAtomicHost = nullptr;
+        impl_->selectingInputDragged = false;
         impl_->scrollingNode = nullptr;
         impl_->scrollingAxis = ScrollbarAxis::None;
         impl_->scrollbarDragOffset = 0.0f;
@@ -3869,6 +4520,16 @@ bool Runtime::handleEvent(const Event& event) {
     }
     case EventType::KeyDown: {
         Node* input = impl_->focusedNode;
+        if (event.ctrlKey && event.key == 'C' &&
+            impl_->contentEditableAtomicSelectionHost) {
+            const ClipboardContent content =
+                impl_->selectedContentEditableClipboardContent();
+            if (!content.items.empty()) {
+                impl_->writeClipboardContent(content);
+                consumed = true;
+            }
+            break;
+        }
         if (!isEditableNode(input)) {
             if (event.ctrlKey && impl_->selectedText) {
                 switch (event.key) {
@@ -3877,8 +4538,22 @@ bool Runtime::handleEvent(const Event& event) {
                     consumed = stateChanged;
                     break;
                 case 'C':
-                    if (impl_->options.writeClipboardText && hasSelectableSelection(*impl_->selectedText)) {
-                        impl_->options.writeClipboardText(selectedSelectableText(*impl_->selectedText));
+                    if ((impl_->options.writeClipboardContent ||
+                         impl_->options.writeClipboardText) &&
+                        hasSelectableSelection(*impl_->selectedText)) {
+                        const std::string text =
+                            selectedSelectableText(*impl_->selectedText);
+                        if (impl_->options.writeClipboardContent) {
+                            impl_->options.writeClipboardContent(
+                                ClipboardContent{
+                                    text,
+                                    escapeClipboardHtml(text),
+                                    {},
+                                    {{ClipboardItemType::Text, text, {}}},
+                                });
+                        } else {
+                            impl_->options.writeClipboardText(text);
+                        }
                     }
                     consumed = hasSelectableSelection(*impl_->selectedText);
                     break;
@@ -3910,6 +4585,7 @@ bool Runtime::handleEvent(const Event& event) {
                 break;
             }
         }
+        const bool readOnly = isReadOnlyContentEditable(input);
 
         if (event.ctrlKey) {
             switch (event.key) {
@@ -3926,9 +4602,10 @@ bool Runtime::handleEvent(const Event& event) {
                 break;
             case 'C':
                 if (impl_->hasCrossContentEditableSelection()) {
-                    if (impl_->options.writeClipboardText) {
-                        impl_->options.writeClipboardText(
-                            impl_->selectedContentEditableText());
+                    const ClipboardContent content =
+                        impl_->selectedContentEditableClipboardContent();
+                    if (!content.items.empty()) {
+                        impl_->writeClipboardContent(content);
                     }
                     consumed = true;
                 } else {
@@ -3941,10 +4618,26 @@ bool Runtime::handleEvent(const Event& event) {
                 }
                 break;
             case 'X':
-                if (impl_->hasCrossContentEditableSelection()) {
-                    if (impl_->options.writeClipboardText) {
+                if (readOnly) {
+                    if (impl_->hasCrossContentEditableSelection()) {
+                        const ClipboardContent content =
+                            impl_->selectedContentEditableClipboardContent();
+                        if (!content.items.empty()) {
+                            impl_->writeClipboardContent(content);
+                        }
+                    } else if (impl_->options.writeClipboardText &&
+                               hasInputSelection(*input)) {
                         impl_->options.writeClipboardText(
-                            impl_->selectedContentEditableText());
+                            selectedInputText(*input));
+                    }
+                    consumed = true;
+                    break;
+                }
+                if (impl_->hasCrossContentEditableSelection()) {
+                    const ClipboardContent content =
+                        impl_->selectedContentEditableClipboardContent();
+                    if (!content.items.empty()) {
+                        impl_->writeClipboardContent(content);
                     }
                     textChanged =
                         impl_->eraseCrossContentEditableSelection();
@@ -3959,20 +4652,30 @@ bool Runtime::handleEvent(const Event& event) {
                 consumed = true;
                 break;
             case 'V':
-                if (impl_->options.readClipboardText) {
+                if (readOnly) {
+                    consumed = true;
+                    break;
+                }
+                if (impl_->options.readClipboardContent ||
+                    impl_->options.readClipboardText) {
                     if (impl_->hasCrossContentEditableSelection()) {
                         textChanged =
                             impl_->eraseCrossContentEditableSelection();
                         input = impl_->focusedNode;
                     }
-                    const std::string text = editableText(*input, impl_->options.readClipboardText());
+                    const ClipboardContent clipboard =
+                        readClipboardContent();
+                    const std::string text =
+                        editableText(*input, clipboard.text);
                     textChanged = insertInputText(*input, text) ||
                                   textChanged;
                 }
                 consumed = true;
                 break;
             case 'Z':
-                textChanged = restoreInputUndo(*input);
+                if (!readOnly) {
+                    textChanged = restoreInputUndo(*input);
+                }
                 consumed = true;
                 break;
             default:
@@ -3985,6 +4688,10 @@ bool Runtime::handleEvent(const Event& event) {
 
         switch (event.key) {
         case kBackspace:
+            if (readOnly) {
+                consumed = true;
+                break;
+            }
             if (impl_->hasCrossContentEditableSelection()) {
                 textChanged =
                     impl_->eraseCrossContentEditableSelection();
@@ -3998,6 +4705,10 @@ bool Runtime::handleEvent(const Event& event) {
             consumed = true;
             break;
         case kEnter:
+            if (readOnly) {
+                consumed = true;
+                break;
+            }
             if (impl_->hasCrossContentEditableSelection()) {
                 textChanged =
                     impl_->eraseCrossContentEditableSelection();
@@ -4020,6 +4731,10 @@ bool Runtime::handleEvent(const Event& event) {
             }
             return false;
         case kDelete:
+            if (readOnly) {
+                consumed = true;
+                break;
+            }
             if (impl_->hasCrossContentEditableSelection()) {
                 textChanged =
                     impl_->eraseCrossContentEditableSelection();
@@ -4151,6 +4866,10 @@ bool Runtime::handleEvent(const Event& event) {
         if (!isEditableNode(impl_->focusedNode) || event.text.empty()) {
             return false;
         }
+        if (isReadOnlyContentEditable(impl_->focusedNode)) {
+            consumed = true;
+            break;
+        }
         if (impl_->hasCrossContentEditableSelection()) {
             textChanged =
                 impl_->eraseCrossContentEditableSelection();
@@ -4166,6 +4885,10 @@ bool Runtime::handleEvent(const Event& event) {
         if (!isEditableNode(impl_->focusedNode)) {
             return false;
         }
+        if (isReadOnlyContentEditable(impl_->focusedNode)) {
+            consumed = true;
+            break;
+        }
         if (impl_->focusedNode->compositionText != event.text) {
             impl_->focusedNode->compositionText = event.text;
             markTextChanged(*impl_->focusedNode);
@@ -4177,6 +4900,10 @@ bool Runtime::handleEvent(const Event& event) {
     case EventType::ImeEnd:
         if (!isEditableNode(impl_->focusedNode)) {
             return false;
+        }
+        if (isReadOnlyContentEditable(impl_->focusedNode)) {
+            consumed = true;
+            break;
         }
         if (!impl_->focusedNode->compositionText.empty()) {
             impl_->focusedNode->compositionText.clear();
@@ -4245,6 +4972,10 @@ void Runtime::render(SkCanvas& canvas) {
         canvas.clear(impl_->options.clearColor);
         return;
     }
+    if (impl_->document.type == DocumentType::Layout) {
+        impl_->dirty = false;
+        return;
+    }
 
     impl_->renderer.draw(impl_->document, canvas, impl_->width, impl_->height, impl_->effectiveScale());
     impl_->dirty = false;
@@ -4253,6 +4984,11 @@ void Runtime::render(SkCanvas& canvas) {
 
 void Runtime::renderInto(SkCanvas& canvas, const RuntimeRenderRegion& region) {
     const auto traceStart = perf::Trace::now();
+    if (impl_->hasDocument &&
+        impl_->document.type == DocumentType::Layout) {
+        impl_->dirty = false;
+        return;
+    }
     const SkRect destination = SkRect::MakeXYWH(
         region.x,
         region.y,
@@ -5008,6 +5744,39 @@ Selection Runtime::selection() const {
     return result;
 }
 
+ClipboardContent Runtime::readClipboardContent() {
+    ClipboardContent content;
+    if (impl_->options.readClipboardContent) {
+        content = impl_->options.readClipboardContent();
+    } else if (impl_->options.readClipboardText) {
+        content.text = impl_->options.readClipboardText();
+    }
+
+    if (content.items.empty() && !content.html.empty()) {
+        std::string error;
+        if (!impl_->parser.parseClipboardHtml(
+                content.html, content.items, error)) {
+            impl_->lastError = std::move(error);
+        }
+    }
+    if (content.items.empty() && !content.text.empty()) {
+        content.items.push_back(
+            {ClipboardItemType::Text, content.text, {}});
+    }
+    if (content.items.empty() && !content.filePaths.empty()) {
+        for (const std::string& filePath : content.filePaths) {
+            content.items.push_back(
+                {ClipboardItemType::File, {}, filePath});
+        }
+    }
+    if (content.text.empty()) {
+        for (const ClipboardItem& item : content.items) {
+            content.text += item.text;
+        }
+    }
+    return content;
+}
+
 bool Runtime::hasClassById(std::string_view id, std::string_view className) const {
     if (!impl_->hasDocument || !impl_->document.root || id.empty() || className.empty()) {
         return false;
@@ -5030,6 +5799,11 @@ bool Runtime::renderToBgraPixels(uint32_t* pixels, int width, int height, size_t
     dpiScale = std::max(0.1f, dpiScale);
     if (!pixels || rowBytes < static_cast<size_t>(width) * sizeof(uint32_t)) {
         impl_->lastError = "invalid renderToBgraPixels arguments";
+        return false;
+    }
+    if (impl_->hasDocument &&
+        impl_->document.type == DocumentType::Layout) {
+        impl_->lastError = "layout documents do not render pixels";
         return false;
     }
 
@@ -5118,6 +5892,28 @@ bool Runtime::dirty() const {
         impl_->dirty = true;
     }
     return impl_->dirty;
+}
+
+std::optional<DocumentType> Runtime::documentType() const {
+    if (!impl_->hasDocument) {
+        return std::nullopt;
+    }
+    return impl_->document.type;
+}
+
+std::vector<LayoutPageSnapshot> Runtime::layoutPageSnapshots() const {
+    std::vector<LayoutPageSnapshot> snapshots;
+    if (!impl_->hasDocument || !impl_->document.root ||
+        impl_->document.type != DocumentType::Layout) {
+        return snapshots;
+    }
+
+    collectLayoutPageSnapshots(
+        impl_->document,
+        *impl_->document.root,
+        LayoutSnapshotTraversal{},
+        snapshots);
+    return snapshots;
 }
 
 std::string Runtime::lastError() const {

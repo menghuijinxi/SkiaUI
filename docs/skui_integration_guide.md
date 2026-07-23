@@ -400,8 +400,8 @@ runtime.setConsumesEventsById("overlay-light", true);
 skui::RuntimeOptions options;
 options.assetRoot = "assets/ui";
 options.clearColor = SK_ColorBLACK;
-options.readClipboardText = [] { return std::string{}; };
-options.writeClipboardText = [](std::string_view text) {};
+options.readClipboardContent = [] { return skui::ClipboardContent{}; };
+options.writeClipboardContent = [](const skui::ClipboardContent& content) {};
 
 skui::Runtime ui(options);
 ui.setElementEventCallback([&](const skui::ElementEvent& event) {
@@ -442,7 +442,9 @@ if (animationPending) {
 - **SkCanvas 来源**：每帧提供目标 surface 对应的 `SkCanvas`，并保证 `Runtime::render` 调用期间 canvas 有效。
 - **尺寸同步**：窗口逻辑宽高和 DPI scale 变化后调用 `Runtime::resize`。
 - **事件转换**：把平台鼠标、滚轮、键盘、文本输入、IME 组合文本、焦点变化转成 `skui::Event`。
-- **剪贴板**：设置 `RuntimeOptions::readClipboardText` 和 `RuntimeOptions::writeClipboardText`，文本统一转成 UTF-8。
+- **剪贴板**：需要保留文本、图片和文件顺序时，设置
+  `RuntimeOptions::readClipboardContent` 和 `RuntimeOptions::writeClipboardContent`；只支持纯文本的
+  宿主可以继续设置 `readClipboardText` 和 `writeClipboardText`，文本统一使用 UTF-8。
 - **光标**：每次输入事件或 hover 变化后读取 `Runtime::cursor()`，映射成平台光标。
 - **动画 tick**：每帧在 `render` 前调用 `Runtime::tick(deltaSeconds)`，让 CSS transition / animation
   与宿主引擎的 tick 或真实帧时间同步。
@@ -451,6 +453,15 @@ if (animationPending) {
 - **资源路径**：设置 `RuntimeOptions::assetRoot`，并在目标项目构建后复制 HTML、CSS、SVG、图片等资源。
 
 不同后端只差在“如何得到 SkCanvas”和“如何接入平台事件”。只要 Skia 能在目标后端上创建 surface，SkUI 就可以复用同一套 DOM/CSS/布局和控件逻辑。
+
+`ClipboardContent` 同时提供纯文本、HTML、文件路径列表和按文档顺序排列的 `ClipboardItem`。
+Win32 适配层会读写标准 `HTML Format`、`CF_UNICODETEXT` 和 `CF_HDROP`；HTML 负责保留文本、
+图片、文件的前后顺序，另外两种格式用于不支持富 HTML 的应用降级。自定义宿主读取 HTML 后可以
+调用 `Runtime::readClipboardContent()`，Runtime 会用 Lexbor 按 DOM 顺序解析为线性 item 列表。
+
+业务原子节点需要参与富复制时，在 `contenteditable="false"` 根节点上设置
+`data-clipboard-kind="image|file"`、`data-clipboard-path` 和可选的 `data-clipboard-name`。
+这些属性只表达标准剪贴板语义，不改变节点布局或绘制。
 
 ## 平台事件适配
 
