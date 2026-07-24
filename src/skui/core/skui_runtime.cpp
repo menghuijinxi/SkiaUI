@@ -1063,7 +1063,7 @@ void buildEditableLines(std::string_view value, std::vector<TextLine>& lines) {
 }
 
 float editableLineHeight(const Node& node) {
-    return std::max(12.0f, node.style.fontSize * 1.38f);
+    return std::max(12.0f, node.style.fontSize * node.style.lineHeight);
 }
 
 size_t currentLineStart(const std::string& value, size_t cursor) {
@@ -2198,7 +2198,7 @@ std::string styleWithPointerEvents(std::string_view declarations, bool consumesE
     return updated;
 }
 
-void syncNodeAttribute(Node& node, const std::string& name) {
+void syncNodeAttribute(Node& node, const std::string& name, const CssEnvironment& environment) {
     auto it = node.attributes.find(name);
     const bool hasValue = it != node.attributes.end();
     std::string value = hasValue ? it->second : std::string{};
@@ -2290,9 +2290,7 @@ void syncNodeAttribute(Node& node, const std::string& name) {
         node.inlineStyle = {};
         node.inlineImportantStyle = {};
         if (hasValue) {
-            parseInlineStyle(value,
-                             node.inlineStyle,
-                             node.inlineImportantStyle);
+            parseInlineStyle(value, node.inlineStyle, node.inlineImportantStyle, environment);
         }
     }
 }
@@ -5119,9 +5117,8 @@ bool Runtime::setStyleById(std::string_view id, std::string_view declarations) {
     }
     node->inlineStyle = {};
     node->inlineImportantStyle = {};
-    parseInlineStyle(declarations,
-                     node->inlineStyle,
-                     node->inlineImportantStyle);
+    parseInlineStyle(declarations, node->inlineStyle, node->inlineImportantStyle,
+                     impl_->document.cssEnvironment);
     node->attributes["style"] = std::string(declarations);
     impl_->requestLayout();
     return true;
@@ -5214,7 +5211,7 @@ bool Runtime::setAttributeById(std::string_view id, std::string_view name, std::
         return false;
     }
     node->attributes[normalizedName] = std::string(value);
-    syncNodeAttribute(*node, normalizedName);
+    syncNodeAttribute(*node, normalizedName, impl_->document.cssEnvironment);
     if (normalizedName == "contenteditable") {
         prepareContentEditableTree(*node);
     }
@@ -5246,9 +5243,8 @@ bool Runtime::applyUpdates(const RuntimeUpdates& updates) {
         }
         node->inlineStyle = {};
         node->inlineImportantStyle = {};
-        parseInlineStyle(update.declarations,
-                         node->inlineStyle,
-                         node->inlineImportantStyle);
+        parseInlineStyle(update.declarations, node->inlineStyle, node->inlineImportantStyle,
+                         impl_->document.cssEnvironment);
         node->attributes["style"] = update.declarations;
         changed = true;
     }
@@ -5285,7 +5281,7 @@ bool Runtime::applyUpdates(const RuntimeUpdates& updates) {
             continue;
         }
         node->attributes[normalizedName] = update.value;
-        syncNodeAttribute(*node, normalizedName);
+        syncNodeAttribute(*node, normalizedName, impl_->document.cssEnvironment);
         if (normalizedName == "contenteditable") {
             prepareContentEditableTree(*node);
         }
@@ -5317,7 +5313,7 @@ bool Runtime::removeAttributeById(std::string_view id, std::string_view name) {
     if (erased == 0) {
         return false;
     }
-    syncNodeAttribute(*node, normalizedName);
+    syncNodeAttribute(*node, normalizedName, impl_->document.cssEnvironment);
     if (normalizedName == "contenteditable") {
         prepareContentEditableTree(*node);
     }
@@ -5611,7 +5607,7 @@ bool Runtime::setVisibleById(std::string_view id, bool visible) {
     }
     const std::string nextStyle = styleWithDisplay(node->attributes["style"], visible);
     node->attributes["style"] = nextStyle;
-    syncNodeAttribute(*node, "style");
+    syncNodeAttribute(*node, "style", impl_->document.cssEnvironment);
     impl_->lastError.clear();
     impl_->finishDocumentMutation();
     return true;
@@ -5627,7 +5623,7 @@ bool Runtime::setConsumesEventsById(std::string_view id, bool consumesEvents) {
     }
     const std::string nextStyle = styleWithPointerEvents(node->attributes["style"], consumesEvents);
     node->attributes["style"] = nextStyle;
-    syncNodeAttribute(*node, "style");
+    syncNodeAttribute(*node, "style", impl_->document.cssEnvironment);
     impl_->lastError.clear();
     impl_->finishDocumentMutation();
     return true;

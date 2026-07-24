@@ -5980,6 +5980,361 @@ int main() {
             pixelAt(mixedGridTracksPixels, 115, 20) == solidColor(0x00, 0x00, 0xFF),
         "fixed, minmax fraction, auto tracks and inset shorthand should share a row") && ok;
 
+    constexpr std::string_view fractionalGridGapHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .grid {
+      width: 100px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1.75fr);
+      gap: 10px;
+      background: #000000;
+    }
+    .cell { height: 10px; }
+    .red { background: #ff0000; }
+    .green { background: #00ff00; }
+    .blue { background: #0000ff; }
+    .yellow { background: #ffff00; }
+  </style>
+</head>
+<body>
+  <div class="grid">
+    <div class="cell red"></div>
+    <div class="cell green"></div>
+    <div class="cell blue"></div>
+    <div class="cell yellow"></div>
+  </div>
+</body>
+</html>
+)html";
+
+    skui::Runtime fractionalGridGapRuntime(options);
+    fractionalGridGapRuntime.resize(kWidth, kHeight, 1.0f);
+    if (!fractionalGridGapRuntime.loadDocumentFromString(fractionalGridGapHtml, "")) {
+        std::cerr << "fractional grid gap load failed: "
+                  << fractionalGridGapRuntime.lastError() << "\n";
+        return 1;
+    }
+    std::vector<uint32_t> fractionalGridGapPixels;
+    ok = renderPixels(fractionalGridGapRuntime, fractionalGridGapPixels) && ok;
+    ok = expect(pixelAt(fractionalGridGapPixels, 10, 5) == solidColor(0xFF, 0x00, 0x00) &&
+                    pixelAt(fractionalGridGapPixels, 50, 5) == solidColor(0x00, 0xFF, 0x00) &&
+                    pixelAt(fractionalGridGapPixels, 10, 25) == solidColor(0x00, 0x00, 0xFF) &&
+                    pixelAt(fractionalGridGapPixels, 50, 25) == solidColor(0xFF, 0xFF, 0x00),
+                "fractional grid tracks should subtract gaps and keep logical rows together") &&
+         ok;
+
+    constexpr std::string_view mixedGridNoWrapHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .grid {
+      width: 140px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) repeat(2, 20px) 30px;
+      column-gap: 5px;
+      background: #000000;
+    }
+    .cell { height: 10px; }
+    .fill { width: 100%; min-width: 0; background: #ff0000; }
+    .green { background: #00ff00; }
+    .blue { background: #0000ff; }
+    .yellow { background: #ffff00; }
+  </style>
+</head>
+<body>
+  <div class="grid">
+    <div class="cell fill"></div>
+    <div class="cell green"></div>
+    <div class="cell blue"></div>
+    <div class="cell yellow"></div>
+  </div>
+</body>
+</html>
+)html";
+
+    skui::Runtime mixedGridNoWrapRuntime(options);
+    mixedGridNoWrapRuntime.resize(kWidth, kHeight, 1.0f);
+    if (!mixedGridNoWrapRuntime.loadDocumentFromString(mixedGridNoWrapHtml, "")) {
+        std::cerr << "mixed grid no-wrap load failed: "
+                  << mixedGridNoWrapRuntime.lastError() << "\n";
+        return 1;
+    }
+    std::vector<uint32_t> mixedGridNoWrapPixels;
+    ok = renderPixels(mixedGridNoWrapRuntime, mixedGridNoWrapPixels) && ok;
+    ok = expect(pixelAt(mixedGridNoWrapPixels, 10, 5) == solidColor(0xFF, 0x00, 0x00) &&
+                    pixelAt(mixedGridNoWrapPixels, 65, 5) == solidColor(0x00, 0xFF, 0x00) &&
+                    pixelAt(mixedGridNoWrapPixels, 90, 5) == solidColor(0x00, 0x00, 0xFF) &&
+                    pixelAt(mixedGridNoWrapPixels, 120, 5) == solidColor(0xFF, 0xFF, 0x00),
+                "mixed grid tracks should not wrap a percentage-width child onto extra rows") &&
+         ok;
+
+    constexpr std::string_view flexAutomaticMinHeightHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      width: 100px;
+      height: 50px;
+      display: flex;
+      flex-direction: column;
+      background: #000000;
+    }
+    .section { display: flex; flex-direction: column; }
+    .content { height: 40px; flex: 0 0 auto; }
+    .red { background: #ff0000; }
+    .blue { background: #0000ff; }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <section class="section"><div class="content red"></div></section>
+    <section class="section"><div class="content blue"></div></section>
+  </div>
+</body>
+</html>
+)html";
+
+    skui::Runtime flexAutomaticMinHeightRuntime(options);
+    flexAutomaticMinHeightRuntime.resize(kWidth, kHeight, 1.0f);
+    if (!flexAutomaticMinHeightRuntime.loadDocumentFromString(flexAutomaticMinHeightHtml, "")) {
+        std::cerr << "flex automatic min-height load failed: "
+                  << flexAutomaticMinHeightRuntime.lastError() << "\n";
+        return 1;
+    }
+    std::vector<uint32_t> flexAutomaticMinHeightPixels;
+    ok = renderPixels(flexAutomaticMinHeightRuntime, flexAutomaticMinHeightPixels) && ok;
+    ok = expect(pixelAt(flexAutomaticMinHeightPixels, 5, 30) == solidColor(0xFF, 0x00, 0x00) &&
+                    pixelAt(flexAutomaticMinHeightPixels, 5, 45) == solidColor(0x00, 0x00, 0xFF),
+                "column flex items should preserve their automatic content min-height") &&
+         ok;
+
+    constexpr std::string_view relayCssCompatibilityHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    :root {
+      font-size: 10px;
+      --surface: #123456;
+      --accent: #00ff00;
+    }
+    .root {
+      position: relative;
+      width: 14rem;
+      height: 9rem;
+      background: var(--surface);
+    }
+    .circle {
+      position: absolute;
+      left: 1rem;
+      top: 1rem;
+      width: 2rem;
+      height: 2rem;
+      border-radius: 50%;
+      background: var(--accent);
+    }
+    .fallback {
+      position: absolute;
+      left: 4rem;
+      top: 1rem;
+      width: 2rem;
+      height: 2rem;
+      background: var(--missing, #ff0000);
+    }
+    .right-text {
+      position: absolute;
+      left: 4rem;
+      top: 4rem;
+      width: 8rem;
+      height: 2rem;
+      overflow: hidden;
+      color: #ffffff;
+      font-size: 1rem;
+      line-height: 1.2;
+      text-align: right;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    progress {
+      position: absolute;
+      left: 1rem;
+      top: 7rem;
+      width: 6rem;
+      height: 1rem;
+      accent-color: var(--accent);
+    }
+    .ellipsis {
+      position: absolute;
+      left: 8rem;
+      top: 7rem;
+      width: 5rem;
+      height: 1rem;
+      overflow: hidden;
+      color: #ffffff;
+      font-size: 1rem;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <div class="circle"></div>
+    <div class="fallback"></div>
+    <div class="right-text">Hi</div>
+    <progress value="50" max="100"></progress>
+    <div class="ellipsis">AA&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;&#160;ZZ</div>
+  </div>
+</body>
+</html>
+)html";
+
+    skui::Runtime relayCssCompatibilityRuntime(options);
+    relayCssCompatibilityRuntime.resize(kWidth, kHeight, 1.0f);
+    if (!relayCssCompatibilityRuntime.loadDocumentFromString(relayCssCompatibilityHtml, "")) {
+        std::cerr << "relay CSS compatibility load failed: "
+                  << relayCssCompatibilityRuntime.lastError() << "\n";
+        return 1;
+    }
+    std::vector<uint32_t> relayCssCompatibilityPixels;
+    ok = renderPixels(relayCssCompatibilityRuntime, relayCssCompatibilityPixels) && ok;
+    ok = expect(pixelAt(relayCssCompatibilityPixels, 5, 5) == solidColor(0x12, 0x34, 0x56) &&
+                    pixelAt(relayCssCompatibilityPixels, 20, 20) == solidColor(0x00, 0xFF, 0x00),
+                ":root variables and rem lengths should resolve before layout") &&
+         ok;
+    ok = expect(pixelAt(relayCssCompatibilityPixels, 10, 10) == solidColor(0x12, 0x34, 0x56) &&
+                    pixelAt(relayCssCompatibilityPixels, 45, 15) == solidColor(0xFF, 0x00, 0x00),
+                "percentage radii and var() fallbacks should render") &&
+         ok;
+    ok = expect(countBrightPixels(relayCssCompatibilityPixels, 40, 40, 75, 60) == 0 &&
+                    countBrightPixels(relayCssCompatibilityPixels, 95, 40, 120, 60) > 4,
+                "text-align:right should align ordinary text without display:flex") &&
+         ok;
+    ok = expect(pixelAt(relayCssCompatibilityPixels, 20, 75) == solidColor(0x00, 0xFF, 0x00),
+                "accent-color should control progress fill color") &&
+         ok;
+    ok = expect(countBrightPixels(relayCssCompatibilityPixels, 110, 70, 130, 82) > 2,
+                "nowrap text-overflow should draw an ellipsis inside the clip") &&
+         ok;
+
+    constexpr std::string_view relayGridRowsHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .grid {
+      width: 140px;
+      height: 90px;
+      display: grid;
+      grid-template-rows: 10px minmax(0, 1fr) 20px;
+    }
+    .header { background: #ff0000; }
+    .content { background: #00ff00; }
+    .footer { background: #0000ff; }
+  </style>
+</head>
+<body>
+  <div class="grid">
+    <div class="header"></div>
+    <div class="content"></div>
+    <div class="footer"></div>
+  </div>
+</body>
+</html>
+)html";
+
+    skui::Runtime relayGridRowsRuntime(options);
+    relayGridRowsRuntime.resize(kWidth, kHeight, 1.0f);
+    if (!relayGridRowsRuntime.loadDocumentFromString(relayGridRowsHtml, "")) {
+        std::cerr << "relay grid rows load failed: " << relayGridRowsRuntime.lastError() << "\n";
+        return 1;
+    }
+    std::vector<uint32_t> relayGridRowsPixels;
+    ok = renderPixels(relayGridRowsRuntime, relayGridRowsPixels) && ok;
+    ok = expect(pixelAt(relayGridRowsPixels, 70, 5) == solidColor(0xFF, 0x00, 0x00) &&
+                    pixelAt(relayGridRowsPixels, 70, 40) == solidColor(0x00, 0xFF, 0x00) &&
+                    pixelAt(relayGridRowsPixels, 70, 80) == solidColor(0x00, 0x00, 0xFF),
+                "row-only grids should allocate mixed auto/fraction rows vertically") &&
+         ok;
+
+    constexpr std::string_view relayGridRowSpanHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .grid {
+      width: 120px;
+      height: 50px;
+      display: grid;
+      grid-template-columns: 30px minmax(0, 1fr) auto;
+      grid-template-rows: 20px 20px 10px;
+      align-items: center;
+    }
+    .icon {
+      grid-row: span 2;
+      width: 30px;
+      height: 40px;
+      background: #ff0000;
+    }
+    .name {
+      width: 50px;
+      height: 10px;
+      background: #00ff00;
+    }
+    .sub {
+      width: 50px;
+      height: 10px;
+      background: #0000ff;
+    }
+    .percent {
+      grid-column: 3;
+      grid-row: 1 / span 2;
+      width: 40px;
+      height: 10px;
+      background: #ffff00;
+    }
+    .progress {
+      grid-column: 2 / 4;
+      width: 90px;
+      height: 10px;
+      background: #ff00ff;
+    }
+  </style>
+</head>
+<body>
+  <div class="grid">
+    <div class="icon"></div>
+    <div class="name"></div>
+    <div class="sub"></div>
+    <div class="percent"></div>
+    <div class="progress"></div>
+  </div>
+</body>
+</html>
+)html";
+
+    skui::Runtime relayGridRowSpanRuntime(options);
+    relayGridRowSpanRuntime.resize(kWidth, kHeight, 1.0f);
+    if (!relayGridRowSpanRuntime.loadDocumentFromString(relayGridRowSpanHtml, "")) {
+        std::cerr << "relay grid row span load failed: " << relayGridRowSpanRuntime.lastError()
+                  << "\n";
+        return 1;
+    }
+    std::vector<uint32_t> relayGridRowSpanPixels;
+    ok = renderPixels(relayGridRowSpanRuntime, relayGridRowSpanPixels) && ok;
+    ok = expect(pixelAt(relayGridRowSpanPixels, 15, 30) == solidColor(0xFF, 0x00, 0x00) &&
+                    pixelAt(relayGridRowSpanPixels, 55, 10) == solidColor(0x00, 0xFF, 0x00) &&
+                    pixelAt(relayGridRowSpanPixels, 55, 30) == solidColor(0x00, 0x00, 0xFF) &&
+                    pixelAt(relayGridRowSpanPixels, 100, 20) == solidColor(0xFF, 0xFF, 0x00) &&
+                    pixelAt(relayGridRowSpanPixels, 55, 45) == solidColor(0xFF, 0x00, 0xFF),
+                "grid-row should reserve and align explicit row spans") &&
+         ok;
+
     constexpr std::string_view shadowHtml = R"html(
 <!doctype html>
 <html>

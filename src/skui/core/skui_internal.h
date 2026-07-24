@@ -250,18 +250,18 @@ struct EdgeValues {
 };
 
 struct CornerRadii {
-    float topLeft = 0.0f;
-    float topRight = 0.0f;
-    float bottomRight = 0.0f;
-    float bottomLeft = 0.0f;
+    Length topLeft;
+    Length topRight;
+    Length bottomRight;
+    Length bottomLeft;
 
     [[nodiscard]] bool any() const {
-        return topLeft > 0.0f ||
-               topRight > 0.0f ||
-               bottomRight > 0.0f ||
-               bottomLeft > 0.0f;
+        return topLeft.value > 0.0f || topRight.value > 0.0f || bottomRight.value > 0.0f ||
+               bottomLeft.value > 0.0f;
     }
 };
+
+enum class TextAlign { Left, Center, Right };
 
 enum class TransformOperationKind {
     Translate,
@@ -386,6 +386,8 @@ struct Style {
         bool gridAutoRows = false;
         bool gridColumnStart = false;
         bool gridColumnEnd = false;
+        bool gridRowStart = false;
+        bool gridRowEnd = false;
         bool justifyItems = false;
         bool justifySelf = false;
         bool boxSizing = false;
@@ -419,6 +421,10 @@ struct Style {
         bool borderBottomLeftRadius = false;
         bool fontSize = false;
         bool fontBold = false;
+        bool lineHeight = false;
+        bool textAlign = false;
+        bool textOverflow = false;
+        bool whiteSpace = false;
         bool backgroundGradient = false;
         bool maskImage = false;
         bool boxShadow = false;
@@ -458,6 +464,8 @@ struct Style {
     std::optional<GridTrack> gridAutoRows;
     GridLine gridColumnStart;
     GridLine gridColumnEnd;
+    GridLine gridRowStart;
+    GridLine gridRowEnd;
     GridItemAlignment justifyItems = GridItemAlignment::Stretch;
     GridItemAlignment justifySelf = GridItemAlignment::Auto;
     YGBoxSizing boxSizing = YGBoxSizingContentBox;
@@ -480,6 +488,10 @@ struct Style {
     CornerRadii borderRadius;
     float fontSize = 16.0f;
     bool fontBold = false;
+    float lineHeight = 1.38f;
+    TextAlign textAlign = TextAlign::Left;
+    bool textOverflowEllipsis = false;
+    bool whiteSpaceNoWrap = false;
     std::vector<Gradient> backgroundGradients;
     std::optional<Gradient> maskGradient;
     std::vector<Shadow> boxShadows;
@@ -632,10 +644,16 @@ struct StyleRule {
     unsigned specificity = 0;
 };
 
+struct CssEnvironment {
+    std::unordered_map<std::string, std::string> rootVariables;
+    float rootFontSize = 16.0f;
+};
+
 struct Document {
     std::unique_ptr<Node> root;
     std::vector<StyleRule> rules;
     std::unordered_map<std::string, KeyframesDefinition> keyframes;
+    CssEnvironment cssEnvironment;
     std::string basePath;
     DocumentType type = DocumentType::Page;
 };
@@ -888,6 +906,7 @@ private:
     static bool isSvgSource(std::string_view src);
     const TextEntry& textEntry(std::string_view value, float size, bool bold);
     float textWidth(std::string_view value, float size, bool bold);
+    std::string ellipsizedText(const Node& node, std::string_view value, float maxWidth);
     const std::vector<TextLine>& textLines(const Node& node, const std::string& value);
     std::unordered_map<std::string, SvgDomEntry> svgDomCache_;
     std::unordered_map<std::string, std::string> svgFileCache_;
@@ -943,9 +962,8 @@ std::vector<const Node*> childrenInPaintOrder(const Node& node);
 std::vector<Node*> childrenInPaintOrder(Node& node);
 std::filesystem::path pathFromUtf8(std::string_view text);
 std::string pathToUtf8(const std::filesystem::path& path);
-void parseInlineStyle(std::string_view declarations,
-                      Style& style,
-                      Style& importantStyle);
+void parseInlineStyle(std::string_view declarations, Style& style, Style& importantStyle,
+                      const CssEnvironment& environment = {});
 void recomputeStyles(Document& document, const RuntimeOptions& options, float viewportWidth = 0.0f, float viewportHeight = 0.0f);
 void applyAnimatedStyles(Node& node);
 

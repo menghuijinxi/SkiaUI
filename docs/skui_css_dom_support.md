@@ -65,6 +65,7 @@
 - 子选择器：`.panel > .row`
 - 选择器列表：`.a, .b`
 - 属性选择器：`[data-state]`、`[data-state=selected]`
+- 文档根选择器：`:root`
 - 伪类：`:hover`、`:active`、`:focus`、`:disabled`、`:checked`、`:selected`
 - 结构伪类：`:first-child`、`:last-child`、`:nth-child(An+B)`、`:nth-child(odd)`、`:nth-child(even)`
 - 否定伪类：`:not(...)`，参数支持单个复合选择器
@@ -78,7 +79,7 @@
 
 - 兄弟选择器 `+` / `~`
 - `:has()`、`:is()`，以及 `:not()` 内的选择器列表或复杂选择器
-- CSS 变量
+- 元素级或局部作用域 CSS 变量；当前变量环境只读取 `:root` 中的自定义属性
 - 完整 CSS Animation 标准；当前提供面向雪碧图的 `@keyframes` / `animation` 子集
 - 远程 CSS（`http://` / `https://`）和 `data:` stylesheet
 
@@ -93,6 +94,15 @@
 `href` 相对路径按当前 HTML 文档的 `basePath` 解析；通过 `Runtime::loadDocument(path)` 加载时，`basePath` 是 HTML 文件所在目录；通过 `loadDocumentFromString(html, basePath)` 加载时，由调用方显式传入。外部样式表与 `<style>` 按文档出现顺序进入同一个级联规则列表，后出现的同优先级规则会覆盖先出现的规则。
 
 当前只加载本地 CSS 文件；`http://`、`https://` 和 `data:` stylesheet 会被忽略。
+
+## CSS 变量与长度单位
+
+支持在 `:root` 中声明文档级自定义属性，并在样式表、内联样式和运行时
+`setStyleById` / `setStylesById` 中通过 `var(--name)` 使用。`var()` 支持递归引用和
+逗号 fallback，例如 `var(--panel-color, #ffffff)`；当前不实现元素级变量作用域和继承。
+
+长度声明除各属性表中列出的 `px` / `%` 外，也支持 `rem`。`1rem` 以 `:root` 的
+`font-size` 为基准；未声明根字号时使用默认根字号。根字号本身可用数值、`px` 或 `rem`。
 
 ## 媒体查询
 
@@ -133,20 +143,21 @@
 | `padding` / 单边 `padding-*` | 1-4 值，`px` / `%` |
 | `flex-direction` | `row`、`column` |
 | `flex-wrap` | `nowrap`、`wrap` |
-| `gap` / `row-gap` / `column-gap` | `px` / `%`，用于 flex 容器 |
+| `gap` / `row-gap` / `column-gap` | `px` / `%`，用于 flex 和当前 Grid 子集 |
 | `flex-grow` / `flex-shrink` | 数字 |
 | `flex` / `flex-basis` | 常用 1-3 值 shorthand；basis 支持 `px` / `%` / `auto` |
-| `grid-template-columns` | `repeat(N, track)` 或轨道列表；支持 `px`、`%`、`fr`、`auto`、`minmax(0, track)` |
-| `grid-template-rows` | 轨道列表；支持 `px`、`%`、`auto`，以及全 `fr` 轨道列表 |
+| `grid-template-columns` | 轨道列表（列表内可混用 `repeat(N, track)`）；支持 `px`、`%`、`fr`、`auto`、`minmax(0, track)` |
+| `grid-template-rows` | 轨道列表；支持 `px`、`%`、`auto`、`fr` 和 `minmax(0, track)`；单列行式 Grid 可混合固定、auto 与 fr |
 | `grid-auto-rows` | 单个 `px`、`%`、`fr` 或 `auto` 轨道 |
 | `grid-column` / `grid-column-start` / `grid-column-end` | 正负整数网格线、`auto`、`span N`；支持数值列定位和列跨度 |
+| `grid-row` / `grid-row-start` / `grid-row-end` | 整数网格线、`auto`、`span N`；支持非重叠项目的显式行定位和行跨度，负数行线相对显式行模板解析 |
 | `justify-items` / `justify-self` | `auto`、`normal`、`stretch`、`start`、`center`、`end` 及常见 `flex-*` / `left` / `right` 别名 |
 | `align-items` / `align-self` | `stretch`、`center`、`flex-start`、`flex-end` |
 | `justify-content` | `flex-start`、`center`、`flex-end`、`space-between` |
 
 布局由 Yoga 计算。显式 `display:flex` 的容器使用浏览器默认的 `flex-direction: row`；未显式设置 `display` 的旧写法保持原有默认纵向排布。
 
-Grid 通过 Yoga 的横向换行布局和内部单元格节点实现，覆盖等分 `repeat(N, 1fr)`、固定/弹性混合列轨道、数值列线定位、固定同单位或全 `fr` 列跨度、显式行轨道和单项水平对齐。内部单元格不进入 DOM，也不影响选择器、事件目标和绘制顺序。它不是完整 CSS Grid 算法，暂不支持命名线、`grid-row` 显式行定位、`grid-template-areas`、固定与 `fr` 混合的行轨道分配、`auto-fit` / `auto-fill`、dense 自动放置和复杂隐式轨道。
+Grid 通过 Yoga 和内部单元格节点实现，覆盖等分 `repeat(N, 1fr)`、固定/弹性/auto 混合列轨道、数值列线定位、固定同单位或全 `fr` 列跨度、显式行轨道、非重叠行跨度和单项水平/垂直对齐。只声明行轨道的 Grid 会按单列纵向布局，其中固定、`auto` 和 `fr` 行可以分配剩余高度。内部单元格不进入 DOM，也不影响选择器、事件目标和绘制顺序。它不是完整 CSS Grid 算法，暂不支持命名线、项目重叠、`grid-template-areas`、多列 Grid 中任意复杂的固定/`fr` 行轨道组合、`auto-fit` / `auto-fill`、dense 自动放置和复杂隐式轨道。
 
 `display:flex` 使用 `align-items` 和 `justify-content` 控制内容对齐。Grid 使用 `align-items` / `align-self` 控制单元格块轴对齐，使用 `justify-items` / `justify-self` 控制单元格行内轴对齐。没有显式 Flex 或 Grid 容器的普通文本和 `selectable` 不会因为这些属性而居中。
 
@@ -176,12 +187,17 @@ Grid 通过 Yoga 的横向换行布局和内部单元格节点实现，覆盖等
 | `border-width` | 数字或 `px` |
 | `border-style` | `solid`、`none` |
 | `border-top` / `border-right` / `border-bottom` / `border-left` | 单边宽度、样式、颜色 shorthand；也支持对应的 `-color` / `-width` / `-style` 长属性 |
-| `border-radius` | 1-4 个数字或 `px`，按 CSS shorthand 顺序展开四角 |
-| `border-top-left-radius` / `border-top-right-radius` / `border-bottom-right-radius` / `border-bottom-left-radius` | 数字或 `px` |
+| `border-radius` | 1-4 个数字、`px` 或 `%`，按 CSS shorthand 顺序展开四角 |
+| `border-top-left-radius` / `border-top-right-radius` / `border-bottom-right-radius` / `border-bottom-left-radius` | 数字、`px` 或 `%` |
 | `box-shadow` | 逗号分隔的外阴影和 `inset` 阴影；支持偏移、模糊、扩散和颜色 |
 | `text-shadow` | 逗号分隔的文字阴影；支持偏移、模糊和颜色 |
-| `font-size` | 数字或 `px` |
+| `font-size` | 数字、`px` 或 `rem` |
 | `font-weight` | `bold`、`600`、`700` 为粗体；其他为常规 |
+| `line-height` | 无单位倍率 |
+| `text-align` | `left` / `start`、`center`、`right` / `end`，适用于普通文本 |
+| `white-space` | 普通单行文本识别 `nowrap`；与 overflow 和 text-overflow 配合使用 |
+| `text-overflow` | 普通单行文本在 `overflow` 非 visible 且 `white-space: nowrap` 时支持 `ellipsis` |
+| `accent-color` | 控制 `progress` 填充色 |
 | `filter` | `none`，或按顺序组合 `grayscale(...)`、`brightness(...)`、`drop-shadow(...)` |
 | `content` | `::before` / `::after` 的创建条件；当前绘制子集使用空字符串装饰盒 |
 
@@ -263,7 +279,7 @@ runtime.render(canvas);
 }
 ```
 
-`border-radius` 展开规则与浏览器 CSS shorthand 一致：一个值应用到四角，两个值为左上/右下与右上/左下，三个值为左上、右上/左下、右下，四个值为左上、右上、右下、左下。当前只支持圆形半径，不支持 `border-radius: 8px / 4px` 这类椭圆半径语法。分角圆角会作用于背景、边框、`progress` 填充和 `overflow` 裁剪。
+`border-radius` 展开规则与浏览器 CSS shorthand 一致：一个值应用到四角，两个值为左上/右下与右上/左下，三个值为左上、右上/左下、右下，四个值为左上、右上、右下、左下。百分比会分别按盒宽和盒高解析，因此 `50%` 可形成圆形或椭圆形外观；当前不支持 `border-radius: 8px / 4px` 这类双半径斜杠语法。分角圆角会作用于背景、边框、`progress` 填充和 `overflow` 裁剪。
 
 ### 滚动和裁剪
 

@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <limits>
 #include <optional>
 #include <string_view>
 
@@ -155,7 +156,7 @@ YGSize measureTextNode(YGNodeConstRef node,
             uiNode->style.fontBold);
     };
     float measuredWidth = measureText(value);
-    float measuredHeight = uiNode->style.fontSize * 1.35f;
+    float measuredHeight = std::max(12.0f, uiNode->style.fontSize * uiNode->style.lineHeight);
     if (widthMode == YGMeasureModeExactly) {
         measuredWidth = width;
     } else if (widthMode == YGMeasureModeAtMost) {
@@ -167,9 +168,8 @@ YGSize measureTextNode(YGNodeConstRef node,
             value,
             measuredWidth,
             measureText);
-        measuredHeight =
-            static_cast<float>(lineCount) *
-            std::max(12.0f, uiNode->style.fontSize * 1.38f);
+        measuredHeight = static_cast<float>(lineCount) *
+                         std::max(12.0f, uiNode->style.fontSize * uiNode->style.lineHeight);
     }
     if (heightMode == YGMeasureModeExactly) {
         measuredHeight = height;
@@ -232,7 +232,7 @@ size_t textLineCount(std::string_view value) {
 
 TextareaScrollMetrics textareaScrollMetrics(const Node& node) {
     const std::string& value = !node.value.empty() ? node.value : node.placeholder;
-    const float lineHeight = std::max(12.0f, node.style.fontSize * 1.38f);
+    const float lineHeight = std::max(12.0f, node.style.fontSize * node.style.lineHeight);
     const float paddingTop = node.resolvedPadding.top;
     const float paddingBottom = node.resolvedPadding.bottom;
     const float paddingLeft = node.resolvedPadding.left;
@@ -358,7 +358,14 @@ bool allTracksAreFractional(const std::vector<GridTrack>& tracks) {
            });
 }
 
+constexpr float kGridFractionBasisScale = 0.01f;
+
 struct ResolvedGridColumn {
+    std::optional<size_t> start;
+    size_t span = 1;
+};
+
+struct ResolvedGridRow {
     std::optional<size_t> start;
     size_t span = 1;
 };
@@ -368,6 +375,7 @@ struct PositionedGridItem {
     size_t row = 0;
     size_t column = 0;
     size_t columnSpan = 1;
+    size_t rowSpan = 1;
 };
 
 struct GridPlacementPlan {
@@ -430,42 +438,110 @@ ResolvedGridColumn resolveGridColumn(const Style& style,
     return result;
 }
 
-bool gridCellsAreFree(const std::vector<bool>& occupied,
-                      size_t row,
-                      size_t column,
-                      size_t span,
-                      size_t columnCount) {
-    const size_t first = row * columnCount + column;
-    for (size_t offset = 0; offset < span; ++offset) {
-        const size_t index = first + offset;
-        if (index < occupied.size() && occupied[index]) {
-            return false;
+std::optional<size_t> resolveGridRowLineIndex(const GridLine& line, size_t explicitRowCount) {
+    if (line.kind != GridLineKind::Index) {
+        return std::nullopt;
+    }
+    if (line.value > 0) {
+        return static_cast<size_t>(line.value - 1);
+    }
+    if (explicitRowCount == 0) {
+        return std::nullopt;
+    }
+
+    const int lineCount = static_cast<int>(explicitRowCount) + 1;
+    const int index = lineCount + line.value;
+    if (index < 0) {
+        return std::nullopt;
+    }
+    return static_cast<size_t>(index);
+}
+
+ResolvedGridRow resolveGridRow(const Style& style, size_t explicitRowCount) {
+    ResolvedGridRow result;
+    if (style.gridRowStart.kind == GridLineKind::Span) {
+        result.span = static_cast<size_t>(style.gridRowStart.value);
+    }
+    if (style.gridRowEnd.kind == GridLineKind::Span) {
+        result.span = static_cast<size_t>(style.gridRowEnd.value);
+    }
+
+    const std::optional<size_t> start =
+        resolveGridRowLineIndex(style.gridRowStart, explicitRowCount);
+    const std::optional<size_t> end = resolveGridRowLineIndex(style.gridRowEnd, explicitRowCount);
+    if (start && end && *end > *start) {
+        result.start = *start;
+        result.span = *end - *start;
+    } else if (start) {
+        result.start = *start;
+    } else if (end) {
+        result.start = *end >= result.span ? *end - result.span : 0;
+    }
+    return result;
+}
+
+bool gridCellsAreFree(const std::vector<bool>& occupied, size_t row, size_t column, size_t rowSpan,
+                      size_t columnSpan, size_t columnCount) {
+    for (size_t rowOffset = 0; rowOffset < rowSpan; ++rowOffset) {
+        const size_t first = (row + rowOffset) * columnCount + column;
+        for (size_t columnOffset = 0; columnOffset < columnSpan; ++columnOffset) {
+            const size_t index = first + columnOffset;
+            if (index < occupied.size() && occupied[index]) {
+                return false;
+            }
         }
     }
     return true;
 }
 
-GridPlacementPlan positionGridItems(const std::vector<Node*>& children,
-                                    size_t columnCount) {
+void occupyGridCells(std::vector<bool>& occupied, size_t row, size_t column, size_t rowSpan,
+                     size_t columnSpan, size_t columnCount) {
+    const size_t requiredSize = (row + rowSpan) * columnCount;
+    occupied.resize(std::max(occupied.size(), requiredSize), false);
+    for (size_t rowOffset = 0; rowOffset < rowSpan; ++rowOffset) {
+        const size_t first = (row + rowOffset) * columnCount + column;
+        std::fill(occupied.begin() + first, occupied.begin() + first + columnSpan, true);
+    }
+}
+
+GridPlacementPlan positionGridItems(const std::vector<Node*>& children, size_t columnCount,
+                                    size_t explicitRowCount) {
     GridPlacementPlan plan;
     std::vector<bool> occupied;
+    std::vector<bool> positioned(children.size(), false);
     size_t autoCursor = 0;
 
-    for (Node* child : children) {
+    auto placeItem = [&](size_t childIndex, bool explicitPosition) {
+        Node* child = children[childIndex];
         const ResolvedGridColumn requested = resolveGridColumn(
             child->style,
             columnCount);
-        size_t row = 0;
-        size_t column = 0;
-        if (requested.start) {
-            column = *requested.start;
-            while (!gridCellsAreFree(
-                occupied,
-                row,
-                column,
-                requested.span,
-                columnCount)) {
+        const ResolvedGridRow requestedRow = resolveGridRow(child->style, explicitRowCount);
+        size_t row = requestedRow.start.value_or(0);
+        size_t column = requested.start.value_or(0);
+        if (explicitPosition) {
+            if (!gridCellsAreFree(occupied, row, column, requestedRow.span, requested.span,
+                                  columnCount)) {
+                return;
+            }
+        } else if (requested.start) {
+            while (!gridCellsAreFree(occupied, row, column, requestedRow.span, requested.span,
+                                     columnCount)) {
                 ++row;
+            }
+        } else if (requestedRow.start) {
+            bool found = false;
+            while (!found) {
+                for (column = 0; column + requested.span <= columnCount; ++column) {
+                    if (gridCellsAreFree(occupied, row, column, requestedRow.span, requested.span,
+                                         columnCount)) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    ++row;
+                }
             }
         } else {
             size_t candidate = autoCursor;
@@ -473,12 +549,8 @@ GridPlacementPlan positionGridItems(const std::vector<Node*>& children,
                 row = candidate / columnCount;
                 column = candidate % columnCount;
                 if (column + requested.span <= columnCount &&
-                    gridCellsAreFree(
-                        occupied,
-                        row,
-                        column,
-                        requested.span,
-                        columnCount)) {
+                    gridCellsAreFree(occupied, row, column, requestedRow.span, requested.span,
+                                     columnCount)) {
                     break;
                 }
                 ++candidate;
@@ -486,12 +558,24 @@ GridPlacementPlan positionGridItems(const std::vector<Node*>& children,
             autoCursor = row * columnCount + column + requested.span;
         }
 
-        const size_t first = row * columnCount + column;
-        const size_t end = first + requested.span;
-        occupied.resize(std::max(occupied.size(), end), false);
-        std::fill(occupied.begin() + first, occupied.begin() + end, true);
-        plan.items.push_back({child, row, column, requested.span});
-        plan.cellCount = std::max(plan.cellCount, end);
+        occupyGridCells(occupied, row, column, requestedRow.span, requested.span, columnCount);
+        plan.items.push_back({child, row, column, requested.span, requestedRow.span});
+        plan.cellCount = std::max(plan.cellCount, (row + requestedRow.span) * columnCount);
+        positioned[childIndex] = true;
+    };
+
+    // CSS Grid 会先放置行列均明确的项目，避免后出现的固定项被自动流项目抢占。
+    for (size_t index = 0; index < children.size(); ++index) {
+        const ResolvedGridColumn column = resolveGridColumn(children[index]->style, columnCount);
+        const ResolvedGridRow row = resolveGridRow(children[index]->style, explicitRowCount);
+        if (column.start && row.start) {
+            placeItem(index, true);
+        }
+    }
+    for (size_t index = 0; index < children.size(); ++index) {
+        if (!positioned[index]) {
+            placeItem(index, false);
+        }
     }
     return plan;
 }
@@ -506,7 +590,7 @@ void applySingleColumnTrack(YGNodeRef cell, const GridTrack& track) {
         YGNodeStyleSetFlexGrow(cell, 0.0f);
         YGNodeStyleSetFlexShrink(cell, 0.0f);
     } else if (track.kind == GridTrackKind::Fraction) {
-        YGNodeStyleSetFlexBasis(cell, 0.0f);
+        YGNodeStyleSetFlexBasis(cell, track.fraction * kGridFractionBasisScale);
         YGNodeStyleSetFlexGrow(cell, track.fraction);
         YGNodeStyleSetFlexShrink(cell, 1.0f);
     } else {
@@ -521,7 +605,15 @@ void applyGridColumnTrack(YGNodeRef cell,
                           size_t column,
                           size_t span) {
     const std::vector<GridTrack>& tracks = gridStyle.gridTemplateColumns;
-    if (tracks.empty() || column >= tracks.size()) {
+    if (tracks.empty()) {
+        if (column == 0 && span == 1) {
+            YGNodeStyleSetWidthPercent(cell, 100.0f);
+            YGNodeStyleSetFlexGrow(cell, 0.0f);
+            YGNodeStyleSetFlexShrink(cell, 0.0f);
+        }
+        return;
+    }
+    if (column >= tracks.size()) {
         return;
     }
     span = std::min(span, tracks.size() - column);
@@ -536,11 +628,11 @@ void applyGridColumnTrack(YGNodeRef cell,
             }
         }
         if (totalFraction > 0.0f) {
-            YGNodeStyleSetWidthPercent(
+            YGNodeStyleSetFlexBasis(
                 cell,
-                itemFraction / totalFraction * 100.0f);
-            YGNodeStyleSetFlexGrow(cell, 0.0f);
-            YGNodeStyleSetFlexShrink(cell, 0.0f);
+                itemFraction * kGridFractionBasisScale);
+            YGNodeStyleSetFlexGrow(cell, itemFraction);
+            YGNodeStyleSetFlexShrink(cell, 1.0f);
         }
         return;
     }
@@ -578,10 +670,8 @@ void applyGridColumnTrack(YGNodeRef cell,
     YGNodeStyleSetFlexShrink(cell, 0.0f);
 }
 
-void applyGridRowTrack(YGNodeRef cell,
-                       const Style& gridStyle,
-                       size_t row,
-                       size_t rowCount) {
+void applyGridRowTrack(YGNodeRef cell, const Style& gridStyle, size_t row, size_t rowCount,
+                       bool verticalFlow) {
     const GridTrack* track = nullptr;
     if (row < gridStyle.gridTemplateRows.size()) {
         track = &gridStyle.gridTemplateRows[row];
@@ -593,6 +683,10 @@ void applyGridRowTrack(YGNodeRef cell,
         if (gridStyle.gridTemplateRows.empty() && rowCount == 1) {
             YGNodeStyleSetHeightPercent(cell, 100.0f);
         }
+        if (verticalFlow) {
+            YGNodeStyleSetFlexGrow(cell, 0.0f);
+            YGNodeStyleSetFlexShrink(cell, 0.0f);
+        }
         return;
     }
     if (track->kind == GridTrackKind::Fixed) {
@@ -601,9 +695,27 @@ void applyGridRowTrack(YGNodeRef cell,
         } else {
             YGNodeStyleSetHeight(cell, track->length.value);
         }
+        if (verticalFlow) {
+            YGNodeStyleSetFlexGrow(cell, 0.0f);
+            YGNodeStyleSetFlexShrink(cell, 0.0f);
+        }
+        return;
+    }
+    if (track->kind == GridTrackKind::Auto) {
+        if (verticalFlow) {
+            YGNodeStyleSetFlexGrow(cell, 0.0f);
+            YGNodeStyleSetFlexShrink(cell, 0.0f);
+        }
         return;
     }
     if (track->kind != GridTrackKind::Fraction) {
+        return;
+    }
+
+    if (verticalFlow) {
+        YGNodeStyleSetFlexBasis(cell, 0.0f);
+        YGNodeStyleSetFlexGrow(cell, track->fraction);
+        YGNodeStyleSetFlexShrink(cell, 1.0f);
         return;
     }
 
@@ -625,6 +737,15 @@ void applyGridRowTrack(YGNodeRef cell,
     }
 }
 
+void appendGridRowBreak(YGNodeRef grid) {
+    YGNodeRef rowBreak = YGNodeNew();
+    YGNodeStyleSetWidthPercent(rowBreak, 100.0f);
+    YGNodeStyleSetHeight(rowBreak, 0.0f);
+    YGNodeStyleSetFlexGrow(rowBreak, 0.0f);
+    YGNodeStyleSetFlexShrink(rowBreak, 0.0f);
+    YGNodeInsertChild(grid, rowBreak, YGNodeGetChildCount(grid));
+}
+
 YGJustify gridItemJustification(GridItemAlignment alignment) {
     if (alignment == GridItemAlignment::Center) {
         return YGJustifyCenter;
@@ -644,6 +765,39 @@ GridItemAlignment resolvedGridItemAlignment(const Style& gridStyle,
     return alignment == GridItemAlignment::Auto
         ? GridItemAlignment::Stretch
         : alignment;
+}
+
+float gridInlineAlignmentOffset(GridItemAlignment alignment, float areaWidth, float itemWidth) {
+    if (alignment == GridItemAlignment::Center) {
+        return std::max(0.0f, (areaWidth - itemWidth) * 0.5f);
+    }
+    if (alignment == GridItemAlignment::End) {
+        return std::max(0.0f, areaWidth - itemWidth);
+    }
+    return 0.0f;
+}
+
+float gridBlockAlignmentOffset(YGAlign alignment, float areaHeight, float itemHeight) {
+    if (alignment == YGAlignCenter) {
+        return std::max(0.0f, (areaHeight - itemHeight) * 0.5f);
+    }
+    if (alignment == YGAlignFlexEnd) {
+        return std::max(0.0f, areaHeight - itemHeight);
+    }
+    return 0.0f;
+}
+
+std::optional<float> gridItemIntrinsicWidth(const Node& node) {
+    if (node.style.width && node.style.width->unit == LengthUnit::Px) {
+        return std::max(0.0f, node.style.width->value);
+    }
+
+    const std::string& value =
+        !node.value.empty() ? node.value : (!node.text.empty() ? node.text : node.placeholder);
+    if (!value.empty()) {
+        return measureUiTextWidth(value, node.style.fontSize, node.style.fontBold);
+    }
+    return std::nullopt;
 }
 
 }  // namespace
@@ -753,20 +907,21 @@ void LayoutEngine::buildYoga(Node& node, YGNodeRef yogaNode, bool isRoot) {
         usesInlineContentEditableFlow(node);
     const bool isGrid = s.display == Display::Grid &&
                         !inlineContentEditableFlow;
-    const bool usesGridCells = isGrid && !s.gridTemplateColumns.empty();
+    const bool rowOnlyGrid = isGrid && s.gridTemplateColumns.empty() && !s.gridTemplateRows.empty();
+    const bool usesGridCells =
+        isGrid && (!s.gridTemplateColumns.empty() || !s.gridTemplateRows.empty());
     YGFlexDirection flexDirection = s.flexDirection;
     if (isGrid) {
-        flexDirection = YGFlexDirectionRow;
+        flexDirection = rowOnlyGrid ? YGFlexDirectionColumn : YGFlexDirectionRow;
     }
     if (inlineContentEditableFlow) {
         flexDirection = YGFlexDirectionColumn;
     }
     YGNodeStyleSetFlexDirection(yogaNode, flexDirection);
-    YGNodeStyleSetFlexWrap(
-        yogaNode,
-        inlineContentEditableFlow
-            ? YGWrapNoWrap
-            : (isGrid ? YGWrapWrap : s.flexWrap));
+    YGNodeStyleSetFlexWrap(yogaNode,
+                           inlineContentEditableFlow
+                               ? YGWrapNoWrap
+                               : (isGrid ? (rowOnlyGrid ? YGWrapNoWrap : YGWrapWrap) : s.flexWrap));
     if (!isGrid) {
         setFlexGap(yogaNode, YGGutterRow, s.rowGap);
         setFlexGap(yogaNode, YGGutterColumn, s.columnGap);
@@ -860,13 +1015,10 @@ void LayoutEngine::buildYoga(Node& node, YGNodeRef yogaNode, bool isRoot) {
             }
         }
 
-        const size_t columnCount = s.gridTemplateColumns.size();
-        const GridPlacementPlan plan = positionGridItems(
-            layoutChildren,
-            columnCount);
-        const size_t rowCount = plan.cellCount == 0
-            ? 0
-            : (plan.cellCount + columnCount - 1) / columnCount;
+        const size_t columnCount = rowOnlyGrid ? 1 : s.gridTemplateColumns.size();
+        const GridPlacementPlan plan =
+            positionGridItems(layoutChildren, columnCount, s.gridTemplateRows.size());
+        const size_t rowCount = plan.cellCount / columnCount;
         std::vector<const PositionedGridItem*> itemStarts(
             plan.cellCount,
             nullptr);
@@ -883,7 +1035,14 @@ void LayoutEngine::buildYoga(Node& node, YGNodeRef yogaNode, bool isRoot) {
             YGNodeStyleSetFlexDirection(cellRef, YGFlexDirectionRow);
             YGNodeStyleSetAlignItems(cellRef, s.alignItems);
             applyGridColumnTrack(cellRef, s, column, span);
-            applyGridRowTrack(cellRef, s, row, rowCount);
+            applyGridRowTrack(cellRef, s, row, rowCount, rowOnlyGrid);
+            if (item && item->rowSpan > 1 && item->columnSpan == 1 &&
+                column < s.gridTemplateColumns.size() &&
+                s.gridTemplateColumns[column].kind == GridTrackKind::Auto) {
+                if (std::optional<float> intrinsicWidth = gridItemIntrinsicWidth(*item->node)) {
+                    YGNodeStyleSetMinWidth(cellRef, *intrinsicWidth);
+                }
+            }
             if (column > 0) {
                 setGapMargin(cellRef, YGEdgeLeft, s.columnGap, std::nullopt);
             }
@@ -904,8 +1063,17 @@ void LayoutEngine::buildYoga(Node& node, YGNodeRef yogaNode, bool isRoot) {
                 // Grid item 的 flex 属性不参与单元格内对齐；stretch 仅在宽度为 auto 时填满轨道。
                 YGNodeStyleSetFlexGrow(childRef, 0.0f);
                 YGNodeStyleSetFlexShrink(childRef, 0.0f);
-                if (alignment == GridItemAlignment::Stretch &&
-                    needsIntrinsicMeasure(item->node->style.width)) {
+                if (item->rowSpan > 1) {
+                    // 跨行项目不参与起始行高度计算，最终位置按完整跨行区域回读。
+                    YGNodeStyleSetPositionType(childRef, YGPositionTypeAbsolute);
+                    YGNodeStyleSetPosition(childRef, YGEdgeLeft, 0.0f);
+                    YGNodeStyleSetPosition(childRef, YGEdgeTop, 0.0f);
+                    if (alignment == GridItemAlignment::Stretch &&
+                        needsIntrinsicMeasure(item->node->style.width)) {
+                        YGNodeStyleSetWidthPercent(childRef, 100.0f);
+                    }
+                } else if (alignment == GridItemAlignment::Stretch &&
+                           needsIntrinsicMeasure(item->node->style.width)) {
                     YGNodeStyleSetFlexBasis(childRef, 0.0f);
                     YGNodeStyleSetFlexGrow(childRef, 1.0f);
                     YGNodeStyleSetFlexShrink(childRef, 1.0f);
@@ -918,6 +1086,10 @@ void LayoutEngine::buildYoga(Node& node, YGNodeRef yogaNode, bool isRoot) {
                 cellRef,
                 YGNodeGetChildCount(yogaNode));
             cellIndex += span;
+            if (!rowOnlyGrid && cellIndex < plan.cellCount && cellIndex % columnCount == 0) {
+                // 混合 fr/auto 轨道的 flex basis 不足以触发换行，显式保持逻辑行边界。
+                appendGridRowBreak(yogaNode);
+            }
         }
         return;
     }
@@ -964,6 +1136,16 @@ void LayoutEngine::buildYoga(Node& node, YGNodeRef yogaNode, bool isRoot) {
         }
         YGNodeRef childRef = YGNodeNew();
         buildYoga(*child, childRef, false);
+        const bool preservesAutomaticMinHeight =
+            flexDirection == YGFlexDirectionColumn &&
+            !child->style.minHeight &&
+            !child->style.height &&
+            !child->style.flexBasis &&
+            !child->style.flags.flexShrink &&
+            child->style.overflowY == Overflow::Visible;
+        if (preservesAutomaticMinHeight) {
+            YGNodeStyleSetFlexShrink(childRef, 0.0f);
+        }
         YGNodeInsertChild(yogaNode, childRef, YGNodeGetChildCount(yogaNode));
     }
 }
@@ -983,20 +1165,86 @@ void LayoutEngine::readYoga(Node& node, YGNodeRef yogaNode, float offsetX, float
     };
 
     if (node.style.display == Display::Grid &&
-        !node.style.gridTemplateColumns.empty()) {
-        const uint32_t cellCount = YGNodeGetChildCount(yogaNode);
-        for (uint32_t index = 0; index < cellCount; ++index) {
-            YGNodeRef cellYoga = YGNodeGetChild(yogaNode, index);
-            auto* child = static_cast<Node*>(YGNodeGetContext(cellYoga));
-            if (!child || YGNodeGetChildCount(cellYoga) == 0) {
+        (!node.style.gridTemplateColumns.empty() || !node.style.gridTemplateRows.empty())) {
+        const bool rowOnlyGrid =
+            node.style.gridTemplateColumns.empty() && !node.style.gridTemplateRows.empty();
+        const bool contentEditableTextNode = isContentEditableTextNode(node);
+        std::vector<Node*> layoutChildren;
+        layoutChildren.reserve(node.children.size());
+        for (auto& child : node.children) {
+            if (child->style.display != Display::None &&
+                !(contentEditableTextNode && child->tag == "br")) {
+                layoutChildren.push_back(child.get());
+            }
+        }
+
+        const size_t columnCount = rowOnlyGrid ? 1 : node.style.gridTemplateColumns.size();
+        const GridPlacementPlan plan =
+            positionGridItems(layoutChildren, columnCount, node.style.gridTemplateRows.size());
+        std::vector<const PositionedGridItem*> itemStarts(plan.cellCount, nullptr);
+        for (const PositionedGridItem& item : plan.items) {
+            itemStarts[item.row * columnCount + item.column] = &item;
+        }
+
+        std::vector<YGNodeRef> cellYogas(plan.cellCount, nullptr);
+        uint32_t yogaCellIndex = 0;
+        const uint32_t yogaCellCount = YGNodeGetChildCount(yogaNode);
+        for (size_t cellIndex = 0; cellIndex < plan.cellCount && yogaCellIndex < yogaCellCount;) {
+            const PositionedGridItem* item = itemStarts[cellIndex];
+            cellYogas[cellIndex] = YGNodeGetChild(yogaNode, yogaCellIndex++);
+            cellIndex += item ? item->columnSpan : 1;
+            if (!rowOnlyGrid && cellIndex < plan.cellCount && cellIndex % columnCount == 0) {
+                ++yogaCellIndex;
+            }
+        }
+
+        struct GridRowBounds {
+            float top = std::numeric_limits<float>::max();
+            float bottom = std::numeric_limits<float>::lowest();
+        };
+        const size_t rowCount = plan.cellCount / columnCount;
+        std::vector<GridRowBounds> rowBounds(rowCount);
+        for (size_t cellIndex = 0; cellIndex < cellYogas.size(); ++cellIndex) {
+            YGNodeRef cellYoga = cellYogas[cellIndex];
+            if (!cellYoga) {
+                continue;
+            }
+            GridRowBounds& bounds = rowBounds[cellIndex / columnCount];
+            const float top = YGNodeLayoutGetTop(cellYoga);
+            bounds.top = std::min(bounds.top, top);
+            bounds.bottom = std::max(bounds.bottom, top + YGNodeLayoutGetHeight(cellYoga));
+        }
+
+        for (const PositionedGridItem& item : plan.items) {
+            const size_t startIndex = item.row * columnCount + item.column;
+            YGNodeRef cellYoga = cellYogas[startIndex];
+            if (!cellYoga || YGNodeGetChildCount(cellYoga) == 0) {
                 continue;
             }
             YGNodeRef childYoga = YGNodeGetChild(cellYoga, 0);
-            readYoga(
-                *child,
-                childYoga,
-                node.layout.x + YGNodeLayoutGetLeft(cellYoga),
-                node.layout.y + YGNodeLayoutGetTop(cellYoga));
+            if (item.rowSpan <= 1) {
+                readYoga(*item.node, childYoga, node.layout.x + YGNodeLayoutGetLeft(cellYoga),
+                         node.layout.y + YGNodeLayoutGetTop(cellYoga));
+                continue;
+            }
+
+            const size_t lastRow = std::min(rowCount - 1, item.row + item.rowSpan - 1);
+            const float areaTop = rowBounds[item.row].top;
+            const float areaHeight = std::max(0.0f, rowBounds[lastRow].bottom - areaTop);
+            const GridItemAlignment inlineAlignment =
+                resolvedGridItemAlignment(node.style, item.node->style);
+            const YGAlign blockAlignment = item.node->style.alignSelf == YGAlignAuto
+                                               ? node.style.alignItems
+                                               : item.node->style.alignSelf;
+            const float desiredLeft =
+                node.layout.x + YGNodeLayoutGetLeft(cellYoga) +
+                gridInlineAlignmentOffset(inlineAlignment, YGNodeLayoutGetWidth(cellYoga),
+                                          YGNodeLayoutGetWidth(childYoga));
+            const float desiredTop = node.layout.y + areaTop +
+                                     gridBlockAlignmentOffset(blockAlignment, areaHeight,
+                                                              YGNodeLayoutGetHeight(childYoga));
+            readYoga(*item.node, childYoga, desiredLeft - YGNodeLayoutGetLeft(childYoga),
+                     desiredTop - YGNodeLayoutGetTop(childYoga));
         }
         return;
     }

@@ -259,11 +259,15 @@ bool repeatsBackgroundY(BackgroundRepeat repeat) {
 }
 
 SkRRect makeRRect(const Rect& rect, const CornerRadii& radii) {
+    const auto resolveRadius = [&](const Length& radius, float extent) {
+        return radius.unit == LengthUnit::Percent ? std::max(0.0f, extent * radius.value / 100.0f)
+                                                  : std::max(0.0f, radius.value);
+    };
     SkVector corners[4] = {
-        {radii.topLeft, radii.topLeft},
-        {radii.topRight, radii.topRight},
-        {radii.bottomRight, radii.bottomRight},
-        {radii.bottomLeft, radii.bottomLeft},
+        {resolveRadius(radii.topLeft, rect.w), resolveRadius(radii.topLeft, rect.h)},
+        {resolveRadius(radii.topRight, rect.w), resolveRadius(radii.topRight, rect.h)},
+        {resolveRadius(radii.bottomRight, rect.w), resolveRadius(radii.bottomRight, rect.h)},
+        {resolveRadius(radii.bottomLeft, rect.w), resolveRadius(radii.bottomLeft, rect.h)},
     };
     SkRRect rrect;
     rrect.setRectRadii(rect.sk(), corners);
@@ -271,11 +275,16 @@ SkRRect makeRRect(const Rect& rect, const CornerRadii& radii) {
 }
 
 SkRRect makeInsetRRect(const Rect& rect, const CornerRadii& radii, float inset) {
+    const auto insetRadius = [&](const Length& radius, float extent) {
+        const float resolved =
+            radius.unit == LengthUnit::Percent ? extent * radius.value / 100.0f : radius.value;
+        return Length{std::max(0.0f, resolved - inset), LengthUnit::Px};
+    };
     CornerRadii inner{
-        std::max(0.0f, radii.topLeft - inset),
-        std::max(0.0f, radii.topRight - inset),
-        std::max(0.0f, radii.bottomRight - inset),
-        std::max(0.0f, radii.bottomLeft - inset),
+        insetRadius(radii.topLeft, std::min(rect.w, rect.h)),
+        insetRadius(radii.topRight, std::min(rect.w, rect.h)),
+        insetRadius(radii.bottomRight, std::min(rect.w, rect.h)),
+        insetRadius(radii.bottomLeft, std::min(rect.w, rect.h)),
     };
     return makeRRect(rect, inner);
 }
@@ -364,7 +373,7 @@ bool isTextareaNode(const Node& node) {
 }
 
 float lineHeightForNode(const Node& node) {
-    return std::max(12.0f, node.style.fontSize * 1.38f);
+    return std::max(12.0f, node.style.fontSize * node.style.lineHeight);
 }
 
 bool usesFlexTextAlignment(const Node& node) {
@@ -2142,7 +2151,7 @@ void SkiaRenderer::drawInputSelection(SkCanvas& canvas, const Node& node) {
         const float x = std::max(content.left(), content.left() + before);
         const float right = std::min(content.right(), x + selected);
         if (right > x) {
-            const float selectionHeight = std::max(12.0f, node.style.fontSize * 1.35f);
+            const float selectionHeight = lineHeightForNode(node);
             const float y = content.top() + (content.height() - selectionHeight) * 0.5f;
             canvas.drawRect(SkRect::MakeXYWH(x, y, right - x, selectionHeight), p);
         }
@@ -2397,11 +2406,20 @@ void SkiaRenderer::drawText(SkCanvas& canvas, const Node& node) {
         return;
     }
 
-    const TextEntry& entry = textEntry(*value, node.style.fontSize, node.style.fontBold);
-    const float x = textStartX(node, *value);
+    std::string shortenedValue;
+    std::string_view drawnValue = *value;
+    const bool clipsOverflow = clipsTextOverflow(node);
+    if (!editable && node.style.whiteSpaceNoWrap && node.style.textOverflowEllipsis &&
+        clipsOverflow) {
+        shortenedValue = ellipsizedText(node, *value, content.width());
+        drawnValue = shortenedValue;
+    }
+
+    const TextEntry& entry = textEntry(drawnValue, node.style.fontSize, node.style.fontBold);
+    const float x = textStartX(node, drawnValue);
     const float y = content.top() + content.height() * 0.5f -
                     (entry.metrics.fAscent + entry.metrics.fDescent) * 0.5f;
-    if (editable) {
+    if (editable || clipsOverflow) {
         canvas.save();
         canvas.clipRect(node.layout.sk(), SkClipOp::kIntersect, true);
         drawStyledTextBlob(canvas, node, entry.blob, x, y, textColor);
@@ -2672,6 +2690,36 @@ float SkiaRenderer::textWidth(std::string_view value, float size, bool bold) {
     return textEntry(value, size, bold).width;
 }
 
+std::string SkiaRenderer::ellipsizedText(const Node& node, std::string_view value, float maxWidth) {
+    if (value.empty() || maxWidth <= 0.0f) {
+        return {};
+    }
+    if (textWidth(value, node.style.fontSize, node.style.fontBold) <= maxWidth) {
+        return std::string(value);
+    }
+
+    constexpr std::string_view ellipsis = "…";
+    const float ellipsisWidth = textWidth(ellipsis, node.style.fontSize, node.style.fontBold);
+    if (ellipsisWidth > maxWidth) {
+        return {};
+    }
+
+    size_t end = 0;
+    while (end < value.size()) {
+        const size_t next = nextUtf8Boundary(value, end);
+        const float candidateWidth =
+            textWidth(value.substr(0, next), node.style.fontSize, node.style.fontBold);
+        if (candidateWidth + ellipsisWidth > maxWidth) {
+            break;
+        }
+        end = next;
+    }
+
+    std::string result(value.substr(0, end));
+    result.append(ellipsis);
+    return result;
+}
+
 float SkiaRenderer::textStartX(const Node& node, std::string_view value) {
     const SkRect content = contentRectForText(node);
     const float availableWidth = std::max(0.0f, content.width());
@@ -2680,6 +2728,10 @@ float SkiaRenderer::textStartX(const Node& node, std::string_view value) {
     if (usesFlexTextAlignment(node) && node.style.justifyContent == YGJustifyCenter) {
         x = content.left() + (availableWidth - width) * 0.5f;
     } else if (usesFlexTextAlignment(node) && node.style.justifyContent == YGJustifyFlexEnd) {
+        x = content.right() - width;
+    } else if (!usesFlexTextAlignment(node) && node.style.textAlign == TextAlign::Center) {
+        x = content.left() + (availableWidth - width) * 0.5f;
+    } else if (!usesFlexTextAlignment(node) && node.style.textAlign == TextAlign::Right) {
         x = content.right() - width;
     }
     return std::max(content.left(), x);
