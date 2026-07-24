@@ -609,6 +609,7 @@ SkUI 支持浏览器常见的窗口化思路：滚动范围按完整数据尺寸
 
 ```cpp
 ui.setScrollOffsetById("table", 320.0f, 1200.0f);
+ui.scrollToBottomById("table");
 ui.scrollById("table", 0.0f, 40.0f);
 ui.scrollIntoViewById("row-120");
 
@@ -620,7 +621,7 @@ if (const std::optional<skui::ScrollState> state =
 }
 ```
 
-`setScrollOffsetById` 会把坐标裁剪到有效范围；`scrollById` 使用当前偏移增加相对距离；`scrollIntoViewById` 使用 nearest 对齐，并依次调整目标元素的所有可滚动祖先。位置没有变化时不会重复派发 `Scroll` 事件。
+`setScrollOffsetById` 会把坐标裁剪到有效范围；`scrollToBottomById` 会在当前批量更新完成、布局范围确定后滚动到底部，适合聊天记录等动态增长的内容；`scrollById` 使用当前偏移增加相对距离；`scrollIntoViewById` 使用 nearest 对齐，并依次调整目标元素的所有可滚动祖先。位置没有变化时不会重复派发 `Scroll` 事件。
 
 在 `USkiaUiLuauWidget` 中对应的 Blueprint/Luau 接口为：
 

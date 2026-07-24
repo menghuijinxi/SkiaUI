@@ -6514,6 +6514,48 @@ int main() {
     ok = expect(!programmaticScrollRuntime.scrollIntoViewById("missing"),
                 "scrollIntoViewById should reject missing ids") && ok;
 
+    std::vector<float> batchedBottomScrollEvents;
+    skui::RuntimeOptions batchedBottomScrollOptions = options;
+    batchedBottomScrollOptions.onElementEvent =
+        [&](const skui::ElementEvent& event) {
+            if (event.type == skui::ElementEventType::Scroll) {
+                batchedBottomScrollEvents.push_back(event.scrollY);
+            }
+        };
+    skui::Runtime batchedBottomScrollRuntime(batchedBottomScrollOptions);
+    batchedBottomScrollRuntime.resize(kWidth, kHeight, 1.0f);
+    if (!batchedBottomScrollRuntime.loadDocumentFromString(scrollHtml, "")) {
+        std::cerr << "batched bottom scroll load failed: "
+                  << batchedBottomScrollRuntime.lastError() << "\n";
+        return 1;
+    }
+    batchedBottomScrollRuntime.beginUpdate();
+    ok = expect(
+             batchedBottomScrollRuntime.setStyleById("bottom", "top: 160px;"),
+             "batched bottom scroll should accept content growth") &&
+         ok;
+    ok = expect(batchedBottomScrollRuntime.scrollToBottomById("vertical"),
+                "scrollToBottomById should accept a vertical scroll container") &&
+         ok;
+    const std::optional<skui::ScrollState> pendingBottomScrollState =
+        batchedBottomScrollRuntime.scrollStateById("vertical");
+    ok = expect(pendingBottomScrollState &&
+                    pendingBottomScrollState->scrollY == 0.0f &&
+                    pendingBottomScrollState->maxScrollY == 60.0f,
+                "batched bottom scrolling should wait for pending layout") &&
+         ok;
+    batchedBottomScrollRuntime.endUpdate();
+    const std::optional<skui::ScrollState> committedBottomScrollState =
+        batchedBottomScrollRuntime.scrollStateById("vertical");
+    ok = expect(committedBottomScrollState &&
+                    committedBottomScrollState->scrollY == 160.0f &&
+                    committedBottomScrollState->maxScrollY == 160.0f,
+                "batched bottom scrolling should use the committed layout range") &&
+         ok;
+    ok = expect(batchedBottomScrollEvents == std::vector<float>{160.0f},
+                "batched bottom scrolling should emit the committed offset") &&
+         ok;
+
     constexpr std::string_view nestedScrollHtml = R"html(
 <!doctype html>
 <html>

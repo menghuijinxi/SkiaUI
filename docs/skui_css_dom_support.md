@@ -288,6 +288,7 @@ runtime.render(canvas);
 
 ```cpp
 runtime.setScrollOffsetById("message-list", 0.0f, 240.0f);
+runtime.scrollToBottomById("message-list");
 runtime.scrollById("message-list", 0.0f, 40.0f);
 runtime.scrollIntoViewById("message-120");
 
@@ -297,7 +298,7 @@ if (const std::optional<skui::ScrollState> state =
 }
 ```
 
-偏移会限制在有效滚动范围内。只有位置实际变化时才会重绘并派发 `Scroll` 事件；`scrollIntoViewById` 使用 nearest 对齐，并按从内到外的顺序处理嵌套滚动容器。
+偏移会限制在有效滚动范围内。`scrollToBottomById` 在批量更新期间会等待布局提交后再使用最终滚动范围。只有位置实际变化时才会重绘并派发 `Scroll` 事件；`scrollIntoViewById` 使用 nearest 对齐，并按从内到外的顺序处理嵌套滚动容器。
 
 虚拟滚动推荐分两层使用：
 

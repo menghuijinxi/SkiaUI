@@ -2754,6 +2754,29 @@ public:
         }
     }
 
+    void queueScrollToBottom(std::string_view id) {
+        const auto existing = std::find(
+            pendingBottomScrollIds.begin(), pendingBottomScrollIds.end(), id);
+        if (existing == pendingBottomScrollIds.end()) {
+            pendingBottomScrollIds.emplace_back(id);
+        }
+    }
+
+    void applyPendingBottomScrolls() {
+        std::vector<std::string> ids = std::move(pendingBottomScrollIds);
+        pendingBottomScrollIds.clear();
+        std::vector<Node*> scrolledNodes;
+        scrolledNodes.reserve(ids.size());
+        for (const std::string& id : ids) {
+            Node* node = document.root ? findById(*document.root, id) : nullptr;
+            if (node && allowsProgrammaticScrollY(*node) &&
+                setNodeScrollOffset(*node, node->scrollX, scrollMaxY(*node))) {
+                scrolledNodes.push_back(node);
+            }
+        }
+        finishProgrammaticScroll(scrolledNodes);
+    }
+
     void scrollElementIntoView(Node& target, std::vector<Node*>& scrolledNodes) {
         for (Node* ancestor = target.parent; ancestor; ancestor = ancestor->parent) {
             if (!isProgrammaticScrollContainer(*ancestor)) {
@@ -2875,13 +2898,15 @@ public:
     }
 
     void flushLayout() {
-        if (!layoutPending) {
+        if (!layoutPending && pendingBottomScrollIds.empty()) {
             return;
         }
+        const bool shouldLayout = layoutPending;
         layoutPending = false;
-        if (hasDocument) {
+        if (hasDocument && shouldLayout) {
             recomputeAndLayout();
         }
+        applyPendingBottomScrolls();
         dirty = true;
     }
 
@@ -3947,6 +3972,7 @@ public:
         activeAnimations.clear();
         keyframeAnimations.clear();
         keyframeFramePending = false;
+        pendingBottomScrollIds.clear();
         if (document.root) {
             rebindParents(*document.root, nullptr);
             prepareContentEditableTree(*document.root);
@@ -4018,6 +4044,7 @@ public:
     std::vector<ActiveKeyframeAnimation> keyframeAnimations;
     double animationTimeSeconds = 0.0;
     bool keyframeFramePending = false;
+    std::vector<std::string> pendingBottomScrollIds;
     std::string lastError;
     size_t contentEditableNodeSerial = 0;
 };
@@ -5618,6 +5645,28 @@ bool Runtime::setScrollOffsetById(std::string_view id, float scrollX, float scro
 
     std::vector<Node*> scrolledNodes;
     if (setNodeScrollOffset(*node, scrollX, scrollY)) {
+        scrolledNodes.push_back(node);
+    }
+    impl_->finishProgrammaticScroll(scrolledNodes);
+    return true;
+}
+
+bool Runtime::scrollToBottomById(std::string_view id) {
+    if (!impl_->hasDocument || !impl_->document.root || id.empty()) {
+        return false;
+    }
+    Node* node = findById(*impl_->document.root, id);
+    if (!node || !allowsProgrammaticScrollY(*node)) {
+        return false;
+    }
+
+    if (impl_->updateDepth > 0) {
+        impl_->queueScrollToBottom(id);
+        return true;
+    }
+
+    std::vector<Node*> scrolledNodes;
+    if (setNodeScrollOffset(*node, node->scrollX, scrollMaxY(*node))) {
         scrolledNodes.push_back(node);
     }
     impl_->finishProgrammaticScroll(scrolledNodes);

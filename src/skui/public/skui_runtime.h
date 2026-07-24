@@ -329,6 +329,7 @@ public:
     bool setVisibleById(std::string_view id, bool visible);
     bool setConsumesEventsById(std::string_view id, bool consumesEvents);
     bool setScrollOffsetById(std::string_view id, float scrollX, float scrollY);
+    bool scrollToBottomById(std::string_view id);
     bool scrollById(std::string_view id, float deltaX, float deltaY);
     bool scrollIntoViewById(std::string_view id);
     [[nodiscard]] std::optional<ScrollState> scrollStateById(std::string_view id) const;
