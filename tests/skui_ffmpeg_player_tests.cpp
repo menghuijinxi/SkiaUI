@@ -35,6 +35,9 @@ struct FakeAudioState {
     size_t capacityFrames = 0;
     size_t bufferedFrames = 0;
     uint64_t playedFrames = 0;
+    size_t pauseCalls = 0;
+    size_t suspendCalls = 0;
+    size_t finishCalls = 0;
     bool running = false;
     bool muted = false;
     std::string error;
@@ -75,6 +78,19 @@ public:
     void pause() override {
         std::lock_guard lock(state_->mutex);
         state_->running = false;
+        ++state_->pauseCalls;
+    }
+
+    void suspend() override {
+        std::lock_guard lock(state_->mutex);
+        state_->running = false;
+        ++state_->suspendCalls;
+    }
+
+    void finish() override {
+        std::lock_guard lock(state_->mutex);
+        state_->running = false;
+        ++state_->finishCalls;
     }
 
     void flush() override {
@@ -234,6 +250,17 @@ bool testPredecodeAndAudioClock(const std::string& mediaPath,
     }
 
     player->pause();
+    if (prepared.hasAudio) {
+        std::lock_guard lock(audioState->mutex);
+        if (!check(audioState->pauseCalls == 1,
+                   "user pause should use the pause audio notification") ||
+            !check(audioState->suspendCalls == 0,
+                   "user pause should not use the transient suspend notification") ||
+            !check(audioState->finishCalls == 0,
+                   "user pause should not use the finish audio notification")) {
+            return false;
+        }
+    }
     audioState->advance(0.2);
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
     (void)player->tick(0.2);
@@ -250,6 +277,13 @@ bool testPredecodeAndAudioClock(const std::string& mediaPath,
         !check(player->currentFrame() != nullptr,
                "seek should decode a replacement frame before resuming")) {
         return false;
+    }
+    if (prepared.hasAudio) {
+        std::lock_guard lock(audioState->mutex);
+        if (!check(audioState->suspendCalls > 0,
+                   "seek should transiently suspend audio output")) {
+            return false;
+        }
     }
     player->close();
     return true;

@@ -148,7 +148,7 @@ public:
         {
             std::lock_guard audioLock(audioMutex_);
             if (audioOutput_) {
-                audioOutput_->pause();
+                audioOutput_->suspend();
                 audioOutput_->flush();
             }
         }
@@ -298,7 +298,11 @@ public:
         if (shouldStopAudio || shouldPauseForRebuffer) {
             std::lock_guard audioLock(audioMutex_);
             if (audioOutput_) {
-                audioOutput_->pause();
+                if (shouldStopAudio) {
+                    audioOutput_->finish();
+                } else {
+                    audioOutput_->suspend();
+                }
             }
         }
         return changed;
@@ -942,7 +946,7 @@ private:
         {
             std::lock_guard audioLock(audioMutex_);
             if (audioOutput_) {
-                audioOutput_->pause();
+                audioOutput_->finish();
             }
         }
         requestRedraw();

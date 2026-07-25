@@ -62,6 +62,8 @@ public:
     virtual size_t write(std::span<const float> interleavedSamples) = 0;
     virtual bool start() = 0;
     virtual void pause() = 0;
+    virtual void suspend() { pause(); }
+    virtual void finish() { pause(); }
     virtual void flush() = 0;
     virtual void stop() = 0;
     virtual void setMuted(bool muted) = 0;
