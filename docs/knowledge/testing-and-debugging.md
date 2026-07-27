@@ -106,3 +106,11 @@
   - 测量函数的启用条件是否分别考虑宽度和高度。
   - Yoga 返回的内容尺寸是否仍由 padding、border 和 box-sizing 正确扩展。
   - 回归是否同时覆盖省略尺寸与显式 `auto`。
+
+## 自绘编辑器能够接收输入法文本但候选窗不跟随光标
+
+- 现象：`contenteditable` 能收到 `WM_IME_COMPOSITION` 并绘制组合文本，但输入法候选窗停留在窗口默认位置，不跟随正在编辑的光标。
+- 根因：接收组合文本只完成了 IME 协议的一半。自绘控件没有原生编辑框替它向输入法报告插入点，Win32 adapter 也没有设置组合窗、候选窗或响应 `IMR_QUERYCHARPOSITION`。
+- 最终方案：渲染器提供与实际绘制一致的插入光标矩形，Runtime 把祖先滚动转换为客户区逻辑坐标；Win32 adapter 再按 DPI 缩放为客户区像素，调用 `ImmSetCompositionWindow` 和 `ImmSetCandidateWindow`。响应 `IMR_QUERYCHARPOSITION` 时则转换为屏幕坐标，并返回文档客户区对应的屏幕矩形。
+- 验证方式：键盘测试检查光标矩形存在且会随文本偏移移动；Win32 上分别验证鼠标定位、键盘移动、输入文本及输入框滚动后候选窗仍贴近光标。
+- 可复用经验：候选窗定位必须复用渲染光标的几何计算，不能在平台层按字体大小重新估算。`CANDIDATEFORM` / `COMPOSITIONFORM` 使用包含窗口的客户区坐标，而 `IMECHARPOSITION` 使用屏幕坐标。

@@ -336,6 +336,7 @@ public:
     [[nodiscard]] std::optional<std::string> textContentById(std::string_view id) const;
     [[nodiscard]] std::vector<std::string> childElementIdsById(std::string_view id) const;
     [[nodiscard]] Selection selection() const;
+    [[nodiscard]] std::optional<LayoutRect> editingCaretRect() const;
     [[nodiscard]] ClipboardContent readClipboardContent();
     [[nodiscard]] bool hasClassById(std::string_view id, std::string_view className) const;
     void setElementEventCallback(ElementEventCallback callback);

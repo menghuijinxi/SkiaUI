@@ -2494,9 +2494,9 @@ void SkiaRenderer::drawInputCompositionUnderline(SkCanvas& canvas, const Node& n
     canvas.restore();
 }
 
-void SkiaRenderer::drawInputCaret(SkCanvas& canvas, const Node& node) {
+std::optional<Rect> SkiaRenderer::inputCaretRect(const Node& node) {
     if (!isEditableNode(node) || !node.editingFocused || node.selectionStart != node.selectionEnd) {
-        return;
+        return std::nullopt;
     }
 
     const size_t cursor = std::min(node.cursorIndex, node.value.size());
@@ -2523,11 +2523,18 @@ void SkiaRenderer::drawInputCaret(SkCanvas& canvas, const Node& node) {
     const float x = std::min(content.right() - 1.0f, content.left() - node.scrollX + caretOffset);
     const float caretHeight = std::max(12.0f, node.style.fontSize * 1.18f);
     const float y0 = lineTop + (lineHeight - caretHeight) * 0.5f;
-    const float y1 = y0 + caretHeight;
+    return Rect{x, y0, 1.25f, caretHeight};
+}
+
+void SkiaRenderer::drawInputCaret(SkCanvas& canvas, const Node& node) {
+    const std::optional<Rect> caret = inputCaretRect(node);
+    if (!caret.has_value()) {
+        return;
+    }
 
     SkPaint p = stroke(node.style.color, 1.25f);
     p.setStrokeCap(SkPaint::kButt_Cap);
-    canvas.drawLine(x, y0, x, y1, p);
+    canvas.drawLine(caret->x, caret->y, caret->x, caret->y + caret->h, p);
 }
 
 std::optional<std::string> SkiaRenderer::readSvgAsset(const Document& document, std::string_view src) {

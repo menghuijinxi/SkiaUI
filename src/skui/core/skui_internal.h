@@ -725,6 +725,7 @@ public:
                                  float x,
                                  float y);
     float textStartX(const Node& node, std::string_view value);
+    [[nodiscard]] std::optional<Rect> inputCaretRect(const Node& node);
     [[nodiscard]] bool consumeImageDirty();
     void requestBitmapImages(const Document& document);
 

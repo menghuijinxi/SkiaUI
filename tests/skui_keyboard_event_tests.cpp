@@ -66,6 +66,24 @@ int main()
 
     bool ok = expect(runtime.collapseSelection("paragraph", 5),
                      "contenteditable paragraph should accept focus");
+    const std::optional<skui::LayoutRect> caretAtEnd =
+        runtime.editingCaretRect();
+    ok = expect(caretAtEnd.has_value() && caretAtEnd->width > 0.0f &&
+                    caretAtEnd->height > 0.0f,
+                "focused contenteditable should expose its caret rectangle") &&
+         ok;
+    ok = expect(runtime.collapseSelection("paragraph", 0),
+                "contenteditable should move the caret to the start") &&
+         ok;
+    const std::optional<skui::LayoutRect> caretAtStart =
+        runtime.editingCaretRect();
+    ok = expect(caretAtStart.has_value() && caretAtEnd.has_value() &&
+                    caretAtStart->x < caretAtEnd->x,
+                "editing caret rectangle should follow the text cursor") &&
+         ok;
+    ok = expect(runtime.collapseSelection("paragraph", 5),
+                "contenteditable should restore the caret before Enter") &&
+         ok;
     ok = expect(sendEnter(runtime, false),
                 "handled Enter should be consumed") &&
          ok;

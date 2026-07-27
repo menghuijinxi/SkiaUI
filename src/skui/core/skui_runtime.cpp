@@ -5789,6 +5789,27 @@ Selection Runtime::selection() const {
     return result;
 }
 
+std::optional<LayoutRect> Runtime::editingCaretRect() const {
+    if (!impl_->hasDocument || !impl_->focusedNode) {
+        return std::nullopt;
+    }
+    const std::optional<Rect> caret =
+        impl_->renderer.inputCaretRect(*impl_->focusedNode);
+    if (!caret.has_value()) {
+        return std::nullopt;
+    }
+    const float offsetX =
+        Impl::visualX(*impl_->focusedNode) - impl_->focusedNode->layout.x;
+    const float offsetY =
+        Impl::visualY(*impl_->focusedNode) - impl_->focusedNode->layout.y;
+    return LayoutRect{
+        caret->x + offsetX,
+        caret->y + offsetY,
+        caret->w,
+        caret->h,
+    };
+}
+
 ClipboardContent Runtime::readClipboardContent() {
     ClipboardContent content;
     if (impl_->options.readClipboardContent) {

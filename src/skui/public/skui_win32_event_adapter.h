@@ -39,6 +39,8 @@ private:
     [[nodiscard]] bool sendKeyEvent(WPARAM key);
     [[nodiscard]] bool sendImeEvent(EventType type, std::string text = {});
     [[nodiscard]] bool sendTextInputEvent(std::string text);
+    void updateImePosition(HWND hwnd) const;
+    [[nodiscard]] bool queryImeCharacterPosition(HWND hwnd, LPARAM lParam) const;
     void beginMouseLeaveTracking(HWND hwnd);
 
     Runtime& runtime_;

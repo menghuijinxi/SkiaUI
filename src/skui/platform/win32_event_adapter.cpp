@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <cmath>
 #include <cstring>
 #include <limits>
 #include <optional>
@@ -483,10 +484,12 @@ std::optional<LRESULT> Win32EventAdapter::handleMessage(HWND hwnd,
     case WM_LBUTTONDOWN:
         beginMousePress(hwnd);
         sendMouseEvent(EventType::MouseDown, lParam, MouseButton::Left);
+        updateImePosition(hwnd);
         return 0;
     case WM_LBUTTONDBLCLK:
         beginMousePress(hwnd);
         sendMouseEvent(EventType::MouseDoubleClick, lParam, MouseButton::Left);
+        updateImePosition(hwnd);
         return 0;
     case WM_LBUTTONUP:
         if (GetCapture() == hwnd) {
@@ -516,15 +519,20 @@ std::optional<LRESULT> Win32EventAdapter::handleMessage(HWND hwnd,
         return 0;
     case WM_MOUSEWHEEL:
         sendWheelEvent(hwnd, wParam, lParam, false);
+        updateImePosition(hwnd);
         return 0;
     case WM_MOUSEHWHEEL:
         sendWheelEvent(hwnd, wParam, lParam, true);
+        updateImePosition(hwnd);
         return 0;
-    case WM_KEYDOWN:
-        if (sendKeyEvent(wParam)) {
+    case WM_KEYDOWN: {
+        const bool consumed = sendKeyEvent(wParam);
+        updateImePosition(hwnd);
+        if (consumed) {
             return 0;
         }
         break;
+    }
     case WM_CHAR:
         if (!suppressedImeChars_.empty() &&
             static_cast<wchar_t>(wParam) == suppressedImeChars_.front()) {
@@ -533,11 +541,16 @@ std::optional<LRESULT> Win32EventAdapter::handleMessage(HWND hwnd,
         }
         if (wParam >= 0x20 && wParam != 0x7F) {
             if (sendTextInputEvent(utf8FromWChar(static_cast<wchar_t>(wParam)))) {
+                updateImePosition(hwnd);
                 return 0;
             }
         }
         break;
+    case WM_IME_STARTCOMPOSITION:
+        updateImePosition(hwnd);
+        return 0;
     case WM_IME_COMPOSITION:
+        updateImePosition(hwnd);
         if (lParam & GCS_RESULTSTR) {
             const std::wstring result = imeCompositionString(hwnd, GCS_RESULTSTR);
             if (!result.empty()) {
@@ -545,6 +558,7 @@ std::optional<LRESULT> Win32EventAdapter::handleMessage(HWND hwnd,
                 (void)sendTextInputEvent(utf8FromWide(result));
             }
             (void)sendImeEvent(EventType::ImeEnd);
+            updateImePosition(hwnd);
             return 0;
         }
         if (lParam & GCS_COMPSTR) {
@@ -556,6 +570,18 @@ std::optional<LRESULT> Win32EventAdapter::handleMessage(HWND hwnd,
     case WM_IME_ENDCOMPOSITION:
         (void)sendImeEvent(EventType::ImeEnd);
         return 0;
+    case WM_IME_REQUEST:
+        if (wParam == IMR_QUERYCHARPOSITION &&
+            queryImeCharacterPosition(hwnd, lParam)) {
+            return 1;
+        }
+        break;
+    case WM_IME_NOTIFY:
+        if (wParam == IMN_OPENCANDIDATE ||
+            wParam == IMN_CHANGECANDIDATE) {
+            updateImePosition(hwnd);
+        }
+        break;
     default:
         break;
     }
@@ -643,6 +669,84 @@ bool Win32EventAdapter::sendTextInputEvent(std::string text) {
     const bool consumed = runtime_.handleEvent(event);
     notifyRuntimeDirty();
     return consumed;
+}
+
+void Win32EventAdapter::updateImePosition(HWND hwnd) const {
+    if (!hwnd) {
+        return;
+    }
+    const std::optional<LayoutRect> caret = runtime_.editingCaretRect();
+    if (!caret.has_value()) {
+        return;
+    }
+
+    const float scale = runtime_.effectiveScale();
+    const LONG left = static_cast<LONG>(std::lround(caret->x * scale));
+    const LONG top = static_cast<LONG>(std::lround(caret->y * scale));
+    const LONG right = left + std::max<LONG>(
+        1, static_cast<LONG>(std::lround(caret->width * scale)));
+    const LONG bottom = top + std::max<LONG>(
+        1, static_cast<LONG>(std::lround(caret->height * scale)));
+
+    HIMC context = ImmGetContext(hwnd);
+    if (!context) {
+        return;
+    }
+    COMPOSITIONFORM composition{};
+    composition.dwStyle = CFS_POINT;
+    composition.ptCurrentPos = POINT{left, top};
+    (void)ImmSetCompositionWindow(context, &composition);
+
+    CANDIDATEFORM candidate{};
+    candidate.dwIndex = 0;
+    candidate.dwStyle = CFS_EXCLUDE;
+    candidate.ptCurrentPos = POINT{left, top};
+    candidate.rcArea = RECT{left, top, right, bottom};
+    (void)ImmSetCandidateWindow(context, &candidate);
+    ImmReleaseContext(hwnd, context);
+}
+
+bool Win32EventAdapter::queryImeCharacterPosition(HWND hwnd,
+                                                  LPARAM lParam) const {
+    auto* position = reinterpret_cast<IMECHARPOSITION*>(lParam);
+    const std::optional<LayoutRect> caret = runtime_.editingCaretRect();
+    if (!hwnd || !position || position->dwSize < sizeof(IMECHARPOSITION) ||
+        !caret.has_value()) {
+        return false;
+    }
+
+    const float scale = runtime_.effectiveScale();
+    POINT caretPoint{
+        static_cast<LONG>(std::lround(caret->x * scale)),
+        static_cast<LONG>(std::lround(caret->y * scale)),
+    };
+    if (!ClientToScreen(hwnd, &caretPoint)) {
+        return false;
+    }
+
+    RECT client{};
+    if (!GetClientRect(hwnd, &client)) {
+        return false;
+    }
+    POINT documentPoints[2]{
+        {client.left, client.top},
+        {client.right, client.bottom},
+    };
+    if (!ClientToScreen(hwnd, &documentPoints[0]) ||
+        !ClientToScreen(hwnd, &documentPoints[1])) {
+        return false;
+    }
+
+    position->pt = caretPoint;
+    position->cLineHeight = static_cast<UINT>(std::max<LONG>(
+        1, static_cast<LONG>(std::lround(caret->height * scale))));
+    position->rcDocument = RECT{
+        documentPoints[0].x,
+        documentPoints[0].y,
+        documentPoints[1].x,
+        documentPoints[1].y,
+    };
+    return true;
 }
 
 void Win32EventAdapter::beginMouseLeaveTracking(HWND hwnd) {
