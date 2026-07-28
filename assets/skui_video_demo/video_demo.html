@@ -136,7 +136,7 @@
       border-radius: 8px;
     }
     .logo-panel .video-stage {
-      bottom: 174px;
+      bottom: 236px;
     }
     video {
       position: absolute;
@@ -213,19 +213,51 @@
       font-size: 13px;
     }
     .logo-panel .controls {
-      bottom: 106px;
+      bottom: 180px;
     }
     .logo-panel .status-line {
-      bottom: 66px;
+      bottom: 144px;
     }
-    .audio-line {
+    .music-section {
       position: absolute;
       left: 0;
       right: 0;
-      bottom: 24px;
-      height: 24px;
-      color: rgba(111,220,169,0.92);
+      bottom: 0;
+      height: 128px;
+      border-top-color: rgba(255,255,255,0.12);
+      border-top-width: 1px;
+      border-top-style: solid;
+    }
+    .music-title {
+      position: absolute;
+      left: 0;
+      top: 12px;
+      right: 0;
+      height: 22px;
+      color: rgba(111,220,169,0.96);
+      font-size: 15px;
+      font-weight: bold;
+    }
+    .music-controls {
+      position: absolute;
+      display: flex;
+      left: 0;
+      top: 44px;
+      right: 0;
+      height: 42px;
+      gap: 10px;
+    }
+    .music-status {
+      position: absolute;
+      left: 0;
+      top: 98px;
+      right: 0;
+      height: 22px;
+      color: rgba(183,193,204,0.90);
       font-size: 13px;
+    }
+    audio {
+      display: none;
     }
   </style>
 </head>
@@ -270,7 +302,16 @@
         <div class="secondary-button" data-action="pause-logo">暂停</div>
       </div>
       <div id="logo-status" class="status-line">LOGO：打开中</div>
-      <div id="audio-status" class="audio-line">音频：等待设备</div>
+      <div class="music-section">
+        <div class="music-title">音乐 · MP3 音频测试</div>
+        <div class="music-controls">
+          <div id="music-play" class="primary-button" data-action="play-music">播放音乐</div>
+          <div class="secondary-button" data-action="pause-music">暂停</div>
+          <div id="music-mute" class="secondary-button" data-action="toggle-music-muted">静音</div>
+        </div>
+        <div id="music-status" class="music-status">音乐：打开中</div>
+      </div>
+      <audio id="music-audio" preload="auto" loop></audio>
     </div>
   </div>
 </body>

@@ -137,7 +137,7 @@ public:
     explicit Impl(std::atomic_bool& cancelRequested)
         : cancelRequested_(cancelRequested) {}
 
-    bool open(const std::string& source, std::string& error) {
+    bool open(const std::string& source, bool decodeVideo, std::string& error) {
         AVFormatContext* rawFormat = avformat_alloc_context();
         if (!rawFormat) {
             error = "avformat_alloc_context failed";
@@ -160,25 +160,33 @@ public:
             return false;
         }
 
-        if (!openVideo(error) || !openAudio(error)) {
+        if ((decodeVideo && !openVideo(error)) || !openAudio(error)) {
             return false;
         }
-        if (!metadata_.hasVideo) {
+        if (decodeVideo && !metadata_.hasVideo) {
             error = "media source does not contain a playable video stream";
             return false;
         }
+        if (!decodeVideo && !metadata_.hasAudio) {
+            error = "media source does not contain a playable audio stream";
+            return false;
+        }
+
+        const int primaryStreamIndex =
+            metadata_.hasVideo ? videoStreamIndex_ : audioStreamIndex_;
 
         if (format_->duration != AV_NOPTS_VALUE && format_->duration > 0) {
             metadata_.durationSeconds =
                 static_cast<double>(format_->duration) / AV_TIME_BASE;
         } else {
-            const AVStream* videoStream = format_->streams[videoStreamIndex_];
+            const AVStream* primaryStream = format_->streams[primaryStreamIndex];
             metadata_.durationSeconds =
-                std::max(0.0, rationalSeconds(videoStream->duration, videoStream->time_base));
+                std::max(0.0, rationalSeconds(primaryStream->duration,
+                                              primaryStream->time_base));
         }
         timelineOriginSeconds_ =
             format_->start_time == AV_NOPTS_VALUE
-                ? streamStartSeconds(format_->streams[videoStreamIndex_])
+                ? streamStartSeconds(format_->streams[primaryStreamIndex])
                 : static_cast<double>(format_->start_time) / AV_TIME_BASE;
         if (!std::isfinite(timelineOriginSeconds_)) {
             timelineOriginSeconds_ = 0.0;
@@ -245,7 +253,9 @@ public:
             error = "avformat_seek_file failed: " + ffmpegError(seekResult);
             return false;
         }
-        avcodec_flush_buffers(videoCodec_.get());
+        if (videoCodec_) {
+            avcodec_flush_buffers(videoCodec_.get());
+        }
         if (audioCodec_) {
             avcodec_flush_buffers(audioCodec_.get());
         }
@@ -396,6 +406,7 @@ private:
             return false;
         }
         metadata_.hasAudio = true;
+        metadata_.audioDecoderName = decoder->name;
         audioCodec_ = std::move(codec);
         return true;
     }
@@ -473,7 +484,7 @@ private:
     }
 
     DecodeStatus flushDecoders(DecodeBatch& batch, std::string& error) {
-        if (!videoFlushSent_) {
+        if (videoCodec_ && !videoFlushSent_) {
             const int sendResult = avcodec_send_packet(videoCodec_.get(), nullptr);
             if (sendResult < 0 && sendResult != AVERROR_EOF) {
                 error = "unable to flush video decoder: " + ffmpegError(sendResult);
@@ -481,9 +492,11 @@ private:
             }
             videoFlushSent_ = true;
         }
-        const DecodeStatus videoStatus = drainVideo(batch, error);
-        if (videoStatus == DecodeStatus::Failed) {
-            return videoStatus;
+        if (videoCodec_) {
+            const DecodeStatus videoStatus = drainVideo(batch, error);
+            if (videoStatus == DecodeStatus::Failed) {
+                return videoStatus;
+            }
         }
 
         if (audioCodec_ && !audioFlushSent_) {
@@ -696,8 +709,10 @@ DecoderSession::DecoderSession(std::atomic_bool& cancelRequested)
 
 DecoderSession::~DecoderSession() = default;
 
-bool DecoderSession::open(const std::string& source, std::string& error) {
-    return impl_->open(source, error);
+bool DecoderSession::open(const std::string& source,
+                          bool decodeVideo,
+                          std::string& error) {
+    return impl_->open(source, decodeVideo, error);
 }
 
 bool DecoderSession::configureAudio(const AudioOutputFormat& format,

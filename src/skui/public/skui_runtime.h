@@ -319,6 +319,13 @@ public:
     bool setVideoMutedById(std::string_view id, bool muted);
     [[nodiscard]] std::optional<MediaPlaybackState> videoStateById(
         std::string_view id) const;
+    bool prepareAudioById(std::string_view id);
+    bool playAudioById(std::string_view id);
+    bool pauseAudioById(std::string_view id);
+    bool seekAudioById(std::string_view id, double seconds);
+    bool setAudioMutedById(std::string_view id, bool muted);
+    [[nodiscard]] std::optional<MediaPlaybackState> audioStateById(
+        std::string_view id) const;
     bool insertHtmlAtSelection(std::string_view editingHostId,
                                std::string_view html);
     bool collapseSelection(std::string_view nodeId, size_t offset);

@@ -18,6 +18,7 @@ struct StreamMetadata {
     bool hasAudio = false;
     bool hasAlpha = false;
     std::string videoDecoderName;
+    std::string audioDecoderName;
 };
 
 struct DecodedVideoFrame {
@@ -53,7 +54,7 @@ public:
     DecoderSession(const DecoderSession&) = delete;
     DecoderSession& operator=(const DecoderSession&) = delete;
 
-    bool open(const std::string& source, std::string& error);
+    bool open(const std::string& source, bool decodeVideo, std::string& error);
     bool configureAudio(const AudioOutputFormat& format, std::string& error);
     bool seek(double seconds, std::string& error);
     DecodeStatus decodeNext(DecodeBatch& batch, std::string& error);

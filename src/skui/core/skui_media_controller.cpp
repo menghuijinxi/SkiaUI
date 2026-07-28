@@ -37,6 +37,10 @@ bool isExternalSource(std::string_view source) {
            source.find("://") != std::string_view::npos;
 }
 
+bool isMediaNode(const Node& node) {
+    return node.tag == "audio" || node.tag == "video";
+}
+
 }  // namespace
 
 MediaController::MediaController(const RuntimeOptions& options)
@@ -150,7 +154,7 @@ std::optional<MediaPlaybackState> MediaController::state(const Node& node) const
 void MediaController::syncNode(Document& document,
                                Node& node,
                                std::unordered_map<const Node*, bool>& liveNodes) {
-    if (node.tag == "video" && !node.src.empty() && playerFactory_) {
+    if (isMediaNode(node) && !node.src.empty() && playerFactory_) {
         liveNodes.emplace(&node, true);
         const std::string source = resolveSource(document, node.src);
         const size_t frameCount = predecodeFrames(node);
@@ -181,6 +185,7 @@ void MediaController::syncNode(Document& document,
                     frameCount,
                     loop,
                     muted,
+                    node.tag == "video",
                 });
             } else {
                 if (playback.loop != loop) {

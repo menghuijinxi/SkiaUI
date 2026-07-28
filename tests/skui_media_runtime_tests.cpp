@@ -236,6 +236,48 @@ bool testOnDemandPlayDoesNotPreload() {
     return ok;
 }
 
+bool testAudioElementUsesAudioOnlyPlayback() {
+    FakePlayerFactory factory;
+    skui::RuntimeOptions options;
+    options.mediaPlayerFactory = factory.callback();
+    skui::Runtime runtime(std::move(options));
+    bool ok = expect(runtime.loadDocumentFromString(R"html(
+<html><body>
+  <audio id="music" src="music.mp3" preload="auto" loop></audio>
+</body></html>)html"),
+                     "audio document loads");
+    ok = expect(factory.players.size() == 1,
+                "audio element creates one media player") && ok;
+    if (!ok) {
+        return false;
+    }
+
+    const std::shared_ptr<FakePlayerState>& player = factory.players.front();
+    ok = expect(!player->source.decodeVideo,
+                "audio element disables video decoding") && ok;
+    ok = expect(player->source.loop, "audio loop attribute is forwarded") && ok;
+    ok = expect(player->prepareCalls == 1,
+                "audio preload auto fills the media buffer") && ok;
+    ok = expect(runtime.playAudioById("music"),
+                "audio play command is accepted") && ok;
+    ok = expect(player->playCalls == 1,
+                "audio play command reaches the player") && ok;
+    ok = expect(runtime.seekAudioById("music", 0.25),
+                "audio seek command is accepted") && ok;
+    ok = expect(runtime.setAudioMutedById("music", true),
+                "audio mute command is accepted") && ok;
+    ok = expect(player->source.muted, "audio mute reaches the player") && ok;
+    ok = expect(runtime.audioStateById("music").has_value(),
+                "audio playback state is available") && ok;
+    ok = expect(!runtime.videoStateById("music").has_value(),
+                "video APIs reject audio elements") && ok;
+    ok = expect(runtime.pauseAudioById("music"),
+                "audio pause command is accepted") && ok;
+    ok = expect(player->pauseCalls == 1,
+                "audio pause command reaches the player") && ok;
+    return ok;
+}
+
 bool testMetadataAutoplayAndRemovalLifecycle() {
     FakePlayerFactory factory;
     skui::RuntimeOptions options;
@@ -314,6 +356,7 @@ int main() {
     bool ok = true;
     ok = testExplicitPreloadPreparesBeforePlay() && ok;
     ok = testOnDemandPlayDoesNotPreload() && ok;
+    ok = testAudioElementUsesAudioOnlyPlayback() && ok;
     ok = testMetadataAutoplayAndRemovalLifecycle() && ok;
     ok = testMetadataPreloadCanEscalateToExplicitPredecode() && ok;
     ok = testVideoMetadataProvidesIntrinsicLayoutSize() && ok;

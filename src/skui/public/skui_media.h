@@ -28,6 +28,7 @@ struct MediaSourceOptions {
     size_t predecodeFrames = 3;
     bool loop = false;
     bool muted = false;
+    bool decodeVideo = true;
 };
 
 struct MediaPlaybackState {
@@ -41,6 +42,7 @@ struct MediaPlaybackState {
     uint64_t displayedVideoFrames = 0;
     uint64_t droppedVideoFrames = 0;
     uint64_t audioUnderruns = 0;
+    bool hasVideo = false;
     bool hasAudio = false;
     bool hasAlpha = false;
     std::string decoderName;

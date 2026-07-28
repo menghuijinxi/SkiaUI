@@ -26,6 +26,7 @@ constexpr AudioOutputFormat kRequestedAudioFormat{48000, 2};
 constexpr double kAudioBufferSeconds = 2.0;
 constexpr double kMinimumPrebufferAudioSeconds = 0.05;
 constexpr double kMaximumPrebufferAudioSeconds = 0.25;
+constexpr double kAudioTimestampToleranceSeconds = 0.01;
 constexpr double kLoopHeadMaximumSeconds = 0.5;
 constexpr size_t kPrebufferFrameSlack = 8;
 constexpr size_t kLoopHeadMaximumVideoFrames = 8;
@@ -258,7 +259,8 @@ public:
             updateBufferStateLocked(audio);
 
             const bool audioEmpty = audio.enabled && audio.bufferedFrames == 0;
-            const bool videoExpired = videoFrames_.empty() && !decodeEnded_ &&
+            const bool videoExpired = playbackState_.hasVideo &&
+                                      videoFrames_.empty() && !decodeEnded_ &&
                                       clockSeconds >= lastDecodedEndSeconds_;
             const bool underrun = !decodeEnded_ && (audioEmpty || videoExpired);
             if (underrun && !underrunActive_) {
@@ -383,14 +385,16 @@ private:
 
     void decoderMain() {
         std::string source;
+        bool decodeVideo = true;
         {
             std::lock_guard lock(stateMutex_);
             source = sourceOptions_.source;
+            decodeVideo = sourceOptions_.decodeVideo;
         }
 
         detail::DecoderSession decoder(cancelRequested_);
         std::string error;
-        if (!decoder.open(source, error)) {
+        if (!decoder.open(source, decodeVideo, error)) {
             fail(std::move(error));
             return;
         }
@@ -405,10 +409,12 @@ private:
         double loopOffsetSeconds = 0.0;
         double nextQueuedAudioSeconds = 0.0;
         LoopHeadCache loopHead;
-        const double frameBoundedLoopHeadSeconds = std::max(
-            decoder.metadata().frameDurationSeconds,
-            decoder.metadata().frameDurationSeconds *
-                kLoopHeadMaximumVideoFrames);
+        const double frameBoundedLoopHeadSeconds =
+            decoder.metadata().hasVideo
+                ? std::max(decoder.metadata().frameDurationSeconds,
+                           decoder.metadata().frameDurationSeconds *
+                               kLoopHeadMaximumVideoFrames)
+                : kLoopHeadMaximumSeconds;
         loopHead.coverageSeconds = std::min(
             {kLoopHeadMaximumSeconds,
              frameBoundedLoopHeadSeconds,
@@ -497,7 +503,14 @@ private:
     }
 
     bool configureAudio(detail::DecoderSession& decoder, std::string& error) {
-        if (!decoder.metadata().hasAudio || !audioOutputFactory_) {
+        if (!decoder.metadata().hasAudio) {
+            return true;
+        }
+        if (!audioOutputFactory_) {
+            if (!decoder.metadata().hasVideo) {
+                error = "audio-only playback requires an AudioOutput factory";
+                return false;
+            }
             return true;
         }
         std::unique_ptr<AudioOutput> output = audioOutputFactory_();
@@ -531,9 +544,12 @@ private:
             playbackState_.durationSeconds = metadata.durationSeconds;
             playbackState_.videoWidth = metadata.videoWidth;
             playbackState_.videoHeight = metadata.videoHeight;
+            playbackState_.hasVideo = metadata.hasVideo;
             playbackState_.hasAudio = metadata.hasAudio;
             playbackState_.hasAlpha = metadata.hasAlpha;
-            playbackState_.decoderName = metadata.videoDecoderName;
+            playbackState_.decoderName = metadata.hasVideo
+                                             ? metadata.videoDecoderName
+                                             : metadata.audioDecoderName;
             frameDurationSeconds_ = metadata.frameDurationSeconds;
             opened_ = true;
             if (requestedLoad_ == LoadRequest::Metadata) {
@@ -630,14 +646,16 @@ private:
             return false;
         }
         const double nextLoopOffsetSeconds = loopOffsetSeconds + durationSeconds;
+        const AudioSnapshot audio = audioSnapshot();
         double cachedCoverageSeconds = 0.0;
         if (!loopHead.videoFrames.empty()) {
             const detail::DecodedVideoFrame& last = loopHead.videoFrames.back();
             cachedCoverageSeconds = std::min(
                 loopHead.coverageSeconds,
                 last.presentationSeconds + last.durationSeconds);
+        } else if (audio.enabled && !loopHead.audioSamples.empty()) {
+            cachedCoverageSeconds = loopHead.coverageSeconds;
         }
-        const AudioSnapshot audio = audioSnapshot();
         if (audio.enabled && !loopHead.audioSamples.empty() &&
             cachedCoverageSeconds > 0.0) {
             const size_t cachedAudioFrames = std::min(
@@ -753,11 +771,21 @@ private:
                                 double& nextQueuedAudioSeconds,
                                 uint64_t commandSerial) {
         const size_t channelCount = static_cast<size_t>(format.channelCount);
-        const int64_t presentationFrame = static_cast<int64_t>(std::llround(
+        int64_t presentationFrame = static_cast<int64_t>(std::llround(
             presentationSeconds * format.sampleRate));
         int64_t queuedFrame = static_cast<int64_t>(std::llround(
             nextQueuedAudioSeconds * format.sampleRate));
+        const int64_t timestampToleranceFrames = std::max<int64_t>(
+            1,
+            static_cast<int64_t>(std::llround(
+                kAudioTimestampToleranceSeconds * format.sampleRate)));
 
+        // 重采样的滤波延迟和整数舍入会让相邻 packet 的 PTS 产生少量帧差。
+        // 连续 PCM 应直接拼接，只有明显的时间线跳变才补静音或丢弃过期数据。
+        if (std::abs(presentationFrame - queuedFrame) <=
+            timestampToleranceFrames) {
+            presentationFrame = queuedFrame;
+        }
         if (presentationFrame > queuedFrame) {
             size_t silenceFrames =
                 static_cast<size_t>(presentationFrame - queuedFrame);
@@ -809,6 +837,9 @@ private:
             requestedLoad_ == LoadRequest::Metadata) {
             return false;
         }
+        if (!playbackState_.hasVideo) {
+            return true;
+        }
         const size_t target = targetVideoFramesLocked();
         const size_t maximum = bufferReady_ ? target : target + kPrebufferFrameSlack;
         return videoFrames_.size() < std::max<size_t>(1, maximum);
@@ -820,7 +851,8 @@ private:
 
     void refreshBufferReadyLocked(const AudioSnapshot& audio) {
         const size_t targetFrames = targetVideoFramesLocked();
-        const bool videoReady = videoFrames_.size() >= targetFrames || decodeEnded_;
+        const bool videoReady = !playbackState_.hasVideo ||
+                                videoFrames_.size() >= targetFrames || decodeEnded_;
         bool audioReady = true;
         if (audio.enabled && audio.format.sampleRate > 0) {
             const double targetSeconds = std::clamp(

@@ -6,7 +6,8 @@
 PTS 选帧、音频设备主时钟、WASAPI shared mode、seek、暂停、静音、有界循环头缓存、
 VP8/VP9 named libvpx 选择、透明 BGRA 预乘和 Skia 绘制均已接入。仓库内的 10 FPS VP9
 Alpha fixture 会验证 `libvpx-vp9`、半透明像素、预解码高水位和多次循环边界；另有 fake
-音频设备测试证明引擎 tick 次数不会推进有音轨媒体时钟。
+音频设备测试证明引擎 tick 次数不会推进有音轨媒体时钟。纯音频 `<audio>` 也已接入，
+支持显式 PCM 预缓冲、MP3/WAV 解码、设备时钟、seek、暂停、静音和循环。
 
 本次没有实现硬件解码。第 9 节的 GPU surface 直达研究仍是独立后续工作；硬解后读回 CPU
 再上传 GPU 仍只作为未来基准对照。音量控制、媒体 DOM 事件和完整性能指标也尚未公开，

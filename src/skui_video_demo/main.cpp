@@ -33,11 +33,13 @@ constexpr int kInitialFrameRate = 60;
 constexpr std::chrono::milliseconds kTelemetryInterval(250);
 
 const std::filesystem::path kIntroVideoPath =
-    LR"(E:\Project\Init_Ue_Project_UE5_5\Content\Movies\区位价值\开始.mp4)";
+    LR"(D:\Project\Init_Ue_Project\Content\Movies\区位价值\开始.mp4)";
 const std::filesystem::path kLoopVideoPath =
-    LR"(E:\Project\Init_Ue_Project_UE5_5\Content\Movies\区位价值\循环.mp4)";
+    LR"(D:\Project\Init_Ue_Project\Content\Movies\区位价值\循环.mp4)";
 const std::filesystem::path kLogoVideoPath =
-    LR"(E:\Project\Init_Ue_Project_UE5_5\Content\Movies\LOGO演绎.mp4)";
+    LR"(D:\Project\Init_Ue_Project\Content\Movies\LOGO演绎.mp4)";
+const std::filesystem::path kMusicAudioPath =
+    LR"(D:\Project\Init_Ue_Project\Content\Movies\音乐\REYSG - 舰R-圣诞港区重置版（REYSG remix）.mp3)";
 
 enum class SequencePhase {
     Idle,
@@ -53,6 +55,7 @@ struct DemoState {
     skui::win32::Dx12WindowApp* app = nullptr;
     SequencePhase sequencePhase = SequencePhase::Idle;
     int targetFrameRate = kInitialFrameRate;
+    bool musicMuted = false;
     uint64_t sampleFrameCount = 0;
     double measuredFrameRate = 0.0;
     std::chrono::steady_clock::time_point sampleStarted =
@@ -123,6 +126,24 @@ std::string compactState(const std::optional<skui::MediaPlaybackState>& state) {
          << state->durationSeconds << "s · 缓冲 "
          << state->bufferedVideoFrames << " 帧 · 丢帧 "
          << state->droppedVideoFrames;
+    return text.str();
+}
+
+std::string compactAudioState(
+    const std::optional<skui::MediaPlaybackState>& state) {
+    if (!state) {
+        return "未创建";
+    }
+    if (state->readyState == skui::MediaReadyState::Failed) {
+        return "失败：" + state->error;
+    }
+
+    std::ostringstream text;
+    text << readyStateName(state->readyState) << " · " << std::fixed
+         << std::setprecision(2) << state->currentSeconds << "/"
+         << state->durationSeconds << "s · PCM 缓冲 "
+         << state->bufferedAudioSeconds << "s · 欠载 "
+         << state->audioUnderruns << " 次";
     return text.str();
 }
 
@@ -250,6 +271,8 @@ void refreshTelemetry(skui::Runtime& runtime,
         runtime.videoStateById("loop-video");
     const std::optional<skui::MediaPlaybackState> logo =
         runtime.videoStateById("logo-video");
+    const std::optional<skui::MediaPlaybackState> music =
+        runtime.audioStateById("music-audio");
 
     std::ostringstream runtimeText;
     runtimeText << "目标 " << state.targetFrameRate << " FPS · 实测 "
@@ -259,23 +282,17 @@ void refreshTelemetry(skui::Runtime& runtime,
     std::string sequenceText = "开始：" + compactState(intro) +
                                "    循环：" + compactState(loop);
     std::string logoText = "LOGO：" + compactState(logo);
-    std::string audioText = "音频：";
-    if (!logo) {
-        audioText += "未创建";
-    } else if (logo->readyState == skui::MediaReadyState::Failed) {
-        audioText += "失败";
-    } else if (logo->hasAudio) {
-        audioText += "设备主时钟 · 欠载 " +
-                     std::to_string(logo->audioUnderruns) + " 次";
-    } else {
-        audioText += "素材没有音轨";
+    if (logo && logo->hasAudio) {
+        logoText += " · 音频欠载 " +
+                    std::to_string(logo->audioUnderruns) + " 次";
     }
+    std::string musicText = "音乐：" + compactAudioState(music);
 
     runtime.beginUpdate();
     runtime.setTextById("runtime-readout", runtimeText.str());
     runtime.setTextById("sequence-status", sequenceText);
     runtime.setTextById("logo-status", logoText);
-    runtime.setTextById("audio-status", audioText);
+    runtime.setTextById("music-status", musicText);
     const bool sequenceStarted =
         state.sequencePhase != SequencePhase::Idle &&
         state.sequencePhase != SequencePhase::IntroPlaying &&
@@ -289,6 +306,12 @@ void refreshTelemetry(skui::Runtime& runtime,
         logo && logo->readyState == skui::MediaReadyState::Ended
             ? "重新播放 LOGO"
             : "播放 LOGO");
+    runtime.setTextById(
+        "music-play",
+        music && music->readyState == skui::MediaReadyState::Ended
+            ? "重新播放音乐"
+            : "播放音乐");
+    runtime.setTextById("music-mute", state.musicMuted ? "取消静音" : "静音");
     runtime.endUpdate();
     state.lastTelemetry = now;
 }
@@ -335,6 +358,13 @@ void installInteractions(skui::Runtime& runtime, DemoState& state) {
                 runtime.playVideoById("logo-video");
             } else if (event.action == "pause-logo") {
                 runtime.pauseVideoById("logo-video");
+            } else if (event.action == "play-music") {
+                runtime.playAudioById("music-audio");
+            } else if (event.action == "pause-music") {
+                runtime.pauseAudioById("music-audio");
+            } else if (event.action == "toggle-music-muted") {
+                state.musicMuted = !state.musicMuted;
+                runtime.setAudioMutedById("music-audio", state.musicMuted);
             }
         });
 }
@@ -343,11 +373,13 @@ bool bindMedia(skui::Runtime& runtime) {
     struct MediaBinding {
         std::string id;
         const std::filesystem::path* path = nullptr;
+        bool isAudio = false;
     };
-    const std::array<MediaBinding, 3> mediaBindings{
-        MediaBinding{"intro-video", &kIntroVideoPath},
-        MediaBinding{"loop-video", &kLoopVideoPath},
-        MediaBinding{"logo-video", &kLogoVideoPath},
+    const std::array<MediaBinding, 4> mediaBindings{
+        MediaBinding{"intro-video", &kIntroVideoPath, false},
+        MediaBinding{"loop-video", &kLoopVideoPath, false},
+        MediaBinding{"logo-video", &kLogoVideoPath, false},
+        MediaBinding{"music-audio", &kMusicAudioPath, true},
     };
 
     std::vector<skui::AttributeUpdate> sources;
@@ -374,7 +406,10 @@ bool bindMedia(skui::Runtime& runtime) {
 
     bool prepared = true;
     for (const MediaBinding& binding : mediaBindings) {
-        prepared = runtime.prepareVideoById(binding.id) && prepared;
+        const bool accepted = binding.isAudio
+                                  ? runtime.prepareAudioById(binding.id)
+                                  : runtime.prepareVideoById(binding.id);
+        prepared = accepted && prepared;
     }
     return prepared;
 }

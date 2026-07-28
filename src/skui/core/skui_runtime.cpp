@@ -2305,6 +2305,80 @@ public:
           renderer(options),
           mediaController(options) {}
 
+    [[nodiscard]] Node* mediaNodeById(std::string_view id,
+                                      std::string_view expectedTag) {
+        if (!hasDocument || !document.root || id.empty()) {
+            return nullptr;
+        }
+        Node* node = findById(*document.root, id);
+        return node && node->tag == expectedTag ? node : nullptr;
+    }
+
+    [[nodiscard]] const Node* mediaNodeById(
+        std::string_view id,
+        std::string_view expectedTag) const {
+        if (!hasDocument || !document.root || id.empty()) {
+            return nullptr;
+        }
+        const Node* node = findById(*document.root, id);
+        return node && node->tag == expectedTag ? node : nullptr;
+    }
+
+    bool prepareMediaById(std::string_view id, std::string_view expectedTag) {
+        Node* node = mediaNodeById(id, expectedTag);
+        if (!node) {
+            return false;
+        }
+        mediaController.sync(document);
+        return mediaController.prepare(*node);
+    }
+
+    bool playMediaById(std::string_view id, std::string_view expectedTag) {
+        Node* node = mediaNodeById(id, expectedTag);
+        if (!node) {
+            return false;
+        }
+        mediaController.sync(document);
+        return mediaController.play(*node);
+    }
+
+    bool pauseMediaById(std::string_view id, std::string_view expectedTag) {
+        Node* node = mediaNodeById(id, expectedTag);
+        return node && mediaController.pause(*node);
+    }
+
+    bool seekMediaById(std::string_view id,
+                       std::string_view expectedTag,
+                       double seconds) {
+        if (!std::isfinite(seconds) || seconds < 0.0) {
+            return false;
+        }
+        Node* node = mediaNodeById(id, expectedTag);
+        return node && mediaController.seek(*node, seconds);
+    }
+
+    bool setMediaMutedById(std::string_view id,
+                           std::string_view expectedTag,
+                           bool muted) {
+        Node* node = mediaNodeById(id, expectedTag);
+        if (!node) {
+            return false;
+        }
+        if (muted) {
+            node->attributes["muted"] = {};
+        } else {
+            node->attributes.erase("muted");
+        }
+        return mediaController.setMuted(*node, muted);
+    }
+
+    [[nodiscard]] std::optional<MediaPlaybackState> mediaStateById(
+        std::string_view id,
+        std::string_view expectedTag) const {
+        const Node* node = mediaNodeById(id, expectedTag);
+        return node ? mediaController.state(*node) : std::nullopt;
+    }
+
     float logicalWidth() const {
         return static_cast<float>(width) / effectiveScale();
     }
@@ -5430,74 +5504,53 @@ bool Runtime::removeElementById(std::string_view id) {
 }
 
 bool Runtime::prepareVideoById(std::string_view id) {
-    if (!impl_->hasDocument || !impl_->document.root || id.empty()) {
-        return false;
-    }
-    Node* node = findById(*impl_->document.root, id);
-    if (!node || node->tag != "video") {
-        return false;
-    }
-    impl_->mediaController.sync(impl_->document);
-    return impl_->mediaController.prepare(*node);
+    return impl_->prepareMediaById(id, "video");
 }
 
 bool Runtime::playVideoById(std::string_view id) {
-    if (!impl_->hasDocument || !impl_->document.root || id.empty()) {
-        return false;
-    }
-    Node* node = findById(*impl_->document.root, id);
-    if (!node || node->tag != "video") {
-        return false;
-    }
-    impl_->mediaController.sync(impl_->document);
-    return impl_->mediaController.play(*node);
+    return impl_->playMediaById(id, "video");
 }
 
 bool Runtime::pauseVideoById(std::string_view id) {
-    if (!impl_->hasDocument || !impl_->document.root || id.empty()) {
-        return false;
-    }
-    Node* node = findById(*impl_->document.root, id);
-    return node && node->tag == "video" &&
-           impl_->mediaController.pause(*node);
+    return impl_->pauseMediaById(id, "video");
 }
 
 bool Runtime::seekVideoById(std::string_view id, double seconds) {
-    if (!impl_->hasDocument || !impl_->document.root || id.empty() ||
-        !std::isfinite(seconds) || seconds < 0.0) {
-        return false;
-    }
-    Node* node = findById(*impl_->document.root, id);
-    return node && node->tag == "video" &&
-           impl_->mediaController.seek(*node, seconds);
+    return impl_->seekMediaById(id, "video", seconds);
 }
 
 bool Runtime::setVideoMutedById(std::string_view id, bool muted) {
-    if (!impl_->hasDocument || !impl_->document.root || id.empty()) {
-        return false;
-    }
-    Node* node = findById(*impl_->document.root, id);
-    if (!node || node->tag != "video") {
-        return false;
-    }
-    if (muted) {
-        node->attributes["muted"] = {};
-    } else {
-        node->attributes.erase("muted");
-    }
-    return impl_->mediaController.setMuted(*node, muted);
+    return impl_->setMediaMutedById(id, "video", muted);
 }
 
 std::optional<MediaPlaybackState> Runtime::videoStateById(
     std::string_view id) const {
-    if (!impl_->hasDocument || !impl_->document.root || id.empty()) {
-        return std::nullopt;
-    }
-    const Node* node = findById(*impl_->document.root, id);
-    if (!node || node->tag != "video") {
-        return std::nullopt;
-    }
-    return impl_->mediaController.state(*node);
+    return impl_->mediaStateById(id, "video");
+}
+
+bool Runtime::prepareAudioById(std::string_view id) {
+    return impl_->prepareMediaById(id, "audio");
+}
+
+bool Runtime::playAudioById(std::string_view id) {
+    return impl_->playMediaById(id, "audio");
+}
+
+bool Runtime::pauseAudioById(std::string_view id) {
+    return impl_->pauseMediaById(id, "audio");
+}
+
+bool Runtime::seekAudioById(std::string_view id, double seconds) {
+    return impl_->seekMediaById(id, "audio", seconds);
+}
+
+bool Runtime::setAudioMutedById(std::string_view id, bool muted) {
+    return impl_->setMediaMutedById(id, "audio", muted);
+}
+
+std::optional<MediaPlaybackState> Runtime::audioStateById(
+    std::string_view id) const {
+    return impl_->mediaStateById(id, "audio");
 }
 
 bool Runtime::insertHtmlAtSelection(std::string_view editingHostId,

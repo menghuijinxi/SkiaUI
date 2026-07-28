@@ -85,7 +85,7 @@ vcpkg manifest 示例：
 
 这个 manifest 只是 Win32/DX12 demo 的参考起点，不是 SkUI 对使用者的固定要求。如果只接入 `Skui`，不需要 Win32/DX12 窗口和渲染相关系统库；本地位图解码走 Skia codec，使用 vcpkg 时需要给 `skia` 启用目标项目真正需要的图片格式 feature，例如 `png`、`jpeg`、`webp`。接入 `SkuiWin32` 时需要 Win32 输入相关系统库，例如 `user32`、`imm32`；接入 `SkuiWin32Dx12` 时还需要 `gdi32`、`dwmapi`、`shcore`、`d3d12`、`dxgi`、`dxguid`、`d3dcompiler`、`dbghelp`、`shell32`、`usp10`、`windowscodecs`。
 
-视频播放默认关闭，普通构建不会安装或链接 FFmpeg。使用本仓库的 vcpkg manifest 时，显式
+音视频播放默认关闭，普通构建不会安装或链接 FFmpeg。使用本仓库的 vcpkg manifest 时，显式
 启用 CMake 选项即可同时选择 `ffmpeg-video` manifest feature：
 
 ```powershell
@@ -112,8 +112,23 @@ Windows 项目可以链接 `SkiaUI::SkuiWin32Audio` 并显式传入
 `setVideoMutedById` 和 `videoStateById`。有音轨时以设备实际消费的 PCM 帧数为主时钟；
 无音轨时由单调时钟推进，二者都只在 `Runtime::tick()` 中按 PTS 提交当前画面。
 
-仓库内的 `SkiaVideoDemo` 使用三段真实素材验证预解码、开始片段切换到循环片段、
-循环边界和带声音播放。页面提供 10 / 30 / 60 / 120 FPS 限帧按钮；
+纯音频使用 `<audio>`，MP3、WAV 等具体格式由当前 FFmpeg 构建中的 demuxer 和 decoder
+决定；本仓库的 vcpkg 配置包含 MP3 和 WAV/PCM 解码所需能力。`<audio>` 不生成视频帧，
+时间始终由音频设备实际消费的 PCM 帧数推进：
+
+```html
+<audio id="music" src="media/music.mp3" preload="auto" loop></audio>
+```
+
+与视频一致，只有显式写出 `preload="auto"` 才会提前打开文件并填充 PCM 缓冲；省略时由
+`playAudioById()` 按需打开。控制接口为 `prepareAudioById`、`playAudioById`、
+`pauseAudioById`、`seekAudioById`、`setAudioMutedById` 和 `audioStateById`，同时支持
+`autoplay`、`loop`、`muted` 属性。纯音频必须配置 `AudioOutputFactory`；否则状态会进入
+`Failed` 并给出明确错误，避免出现时间推进但没有声音的静默播放。
+
+仓库内的 `SkiaVideoDemo` 使用三段真实视频和一段纯 MP3 验证预解码、开始片段切换到
+循环片段、循环边界、带声音视频和纯音频播放。音乐区提供播放、暂停和静音按钮；页面还提供
+10 / 30 / 60 / 120 FPS 限帧按钮；
 `Dx12WindowApp::setFrameRateLimit()` 只限制 UI Tick 和渲染调度，不限制 WASAPI 设备线程。
 `WindowOptions::onRuntimeTick` 在媒体 Tick 完成后、当帧渲染前调用，demo 在这里检查
 开始片段的 `Ended` 状态并切换到已预解码的循环片段。

@@ -728,10 +728,16 @@ if(SKIAUI_BUILD_TESTS)
                 COMMAND SkuiFfmpegPlayerTests
                         "${CMAKE_SOURCE_DIR}/tests/fixtures/transparent-vp9.webm"
                         --expect-vp9-alpha)
+            set_tests_properties(SkuiFfmpegPlayerTests PROPERTIES
+                WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+            )
         endif()
         if(SKIAUI_ENABLE_FFMPEG_VIDEO AND SKIAUI_FFMPEG_TEST_MEDIA)
             add_test(NAME SkuiFfmpegExternalMediaTests
                 COMMAND SkuiFfmpegPlayerTests "${SKIAUI_FFMPEG_TEST_MEDIA}")
+            set_tests_properties(SkuiFfmpegExternalMediaTests PROPERTIES
+                WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+            )
         endif()
         set_tests_properties(
             SkuiInteractionTests
