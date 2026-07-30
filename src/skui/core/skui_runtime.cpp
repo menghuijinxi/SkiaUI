@@ -142,6 +142,26 @@ LayoutTransform nodeTransform(const Node& node) {
         transform, translationTransform(-originX, -originY));
 }
 
+bool inverseTransformPoint(const LayoutTransform& transform,
+                           float x,
+                           float y,
+                           float& mappedX,
+                           float& mappedY) {
+    const float determinant = transform.m11 * transform.m22 -
+                              transform.m12 * transform.m21;
+    if (std::abs(determinant) <= 0.000001f) {
+        return false;
+    }
+
+    const float translatedX = x - transform.translationX;
+    const float translatedY = y - transform.translationY;
+    mappedX = (transform.m22 * translatedX -
+               transform.m21 * translatedY) / determinant;
+    mappedY = (-transform.m12 * translatedX +
+               transform.m11 * translatedY) / determinant;
+    return true;
+}
+
 LayoutRect transformedBounds(const Rect& rect,
                              const LayoutTransform& transform) {
     const auto transformPoint = [&transform](float x, float y) {
@@ -194,6 +214,36 @@ bool intersectsClip(const LayoutRect& bounds,
            bounds.x + bounds.width > clip->x &&
            bounds.y < clip->y + clip->height &&
            bounds.y + bounds.height > clip->y;
+}
+
+bool usesIntrinsicDimension(const std::optional<Length>& dimension) {
+    return !dimension || dimension->unit == LengthUnit::Auto;
+}
+
+void expandIntrinsicContentSize(const Node& node,
+                                const Rect& rootLayout,
+                                LayoutSize& contentSize) {
+    if (node.style.display == Display::None) {
+        return;
+    }
+
+    float width = node.layout.w;
+    float height = node.layout.h;
+    const bool usesIntrinsicWidth = usesIntrinsicDimension(node.style.width);
+    const bool usesIntrinsicHeight = usesIntrinsicDimension(node.style.height);
+    if (usesIntrinsicWidth && usesIntrinsicHeight) {
+        width = std::max(width, node.intrinsicWidth);
+        height = std::max(height, node.intrinsicHeight);
+    }
+    if (node.tag != "html" && node.tag != "body") {
+        contentSize.width = std::max(
+            contentSize.width, node.layout.x - rootLayout.x + width);
+        contentSize.height = std::max(
+            contentSize.height, node.layout.y - rootLayout.y + height);
+    }
+    for (const auto& child : node.children) {
+        expandIntrinsicContentSize(*child, rootLayout, contentSize);
+    }
 }
 
 std::string resolveLayoutPageSource(const Document& document,
@@ -254,6 +304,8 @@ void collectLayoutPageSnapshots(
                            intersectsClip(visualBounds, parent.clipRect);
         snapshot.hitTestable = snapshot.visible &&
                                node.style.pointerEvents != PointerEvents::None;
+        snapshot.usesIntrinsicWidth = usesIntrinsicDimension(node.style.width);
+        snapshot.usesIntrinsicHeight = usesIntrinsicDimension(node.style.height);
         snapshots.push_back(std::move(snapshot));
     }
 
@@ -291,18 +343,23 @@ void collectLayoutPageSnapshots(
 
 Node* hitTest(Node& node, float x, float y) {
     const float stickyOffsetY = stickyVisualOffsetY(node);
-    Rect visualLayout = node.layout;
-    visualLayout.y += stickyOffsetY;
-    if (!isRenderableNode(node) || !visualLayout.contains(x, y)) {
+    float localX = x;
+    float localY = y - stickyOffsetY;
+    if (!node.style.transform.isIdentity() &&
+        !inverseTransformPoint(
+            nodeTransform(node), localX, localY, localX, localY)) {
+        return nullptr;
+    }
+    if (!isRenderableNode(node) || !node.layout.contains(localX, localY)) {
         return nullptr;
     }
     const Rect contentClip = scrollContentClipRect(node);
-    if (!contentClip.contains(x, y) &&
+    if (!contentClip.contains(localX, localY) &&
         (node.style.scrollbarGutterStable || shouldShowScrollbarX(node) || shouldShowScrollbarY(node))) {
         return node.style.pointerEvents == PointerEvents::None ? nullptr : &node;
     }
-    const float childX = x + node.scrollX;
-    const float childY = y + node.scrollY - stickyOffsetY;
+    const float childX = localX + node.scrollX;
+    const float childY = localY + node.scrollY;
     if (requiresZIndexOrdering(node)) {
         const std::vector<Node*> orderedChildren = childrenInPaintOrder(node);
         for (auto it = orderedChildren.rbegin(); it != orderedChildren.rend(); ++it) {
@@ -540,6 +597,18 @@ const Node* findById(const Node& node, std::string_view id) {
         }
     }
     return nullptr;
+}
+
+bool hasConflictingLayoutPageId(const Node& node, const Node& documentRoot) {
+    if (node.tag == "skui-page" && findById(documentRoot, node.id)) {
+        return true;
+    }
+    for (const auto& child : node.children) {
+        if (hasConflictingLayoutPageId(*child, documentRoot)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 bool containsNode(const Node& root, const Node* node) {
@@ -2232,7 +2301,11 @@ void syncNodeAttribute(Node& node, const std::string& name, const CssEnvironment
         std::from_chars(begin, end, node.numericMax);
         node.numericMax = std::max(0.0001f, node.numericMax);
     } else if (name == "src") {
-        node.src = value;
+        if (node.src != value) {
+            node.src = value;
+            node.intrinsicWidth = 0.0f;
+            node.intrinsicHeight = 0.0f;
+        }
     } else if (name == "data-action") {
         node.action = value;
     } else if (name == "data-links") {
@@ -2644,6 +2717,18 @@ public:
             perf::Trace::write("skui", "layout", width, height, perf::Trace::elapsedMs(layoutStart));
             perf::Trace::write("skui", "recompute_layout_total", width, height, perf::Trace::elapsedMs(traceStart));
         }
+    }
+
+    bool consumeBitmapImageChanges() {
+        if (!renderer.consumeImageDirty()) {
+            return false;
+        }
+        if (document.type == DocumentType::Page &&
+            renderer.syncBitmapImageIntrinsicSizes(document)) {
+            recomputeAndLayout();
+        }
+        dirty = true;
+        return true;
     }
 
     void startTransitions(const std::vector<StyleSnapshot>& snapshots) {
@@ -3886,7 +3971,8 @@ public:
                       std::vector<std::unique_ptr<Node>>& nodes,
                       std::vector<StyleRule>& rules) {
         std::string error;
-        if (!parser.loadFragment(html, document.basePath, nodes, rules, error)) {
+        if (!parser.loadFragment(
+                html, document.basePath, document.type, nodes, rules, error)) {
             lastError = std::move(error);
             return false;
         }
@@ -3895,6 +3981,18 @@ public:
             return false;
         }
         return true;
+    }
+
+    bool hasLayoutPageIdConflict(
+        const std::vector<std::unique_ptr<Node>>& nodes) const {
+        if (document.type != DocumentType::Layout || !document.root) {
+            return false;
+        }
+        return std::ranges::any_of(
+            nodes,
+            [this](const std::unique_ptr<Node>& node) {
+                return hasConflictingLayoutPageId(*node, *document.root);
+            });
     }
 
     void appendStyleRules(std::vector<StyleRule> rules) {
@@ -5052,6 +5150,7 @@ bool Runtime::tick(float deltaSeconds) {
     }
 
     impl_->animationTimeSeconds += static_cast<double>(deltaSeconds);
+    impl_->consumeBitmapImageChanges();
     impl_->advanceAnimations();
     const bool mediaChanged = impl_->mediaController.tick(deltaSeconds);
     if (impl_->mediaController.consumeIntrinsicSizeChange()) {
@@ -5409,6 +5508,10 @@ bool Runtime::appendHtmlById(std::string_view parentId, std::string_view html) {
     if (!impl_->loadFragment(html, nodes, rules)) {
         return false;
     }
+    if (impl_->hasLayoutPageIdConflict(nodes)) {
+        impl_->lastError = "duplicate dynamic <skui-page> id";
+        return false;
+    }
     for (auto& node : nodes) {
         rebindParents(*node, parent);
         prepareContentEditableTree(*node);
@@ -5432,6 +5535,10 @@ bool Runtime::prependHtmlById(std::string_view parentId, std::string_view html) 
     std::vector<std::unique_ptr<Node>> nodes;
     std::vector<StyleRule> rules;
     if (!impl_->loadFragment(html, nodes, rules)) {
+        return false;
+    }
+    if (impl_->hasLayoutPageIdConflict(nodes)) {
+        impl_->lastError = "duplicate dynamic <skui-page> id";
         return false;
     }
     const auto insertAt = parent->children.begin();
@@ -6007,9 +6114,7 @@ Cursor Runtime::cursor() const {
 }
 
 bool Runtime::dirty() const {
-    if (impl_->renderer.consumeImageDirty()) {
-        impl_->dirty = true;
-    }
+    impl_->consumeBitmapImageChanges();
     return impl_->dirty;
 }
 
@@ -6018,6 +6123,40 @@ std::optional<DocumentType> Runtime::documentType() const {
         return std::nullopt;
     }
     return impl_->document.type;
+}
+
+std::optional<LayoutSize> Runtime::contentSize() const {
+    if (!impl_->hasDocument || !impl_->document.root ||
+        impl_->document.type != DocumentType::Page) {
+        return std::nullopt;
+    }
+    impl_->consumeBitmapImageChanges();
+    LayoutSize contentSize;
+    expandIntrinsicContentSize(
+        *impl_->document.root, impl_->document.root->layout, contentSize);
+    return contentSize;
+}
+
+bool Runtime::setLayoutPageIntrinsicSize(std::string_view id,
+                                         float width,
+                                         float height) {
+    if (!impl_->hasDocument || !impl_->document.root ||
+        impl_->document.type != DocumentType::Layout || id.empty() ||
+        !std::isfinite(width) || !std::isfinite(height) ||
+        width <= 0.0f || height <= 0.0f) {
+        return false;
+    }
+    Node* node = findById(*impl_->document.root, id);
+    if (!node || node->tag != "skui-page") {
+        return false;
+    }
+    if (node->intrinsicWidth == width && node->intrinsicHeight == height) {
+        return false;
+    }
+    node->intrinsicWidth = width;
+    node->intrinsicHeight = height;
+    impl_->requestLayout();
+    return true;
 }
 
 std::vector<LayoutPageSnapshot> Runtime::layoutPageSnapshots() const {

@@ -463,6 +463,84 @@ std::string nodeName(lxb_dom_element_t* element) {
     return lower(std::string(reinterpret_cast<const char*>(value), len));
 }
 
+std::optional<std::array<float, 20>> parseSvgColorMatrixValues(
+    std::string_view raw) {
+    std::array<float, 20> matrix{};
+    size_t valueIndex = 0;
+    size_t position = 0;
+    while (position < raw.size()) {
+        while (position < raw.size() &&
+               (std::isspace(static_cast<unsigned char>(raw[position])) != 0 ||
+                raw[position] == ',')) {
+            ++position;
+        }
+        if (position >= raw.size()) {
+            break;
+        }
+        const size_t valueStart = position;
+        while (position < raw.size() &&
+               std::isspace(static_cast<unsigned char>(raw[position])) == 0 &&
+               raw[position] != ',') {
+            ++position;
+        }
+        if (valueIndex >= matrix.size() ||
+            !parseFloat(raw.substr(valueStart, position - valueStart),
+                        matrix[valueIndex]) ||
+            !std::isfinite(matrix[valueIndex])) {
+            return std::nullopt;
+        }
+        ++valueIndex;
+    }
+    return valueIndex == matrix.size()
+        ? std::optional<std::array<float, 20>>{matrix}
+        : std::nullopt;
+}
+
+std::optional<std::array<float, 20>> findSvgColorMatrix(
+    lxb_dom_node_t* node) {
+    for (lxb_dom_node_t* child = node->first_child; child; child = child->next) {
+        if (child->type != LXB_DOM_NODE_TYPE_ELEMENT) {
+            continue;
+        }
+        auto* element = lxb_dom_interface_element(child);
+        if (nodeName(element) == "fecolormatrix") {
+            const std::string type = lower(trim(attr(element, "type")));
+            if (type.empty() || type == "matrix") {
+                return parseSvgColorMatrixValues(attr(element, "values"));
+            }
+            return std::nullopt;
+        }
+        if (std::optional<std::array<float, 20>> matrix =
+                findSvgColorMatrix(child)) {
+            return matrix;
+        }
+    }
+    return std::nullopt;
+}
+
+void collectSvgColorMatrices(
+    lxb_dom_node_t* node,
+    std::unordered_map<std::string, std::array<float, 20>>& matrices) {
+    for (lxb_dom_node_t* child = node->first_child; child; child = child->next) {
+        if (child->type != LXB_DOM_NODE_TYPE_ELEMENT) {
+            continue;
+        }
+        auto* element = lxb_dom_interface_element(child);
+        if (nodeName(element) == "filter") {
+            const std::string id = attr(element, "id");
+            const std::string colorSpace =
+                lower(trim(attr(element, "color-interpolation-filters")));
+            if (!id.empty() && colorSpace == "srgb") {
+                if (std::optional<std::array<float, 20>> matrix =
+                        findSvgColorMatrix(child)) {
+                    matrices[id] = *matrix;
+                }
+            }
+        }
+        collectSvgColorMatrices(child, matrices);
+    }
+}
+
 lxb_status_t appendSerialized(const lxb_char_t* data, size_t len, void* ctx) {
     auto* out = static_cast<std::string*>(ctx);
     out->append(reinterpret_cast<const char*>(data), len);
@@ -1715,6 +1793,63 @@ bool parseFilterFunction(std::string_view name,
             FilterOperationKind::Brightness,
             *amount,
         });
+        return true;
+    }
+    if (function == "contrast" || function == "saturate") {
+        std::optional<float> amount = parseFilterAmount(rawArguments, 1.0f);
+        if (!amount) {
+            return false;
+        }
+        filter.operations.push_back({
+            function == "contrast" ? FilterOperationKind::Contrast
+                                   : FilterOperationKind::Saturate,
+            *amount,
+        });
+        return true;
+    }
+    if (function == "sepia" || function == "invert" || function == "opacity") {
+        std::optional<float> amount = parseFilterAmount(rawArguments, 1.0f);
+        if (!amount) {
+            return false;
+        }
+        FilterOperationKind kind = FilterOperationKind::Sepia;
+        if (function == "invert") {
+            kind = FilterOperationKind::Invert;
+        } else if (function == "opacity") {
+            kind = FilterOperationKind::Opacity;
+        }
+        filter.operations.push_back({kind, clampf(*amount, 0.0f, 1.0f)});
+        return true;
+    }
+    if (function == "hue-rotate") {
+        std::optional<float> degrees = parseAngleDegrees(rawArguments);
+        if (!degrees || !std::isfinite(*degrees)) {
+            return false;
+        }
+        float normalizedDegrees = std::fmod(*degrees, 360.0f);
+        if (normalizedDegrees < 0.0f) {
+            normalizedDegrees += 360.0f;
+        }
+        filter.operations.push_back({
+            FilterOperationKind::HueRotate,
+            normalizedDegrees,
+        });
+        return true;
+    }
+    if (function == "url") {
+        std::string reference = trim(rawArguments);
+        if (reference.size() >= 2 &&
+            ((reference.front() == '\'' && reference.back() == '\'') ||
+             (reference.front() == '"' && reference.back() == '"'))) {
+            reference = reference.substr(1, reference.size() - 2);
+        }
+        if (!reference.starts_with('#') || reference.size() == 1) {
+            return false;
+        }
+        FilterOperation operation;
+        operation.kind = FilterOperationKind::UrlReference;
+        operation.referenceId = reference.substr(1);
+        filter.operations.push_back(std::move(operation));
         return true;
     }
     if (function == "drop-shadow") {
@@ -4121,6 +4256,8 @@ convertElement(lxb_dom_element_t* element, Node* parent, std::vector<StyleRule>&
 
     if (tag == "svg") {
         node->svgMarkup = serializeTree(lxb_dom_interface_node(element));
+        collectSvgColorMatrices(
+            lxb_dom_interface_node(element), node->svgColorMatrices);
         return node;
     }
 
@@ -4263,10 +4400,22 @@ bool DocumentParser::loadString(std::string_view html,
 
 bool DocumentParser::loadFragment(std::string_view html,
                                   std::string_view basePath,
+                                  DocumentType documentType,
                                   std::vector<std::unique_ptr<Node>>& outNodes,
                                   std::vector<StyleRule>& outRules,
                                   std::string& error) {
     Document fragmentDocument;
+    std::string layoutFragment;
+    if (documentType == DocumentType::Layout) {
+        layoutFragment.reserve(html.size() + 160);
+        layoutFragment.append(
+            "<!doctype html><html><head>"
+            "<meta name=\"skui-document-type\" content=\"layout\">"
+            "</head><body>");
+        layoutFragment.append(html);
+        layoutFragment.append("</body></html>");
+        html = layoutFragment;
+    }
     if (!loadString(html, basePath, fragmentDocument, error)) {
         return false;
     }

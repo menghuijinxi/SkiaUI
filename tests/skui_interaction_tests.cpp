@@ -934,6 +934,62 @@ int main() {
         sendMouse(runtime, skui::EventType::MouseMove, 20.0f, 20.0f);
         ok = expect(actionMoves == 1, "mouse move should be emitted for data-action elements") && ok;
     }
+    {
+        constexpr std::string_view transformedHitHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    html, body {
+      margin: 0;
+    }
+    .transform-root {
+      position: relative;
+      width: 140px;
+      height: 90px;
+    }
+    .rotated-button {
+      position: absolute;
+      left: 50px;
+      top: 15px;
+      width: 20px;
+      height: 60px;
+      transform-origin: 50% 50%;
+      transform: rotate(90deg);
+      background-color: #00ff00;
+    }
+  </style>
+</head>
+<body>
+  <div class="transform-root">
+    <div class="rotated-button" data-action="rotated-button"></div>
+  </div>
+</body>
+</html>
+)html";
+
+        int transformedClicks = 0;
+        skui::Runtime transformedHitRuntime(options);
+        transformedHitRuntime.resize(kWidth, kHeight, 1.0f);
+        transformedHitRuntime.setElementEventCallback(
+            [&](const skui::ElementEvent& event) {
+                if (event.type == skui::ElementEventType::Click &&
+                    event.action == "rotated-button") {
+                    ++transformedClicks;
+                }
+            });
+        ok = expect(transformedHitRuntime.loadDocumentFromString(transformedHitHtml),
+                    "transformed hit-test document should load") && ok;
+
+        sendMouse(transformedHitRuntime, skui::EventType::MouseDown, 35.0f, 45.0f);
+        sendMouse(transformedHitRuntime, skui::EventType::MouseUp, 35.0f, 45.0f);
+        ok = expect(transformedClicks == 1,
+                    "rotated element should hit inside its transformed visual bounds") && ok;
+        sendMouse(transformedHitRuntime, skui::EventType::MouseDown, 60.0f, 20.0f);
+        sendMouse(transformedHitRuntime, skui::EventType::MouseUp, 60.0f, 20.0f);
+        ok = expect(transformedClicks == 1,
+                    "rotated element should not hit its stale untransformed bounds") && ok;
+    }
 
     constexpr std::string_view zIndexHtml = R"html(
 <!doctype html>
@@ -1254,9 +1310,38 @@ int main() {
       border-radius: 10px;
       background-color: #00ff00;
     }
+    .standard-color-filter-host {
+      position: absolute;
+      left: 90px;
+      top: 60px;
+      width: 20px;
+      height: 20px;
+      background-color: #80c040;
+      filter: invert(25%) sepia(60%) saturate(180%) hue-rotate(45deg)
+              brightness(120%) contrast(80%) opacity(50%);
+    }
+    .red-blend-filter-host {
+      position: absolute;
+      left: 10px;
+      top: 60px;
+      width: 20px;
+      height: 20px;
+      background-color: #80c040;
+      filter: url(#red-blend-filter);
+    }
+    .invalid-tint-host {
+      position: absolute;
+      left: 120px;
+      top: 60px;
+      width: 10px;
+      height: 10px;
+      background-color: #123456;
+      filter: tint(not-a-color);
+    }
   </style>
 </head>
 <body>
+  <svg id="filter-definitions" width="0" height="0" style="display: none"></svg>
   <div class="root">
     <button id="disabled-button"
             class="disabled-button"
@@ -1267,6 +1352,9 @@ int main() {
     <div class="filter-host">
       <div class="filter-shape"></div>
     </div>
+    <div class="standard-color-filter-host"></div>
+    <div class="red-blend-filter-host"></div>
+    <div class="invalid-tint-host"></div>
   </div>
 </body>
 </html>
@@ -1277,6 +1365,15 @@ int main() {
     disabledFilterRuntime.resize(kWidth, kHeight, 1.0f);
     ok = expect(disabledFilterRuntime.loadDocumentFromString(disabledFilterHtml),
                 "disabled filter document should load") && ok;
+    ok = expect(disabledFilterRuntime.replaceHtmlById(
+                    "filter-definitions",
+                    R"html(<svg id="filter-definitions" width="0" height="0" style="display: none">
+  <filter id="red-blend-filter" color-interpolation-filters="sRGB">
+    <feColorMatrix type="matrix"
+                   values="1 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 1 0" />
+  </filter>
+</svg>)html"),
+                "inline SVG filter definitions should support runtime replacement") && ok;
     int disabledClicks = 0;
     int disabledPointerEvents = 0;
     disabledFilterRuntime.setElementEventCallback([&](const skui::ElementEvent& event) {
@@ -1295,11 +1392,17 @@ int main() {
     uint32_t disabledHoverColor = 0;
     uint32_t filteredShapeColor = 0;
     uint32_t filteredTransparentColor = 0;
+    uint32_t standardFilteredColor = 0;
+    uint32_t redBlendFilteredColor = 0;
+    uint32_t invalidTintColor = 0;
     ok = renderPixel(disabledFilterRuntime, 65, 45, disabledColor) && ok;
     sendMouse(disabledFilterRuntime, skui::EventType::MouseMove, 20.0f, 20.0f);
     ok = renderPixel(disabledFilterRuntime, 65, 45, disabledHoverColor) && ok;
     ok = renderPixel(disabledFilterRuntime, 100, 20, filteredShapeColor) && ok;
     ok = renderPixel(disabledFilterRuntime, 120, 30, filteredTransparentColor) && ok;
+    ok = renderPixel(disabledFilterRuntime, 100, 70, standardFilteredColor) && ok;
+    ok = renderPixel(disabledFilterRuntime, 20, 70, redBlendFilteredColor) && ok;
+    ok = renderPixel(disabledFilterRuntime, 125, 65, invalidTintColor) && ok;
     const auto colorChannel = [](uint32_t color, unsigned shift) {
         return (color >> shift) & 0xFFu;
     };
@@ -1318,6 +1421,14 @@ int main() {
                 "grayscale and brightness filters should compose across a subtree") && ok;
     ok = expect(colorChannel(filteredTransparentColor, 24u) == 0u,
                 "color filters should preserve transparent pixels outside irregular content") && ok;
+    ok = expect(colorChannel(standardFilteredColor, 24u) >= 127u &&
+                    colorChannel(standardFilteredColor, 24u) <= 128u &&
+                    standardFilteredColor != solidColor(0x80, 0xC0, 0x40),
+                "standard color filter functions should compose in declaration order") && ok;
+    ok = expect(redBlendFilteredColor == solidColor(0x80, 0x00, 0x00),
+                "an inline SVG color matrix should multiply image color channels") && ok;
+    ok = expect(invalidTintColor == solidColor(0x12, 0x34, 0x56),
+                "non-standard tint filters should leave the previous style unchanged") && ok;
 
     skui::Event disabledDown;
     disabledDown.type = skui::EventType::MouseDown;
@@ -4008,6 +4119,77 @@ int main() {
                     std::string("async bitmap image load should request redraw: ") + fixture.fileName) && ok;
         ok = expect(isMostlyRed(imageAfter),
                     std::string("async bitmap image should render after loading: ") + fixture.fileName) && ok;
+    }
+
+    {
+        constexpr std::string_view intrinsicImageHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    html, body {
+      margin: 0;
+      align-items: flex-start;
+    }
+    body, #content, #intrinsic-image {
+      flex-shrink: 0;
+    }
+    #content {
+      position: relative;
+      align-self: flex-start;
+      align-items: flex-start;
+    }
+  </style>
+</head>
+<body><div id="content"><img id="intrinsic-image" src="red.jpg"></div></body>
+</html>
+)html";
+
+        skui::Runtime intrinsicImageRuntime(options);
+        intrinsicImageRuntime.resize(100, 100, 1.0f);
+        ok = expect(intrinsicImageRuntime.loadDocumentFromString(
+                        intrinsicImageHtml, imageFixtureDir.string()),
+                    "intrinsic bitmap document should load") && ok;
+        intrinsicImageRuntime.clearDirty();
+        waitForDirty(intrinsicImageRuntime);
+        const bool intrinsicImagePending = intrinsicImageRuntime.tick(0.0f);
+        (void)intrinsicImagePending;
+        const std::optional<skui::LayoutSize> contentSize =
+            intrinsicImageRuntime.contentSize();
+        ok = expect(contentSize.has_value() &&
+                        contentSize->width == 2.0f &&
+                        contentSize->height == 2.0f,
+                    "auto-sized bitmap should contribute decoded dimensions to content size") && ok;
+
+        constexpr std::string_view scaledIntrinsicImageHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    html, body { margin: 0; align-items: flex-start; }
+    body, #scaled-image { flex-shrink: 0; }
+    #scaled-image { width: 1px; }
+  </style>
+</head>
+<body><img id="scaled-image" src="red.png"></body>
+</html>
+)html";
+        skui::Runtime scaledIntrinsicImageRuntime(options);
+        scaledIntrinsicImageRuntime.resize(100, 100, 1.0f);
+        ok = expect(scaledIntrinsicImageRuntime.loadDocumentFromString(
+                        scaledIntrinsicImageHtml, imageFixtureDir.string()),
+                    "scaled intrinsic bitmap document should load") && ok;
+        scaledIntrinsicImageRuntime.clearDirty();
+        waitForDirty(scaledIntrinsicImageRuntime);
+        const bool scaledIntrinsicImagePending =
+            scaledIntrinsicImageRuntime.tick(0.0f);
+        (void)scaledIntrinsicImagePending;
+        const std::optional<skui::LayoutSize> scaledContentSize =
+            scaledIntrinsicImageRuntime.contentSize();
+        ok = expect(scaledContentSize.has_value() &&
+                        scaledContentSize->width == 1.0f &&
+                        scaledContentSize->height == 1.0f,
+                    "one explicit bitmap dimension should scale the auto dimension") && ok;
     }
 
     {

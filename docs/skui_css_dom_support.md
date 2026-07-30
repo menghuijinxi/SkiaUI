@@ -164,6 +164,10 @@ Grid 通过 Yoga 和内部单元格节点实现，覆盖等分 `repeat(N, 1fr)`�
 
 文本叶节点显式设置 `width:auto` / `height:auto` 时，与省略对应尺寸一致，使用文本固有尺寸参与布局；最终背景框会同时包含文本、padding 和 border。宽高均为固定值时不再执行固有尺寸测量。
 
+位图 `img` 解码完成后会把图片像素宽高作为 replaced element 的固有尺寸写回布局；省略尺寸或
+显式使用 `width:auto;height:auto` 时会采用该尺寸，单独指定一维时另一维保持图片宽高比。
+异步尺寸变化会触发重新布局和重绘。显式设置两维尺寸时仍以 CSS 尺寸为准。
+
 `z-index` 按同级子树排序，数值越大越晚绘制并优先接收鼠标事件；`auto` 等同于默认层级 `0`，相同层级保持 DOM 顺序。当前实现把每个直接子节点及其后代作为一个整体排序，不实现浏览器完整的跨层叠上下文提升；需要覆盖另一个父节点下的元素时，应把层级设置在两边参与比较的同级祖先上。
 
 显隐语义：
@@ -199,7 +203,7 @@ Grid 通过 Yoga 和内部单元格节点实现，覆盖等分 `repeat(N, 1fr)`�
 | `white-space` | 普通单行文本识别 `nowrap`；与 overflow 和 text-overflow 配合使用 |
 | `text-overflow` | 普通单行文本在 `overflow` 非 visible 且 `white-space: nowrap` 时支持 `ellipsis` |
 | `accent-color` | 控制 `progress` 填充色 |
-| `filter` | `none`，或按顺序组合 `grayscale(...)`、`brightness(...)`、`drop-shadow(...)` |
+| `filter` | `none`，按顺序组合标准滤镜函数，或用 `url(#id)` 引用页面内联 SVG 颜色矩阵 |
 | `content` | `::before` / `::after` 的创建条件；当前绘制子集使用空字符串装饰盒 |
 
 渐变由 Skia `SkShaders` 生成，按 sRGB 插值并启用 Skia dithering，以减少低亮度 8 位颜色中的分层色带；渐变遮罩通过 Skia 离屏层和 `DstIn` 混合应用；`box-shadow`、`text-shadow` 和 `drop-shadow()` 分别使用 Skia 的路径、`SkMaskFilter` 与 `SkImageFilters`。这些效果没有调用浏览器内核，但 CSS 参数会映射到对应的 Skia 原生绘制能力。外阴影会裁掉盒内区域，`inset` 阴影通过“外部区域减去内孔”的路径向内模糊，不再使用粗描边近似。
@@ -209,6 +213,30 @@ Grid 通过 Yoga 和内部单元格节点实现，覆盖等分 `repeat(N, 1fr)`�
 ```css
 .disabled-look {
   filter: grayscale(100%) brightness(72%);
+}
+
+.recolored-map {
+  filter: invert(25%) sepia(60%) saturate(180%) hue-rotate(45deg) brightness(120%) contrast(80%);
+}
+```
+
+`url(#id)` 当前支持引用同一页面内联 SVG 中声明为 `color-interpolation-filters="sRGB"` 的单个
+`<feColorMatrix type="matrix">`。矩阵使用 SVG 标准的 4×5、20 个数值格式，可精确完成 RGBA
+通道乘色；外部 URL、其他颜色空间和其他 SVG 滤镜原语暂不支持。例如：
+
+```html
+<svg width="0" height="0" style="display: none">
+  <filter id="red-tint" color-interpolation-filters="sRGB">
+    <feColorMatrix type="matrix"
+                   values="1 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 1 0" />
+  </filter>
+</svg>
+<img class="map" src="map.png">
+```
+
+```css
+.map {
+  filter: url(#red-tint);
 }
 ```
 
@@ -443,6 +471,7 @@ SkUI 的事件返回值表示“UI 是否实际消费了事件”，不是“DOM
 ## 图片和 SVG
 
 - `img[src]` 支持本地资源路径。`.svg` 文件按 SVG 文本读取；位图通过 Skia codec 支持 PNG、JPEG、WebP 和 BMP 异步读取和解码。
+- 位图解码完成后会按图片像素宽高参与 `auto` 固有尺寸布局，不需要宿主提前读取图片头并设置元素尺寸。
 - 位图图片默认按浏览器的 eager 语义处理：样式重算后会扫描 DOM 中的非 SVG `img` 并建立异步请求，即使节点当前是 `display:none`。这用于按钮 normal / active 图这类状态切换场景，避免第一次显示隐藏状态图时出现“闪空”。
 - 大图列表、图片滚动墙等不希望提前请求全部图片的场景，应在图片上写 `loading="lazy"`。lazy 图片不会在 DOM 扫描阶段提前请求，而是在节点进入当前画布裁剪区域附近时进入后台加载队列。默认边距为视口四周各一个视口尺寸，宿主可通过 `RuntimeOptions::lazyImagePreloadMarginViewports` 调整。该策略接近浏览器的视口交叉预加载，但没有浏览器按网络状态动态调整距离的调度逻辑。`SkiaImageScrollerDemo` 的缩略图使用的就是这个模式。
 - 同一个 `img` 运行时切换 `src` 时，renderer 会保留该节点上一张已经显示成功的位图，直到新路径图片加载完成后再替换，避免按下态、悬停态或动态换图时先清空再绘制。

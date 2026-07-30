@@ -367,6 +367,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCmd) {
 
 自定义后端传给 `Runtime::resize(width, height, dpiScale)` 的 `dpiScale` 应只表示平台 DPI 倍率。如果宿主不希望 SkUI 跟随系统 DPI，就传 `1.0f`；如果还需要用户自定义 UI 缩放，设置 `RuntimeOptions::scale` 或运行时调用 `Runtime::setScale(scale)`。宿主读取到系统文字倍率后，应通过 `RuntimeOptions::textScale` 或 `Runtime::setTextScale(textScale)` 传入。SkUI 内部会用 `dpiScale * scale * textScale` 统一处理逻辑视口、Skia 绘制缩放和输入命中坐标。
 
+布局文档宿主如果要让未声明 `width` / `height` 的 `skui-page` 跟随子页面内容，应在子 runtime
+更新后读取 `Runtime::contentSize()`，再调用父 runtime 的
+`setLayoutPageIntrinsicSize(pageId, width, height)`。`LayoutPageSnapshot::usesIntrinsicWidth` 和
+`usesIntrinsicHeight` 表示哪些维度需要反馈；父 runtime 会重新计算布局，显式 CSS 尺寸仍然优先。
+位图异步解码会更新 `img` 的固有尺寸，因此这条链路不需要宿主自行解析图片文件头。
+
 ### 透明叠层与事件透传
 
 `Runtime::handleEvent(event)` 的返回值表示 SkUI 是否实际消费了该事件。集成到 3D 场景、游戏视口、编辑器视口或其他下层 UI 时，宿主应只在返回 `true` 时拦截平台事件；返回 `false` 时应继续交给下一层处理。

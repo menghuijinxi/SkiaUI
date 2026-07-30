@@ -54,18 +54,98 @@ std::vector<SkColor4f> gradientColors(const std::vector<SkColor>& colors) {
     return stops;
 }
 
-sk_sp<SkColorFilter> makeColorFilter(const Filter& filter) {
+const std::array<float, 20>* findSvgColorMatrix(
+    const Node& node,
+    std::string_view id) {
+    const auto matrix = node.svgColorMatrices.find(std::string(id));
+    if (matrix != node.svgColorMatrices.end()) {
+        return &matrix->second;
+    }
+    for (const auto& child : node.children) {
+        if (const std::array<float, 20>* found =
+                findSvgColorMatrix(*child, id)) {
+            return found;
+        }
+    }
+    return nullptr;
+}
+
+SkColorMatrix svgColorMatrix(const std::array<float, 20>& values) {
+    std::array<float, 20> skiaValues = values;
+    skiaValues[4] *= 255.0f;
+    skiaValues[9] *= 255.0f;
+    skiaValues[14] *= 255.0f;
+    skiaValues[19] *= 255.0f;
+    SkColorMatrix matrix;
+    matrix.setRowMajor(skiaValues.data());
+    return matrix;
+}
+
+sk_sp<SkColorFilter> makeColorFilter(
+    const Filter& filter,
+    const Document& document) {
     sk_sp<SkColorFilter> result;
     for (const FilterOperation& operation : filter.operations) {
         if (operation.kind == FilterOperationKind::DropShadow) {
             continue;
         }
         SkColorMatrix matrix;
-        if (operation.kind == FilterOperationKind::Grayscale) {
+        if (operation.kind == FilterOperationKind::UrlReference) {
+            if (!document.root) {
+                continue;
+            }
+            const std::array<float, 20>* values =
+                findSvgColorMatrix(*document.root, operation.referenceId);
+            if (!values) {
+                continue;
+            }
+            matrix = svgColorMatrix(*values);
+        } else if (operation.kind == FilterOperationKind::Grayscale) {
             matrix.setSaturation(1.0f - clampf(operation.amount, 0.0f, 1.0f));
         } else if (operation.kind == FilterOperationKind::Brightness) {
             const float amount = std::max(0.0f, operation.amount);
             matrix.setScale(amount, amount, amount);
+        } else if (operation.kind == FilterOperationKind::Contrast) {
+            const float amount = std::max(0.0f, operation.amount);
+            const float offset = 127.5f * (1.0f - amount);
+            matrix.setScale(amount, amount, amount);
+            matrix.postTranslate(offset, offset, offset, 0.0f);
+        } else if (operation.kind == FilterOperationKind::Saturate) {
+            matrix.setSaturation(std::max(0.0f, operation.amount));
+        } else if (operation.kind == FilterOperationKind::Sepia) {
+            const float amount = clampf(operation.amount, 0.0f, 1.0f);
+            const float inverse = 1.0f - amount;
+            matrix = SkColorMatrix(
+                inverse + 0.393f * amount, 0.769f * amount, 0.189f * amount, 0.0f, 0.0f,
+                0.349f * amount, inverse + 0.686f * amount, 0.168f * amount, 0.0f, 0.0f,
+                0.272f * amount, 0.534f * amount, inverse + 0.131f * amount, 0.0f, 0.0f,
+                0.0f, 0.0f, 0.0f, 1.0f, 0.0f);
+        } else if (operation.kind == FilterOperationKind::HueRotate) {
+            constexpr float kPi = 3.14159265358979323846f;
+            const float radians = operation.amount * kPi / 180.0f;
+            const float cosine = std::cos(radians);
+            const float sine = std::sin(radians);
+            matrix = SkColorMatrix(
+                0.213f + cosine * 0.787f - sine * 0.213f,
+                0.715f - cosine * 0.715f - sine * 0.715f,
+                0.072f - cosine * 0.072f + sine * 0.928f, 0.0f, 0.0f,
+                0.213f - cosine * 0.213f + sine * 0.143f,
+                0.715f + cosine * 0.285f + sine * 0.140f,
+                0.072f - cosine * 0.072f - sine * 0.283f, 0.0f, 0.0f,
+                0.213f - cosine * 0.213f - sine * 0.787f,
+                0.715f - cosine * 0.715f + sine * 0.715f,
+                0.072f + cosine * 0.928f + sine * 0.072f, 0.0f, 0.0f,
+                0.0f, 0.0f, 0.0f, 1.0f, 0.0f);
+        } else if (operation.kind == FilterOperationKind::Invert) {
+            const float amount = clampf(operation.amount, 0.0f, 1.0f);
+            const float scale = 1.0f - 2.0f * amount;
+            const float offset = 255.0f * amount;
+            matrix.setScale(scale, scale, scale);
+            matrix.postTranslate(offset, offset, offset, 0.0f);
+        } else if (operation.kind == FilterOperationKind::Opacity) {
+            matrix.setScale(
+                1.0f, 1.0f, 1.0f,
+                clampf(operation.amount, 0.0f, 1.0f));
         }
         result = SkColorFilters::Compose(
             SkColorFilters::Matrix(matrix),
@@ -948,7 +1028,7 @@ void SkiaRenderer::drawNode(SkCanvas& canvas, const Document& document, const No
         SkPaint paint;
         paint.setAlphaf(opacity);
         if (hasFilter) {
-            paint.setColorFilter(makeColorFilter(node.style.filter));
+            paint.setColorFilter(makeColorFilter(node.style.filter, document));
             paint.setImageFilter(makeImageFilter(
                 node.style.filter,
                 node.style));
@@ -1703,6 +1783,11 @@ void SkiaRenderer::requestBitmapImages(const Document& document) {
     requestBitmapImagesForNode(document, *document.root);
 }
 
+bool SkiaRenderer::syncBitmapImageIntrinsicSizes(Document& document) {
+    return document.root &&
+           syncBitmapImageIntrinsicSizesForNode(document, *document.root);
+}
+
 namespace {
 
 bool shouldRequestBitmapImageEagerly(const Node& node) {
@@ -1774,6 +1859,40 @@ void SkiaRenderer::requestBitmapImagesForNode(const Document& document, const No
     for (const auto& child : node.children) {
         requestBitmapImagesForNode(document, *child);
     }
+}
+
+bool SkiaRenderer::syncBitmapImageIntrinsicSizesForNode(
+    Document& document,
+    Node& node) {
+    bool changed = false;
+    if (node.tag == "img" && !node.src.empty() && !isSvgSource(node.src)) {
+        const std::string path = resolveAssetPath(document, node.src);
+        int imageWidth = 0;
+        int imageHeight = 0;
+        if (!path.empty() && bitmapState_) {
+            std::lock_guard lock(bitmapState_->mutex);
+            const auto entry = bitmapState_->cache.find(path);
+            if (entry != bitmapState_->cache.end() &&
+                entry->second.state == ImageState::Ready) {
+                imageWidth = entry->second.width;
+                imageHeight = entry->second.height;
+            }
+        }
+        if (imageWidth > 0 && imageHeight > 0 &&
+            (node.intrinsicWidth != static_cast<float>(imageWidth) ||
+             node.intrinsicHeight != static_cast<float>(imageHeight))) {
+            node.intrinsicWidth = static_cast<float>(imageWidth);
+            node.intrinsicHeight = static_cast<float>(imageHeight);
+            changed = true;
+        }
+    }
+
+    for (auto& child : node.children) {
+        changed = syncBitmapImageIntrinsicSizesForNode(
+                      document, *child) ||
+                  changed;
+    }
+    return changed;
 }
 
 void SkiaRenderer::requestBitmapImage(const std::string& path) {

@@ -236,6 +236,103 @@ body { display: flex; flex-direction: column; }
                   "visibility hidden should disable drawing and hit testing");
 }
 
+bool testDynamicLayoutPages() {
+    constexpr std::string_view kHtml = R"html(
+<!doctype html><html><head>
+<meta name="skui-document-type" content="layout">
+<style>html, body, #root { width: 100%; height: 100%; margin: 0; }</style>
+</head><body><div id="root"></div></body></html>
+)html";
+
+    skui::Runtime runtime;
+    if (!expect(runtime.loadDocumentFromString(kHtml, skui::DocumentType::Layout),
+                "dynamic layout fixture should load")) {
+        return false;
+    }
+    runtime.resize(800, 600, 1.0f);
+    if (!expect(runtime.appendHtmlById(
+                    "root",
+                    R"html(<skui-page id="map" src="map.html"></skui-page>)html"),
+                "layout should append skui-page fragments") ||
+        !expect(runtime.setStyleById(
+                    "map",
+                    "position:absolute;left:10px;top:20px;width:320px;height:180px;"),
+                "dynamic layout page should accept style updates")) {
+        std::cerr << runtime.lastError() << '\n';
+        return false;
+    }
+
+    const std::vector<skui::LayoutPageSnapshot> pages =
+        runtime.layoutPageSnapshots();
+    const bool pageIsCorrect =
+        expect(pages.size() == 1, "dynamic page should produce one snapshot") &&
+        expect(pages[0].id == "map" &&
+                   nearlyEqual(pages[0].rect.x, 10.0f) &&
+                   nearlyEqual(pages[0].rect.y, 20.0f) &&
+                   nearlyEqual(pages[0].rect.width, 320.0f) &&
+                   nearlyEqual(pages[0].rect.height, 180.0f),
+               "dynamic page should use its computed CSS rectangle");
+    return pageIsCorrect &&
+           expect(!runtime.appendHtmlById(
+                      "root",
+                      R"html(<skui-page id="map" src="duplicate.html"></skui-page>)html"),
+                  "duplicate dynamic page ids should be rejected") &&
+           expect(runtime.removeElementById("map"),
+                  "dynamic page should be removable") &&
+           expect(runtime.layoutPageSnapshots().empty(),
+                  "removed dynamic page should leave no snapshot");
+}
+
+bool testIntrinsicLayoutPageSize() {
+    constexpr std::string_view kHtml = R"html(
+<!doctype html><html><head>
+<meta name="skui-document-type" content="layout">
+<style>
+html, body { width: 100%; height: 100%; margin: 0; }
+#auto { position: absolute; left: 10px; top: 20px;
+        transform: scale(0.5); transform-origin: 0 0; }
+#fixed { position: absolute; left: 400px; top: 20px; width: 100px; height: 80px; }
+</style>
+</head><body>
+<skui-page id="auto" src="auto.html"></skui-page>
+<skui-page id="fixed" src="fixed.html"></skui-page>
+</body></html>
+)html";
+
+    skui::Runtime runtime;
+    if (!expect(runtime.loadDocumentFromString(kHtml, skui::DocumentType::Layout),
+                "intrinsic layout fixture should load")) {
+        return false;
+    }
+    runtime.resize(800, 600, 1.0f);
+    if (!expect(runtime.setLayoutPageIntrinsicSize("auto", 320.0f, 180.0f),
+                "auto page should accept its child content size") ||
+        !expect(runtime.setLayoutPageIntrinsicSize("fixed", 320.0f, 180.0f),
+                "fixed page should retain intrinsic metadata")) {
+        return false;
+    }
+
+    const std::vector<skui::LayoutPageSnapshot> pages =
+        runtime.layoutPageSnapshots();
+    return expect(pages.size() == 2, "intrinsic fixture should expose two pages") &&
+           expect(pages[0].usesIntrinsicWidth && pages[0].usesIntrinsicHeight,
+                  "auto dimensions should be reported to the host") &&
+           expect(nearlyEqual(pages[0].rect.x, 10.0f) &&
+                      nearlyEqual(pages[0].rect.y, 20.0f) &&
+                      nearlyEqual(pages[0].rect.width, 320.0f) &&
+                      nearlyEqual(pages[0].rect.height, 180.0f),
+                  "auto page should use child content dimensions") &&
+           expect(nearlyEqual(pages[0].transform.m11, 0.5f) &&
+                      nearlyEqual(pages[0].transform.m22, 0.5f),
+                  "intrinsic page sizing should preserve CSS transforms") &&
+           expect(!pages[1].usesIntrinsicWidth && !pages[1].usesIntrinsicHeight &&
+                      nearlyEqual(pages[1].rect.width, 100.0f) &&
+                      nearlyEqual(pages[1].rect.height, 80.0f),
+                  "explicit page dimensions should override intrinsic metadata") &&
+           expect(!runtime.setLayoutPageIntrinsicSize("auto", 320.0f, 180.0f),
+                  "unchanged intrinsic dimensions should not relayout");
+}
+
 bool testLayoutDoesNotRenderPixels() {
     constexpr std::string_view kHtml = R"html(
 <!doctype html><html><head>
@@ -264,6 +361,8 @@ int main() {
                         testInvalidDeclarations() &&
                         testCssLayoutSnapshots() &&
                         testFlowLayoutAndClipping() &&
+                        testDynamicLayoutPages() &&
+                        testIntrinsicLayoutPageSize() &&
                         testLayoutDoesNotRenderPixels();
     if (!passed) {
         return 1;

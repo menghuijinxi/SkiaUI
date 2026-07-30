@@ -179,20 +179,29 @@ YGSize measureTextNode(YGNodeConstRef node,
     return {std::max(0.0f, measuredWidth), std::max(0.0f, measuredHeight)};
 }
 
-YGSize measureVideoNode(YGNodeConstRef node,
-                        float width,
-                        YGMeasureMode widthMode,
-                        float height,
-                        YGMeasureMode heightMode) {
-    const auto* video = static_cast<const Node*>(YGNodeGetContext(node));
-    if (!video || video->videoFrameWidth <= 0 || video->videoFrameHeight <= 0) {
+YGSize measureReplacedNode(YGNodeConstRef node,
+                           float width,
+                           YGMeasureMode widthMode,
+                           float height,
+                           YGMeasureMode heightMode) {
+    const auto* replaced = static_cast<const Node*>(YGNodeGetContext(node));
+    if (!replaced) {
         return {0.0f, 0.0f};
     }
 
-    const float aspectRatio = static_cast<float>(video->videoFrameWidth) /
-                              static_cast<float>(video->videoFrameHeight);
-    float measuredWidth = static_cast<float>(video->videoFrameWidth);
-    float measuredHeight = static_cast<float>(video->videoFrameHeight);
+    const float intrinsicWidth = replaced->tag == "video"
+        ? static_cast<float>(replaced->videoFrameWidth)
+        : replaced->intrinsicWidth;
+    const float intrinsicHeight = replaced->tag == "video"
+        ? static_cast<float>(replaced->videoFrameHeight)
+        : replaced->intrinsicHeight;
+    if (intrinsicWidth <= 0.0f || intrinsicHeight <= 0.0f) {
+        return {0.0f, 0.0f};
+    }
+
+    const float aspectRatio = intrinsicWidth / intrinsicHeight;
+    float measuredWidth = intrinsicWidth;
+    float measuredHeight = intrinsicHeight;
     if (widthMode == YGMeasureModeExactly) {
         measuredWidth = width;
         if (heightMode != YGMeasureModeExactly) {
@@ -999,10 +1008,14 @@ void LayoutEngine::buildYoga(Node& node, YGNodeRef yogaNode, bool isRoot) {
         });
     if (!hasLayoutChildren && hasText && needsTextMeasure) {
         YGNodeSetMeasureFunc(yogaNode, measureTextNode);
-    } else if (!hasLayoutChildren && node.tag == "video" &&
-               node.videoFrameWidth > 0 &&
-               node.videoFrameHeight > 0) {
-        YGNodeSetMeasureFunc(yogaNode, measureVideoNode);
+    } else if (!hasLayoutChildren &&
+               ((node.tag == "video" &&
+                 node.videoFrameWidth > 0 &&
+                 node.videoFrameHeight > 0) ||
+                ((node.tag == "img" || node.tag == "skui-page") &&
+                 node.intrinsicWidth > 0.0f &&
+                 node.intrinsicHeight > 0.0f))) {
+        YGNodeSetMeasureFunc(yogaNode, measureReplacedNode);
     }
 
     if (usesGridCells) {

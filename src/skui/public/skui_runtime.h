@@ -240,6 +240,11 @@ struct LayoutRect {
     float height = 0.0f;
 };
 
+struct LayoutSize {
+    float width = 0.0f;
+    float height = 0.0f;
+};
+
 struct LayoutTransform {
     float m11 = 1.0f;
     float m12 = 0.0f;
@@ -261,6 +266,8 @@ struct LayoutPageSnapshot {
     size_t paintOrder = 0;
     bool visible = true;
     bool hitTestable = true;
+    bool usesIntrinsicWidth = false;
+    bool usesIntrinsicHeight = false;
 };
 
 class RendererBackend {
@@ -360,6 +367,10 @@ public:
     [[nodiscard]] Cursor cursor() const;
     [[nodiscard]] bool dirty() const;
     [[nodiscard]] std::optional<DocumentType> documentType() const;
+    [[nodiscard]] std::optional<LayoutSize> contentSize() const;
+    bool setLayoutPageIntrinsicSize(std::string_view id,
+                                    float width,
+                                    float height);
     [[nodiscard]] std::vector<LayoutPageSnapshot> layoutPageSnapshots() const;
     [[nodiscard]] std::string lastError() const;
     void clearDirty();

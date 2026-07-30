@@ -17,6 +17,7 @@
 #include "include/core/SkTypeface.h"
 #include <yoga/Yoga.h>
 
+#include <array>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -309,6 +310,13 @@ struct TransformOrigin {
 enum class FilterOperationKind {
     Grayscale,
     Brightness,
+    Contrast,
+    Saturate,
+    Sepia,
+    HueRotate,
+    Invert,
+    Opacity,
+    UrlReference,
     DropShadow
 };
 
@@ -316,6 +324,7 @@ struct FilterOperation {
     FilterOperationKind kind = FilterOperationKind::Grayscale;
     float amount = 0.0f;
     Shadow shadow;
+    std::string referenceId;
 };
 
 struct Filter {
@@ -329,6 +338,22 @@ struct Filter {
             }
             if (operation.kind == FilterOperationKind::Brightness &&
                 operation.amount != 1.0f) {
+                return false;
+            }
+            if ((operation.kind == FilterOperationKind::Contrast ||
+                 operation.kind == FilterOperationKind::Saturate ||
+                 operation.kind == FilterOperationKind::Opacity) &&
+                operation.amount != 1.0f) {
+                return false;
+            }
+            if ((operation.kind == FilterOperationKind::Sepia ||
+                 operation.kind == FilterOperationKind::HueRotate ||
+                 operation.kind == FilterOperationKind::Invert) &&
+                operation.amount != 0.0f) {
+                return false;
+            }
+            if (operation.kind == FilterOperationKind::UrlReference &&
+                !operation.referenceId.empty()) {
                 return false;
             }
             if (operation.kind == FilterOperationKind::DropShadow &&
@@ -558,10 +583,13 @@ struct Node {
     std::string src;
     std::string action;
     std::string svgMarkup;
+    std::unordered_map<std::string, std::array<float, 20>> svgColorMatrices;
     float numericValue = 0.0f;
     float numericMax = 1.0f;
     float virtualContentWidth = 0.0f;
     float virtualContentHeight = 0.0f;
+    float intrinsicWidth = 0.0f;
+    float intrinsicHeight = 0.0f;
     std::vector<TextLink> textLinks;
     std::unordered_map<std::string, std::string> attributes;
     Style style;
@@ -680,6 +708,7 @@ public:
     bool loadString(std::string_view html, std::string_view basePath, Document& outDocument, std::string& error);
     bool loadFragment(std::string_view html,
                       std::string_view basePath,
+                      DocumentType documentType,
                       std::vector<std::unique_ptr<Node>>& outNodes,
                       std::vector<StyleRule>& outRules,
                       std::string& error);
@@ -728,6 +757,7 @@ public:
     [[nodiscard]] std::optional<Rect> inputCaretRect(const Node& node);
     [[nodiscard]] bool consumeImageDirty();
     void requestBitmapImages(const Document& document);
+    bool syncBitmapImageIntrinsicSizes(Document& document);
 
 private:
     struct TextEntry {
@@ -880,6 +910,7 @@ private:
                                         const Document& document,
                                         const Node& node);
     void requestBitmapImagesForNode(const Document& document, const Node& node);
+    bool syncBitmapImageIntrinsicSizesForNode(Document& document, Node& node);
     void requestBitmapImage(const std::string& path);
     BitmapImageEntry bitmapImageEntry(const std::string& path);
     sk_sp<SkImage> bitmapImageForEntry(SkCanvas& canvas,
