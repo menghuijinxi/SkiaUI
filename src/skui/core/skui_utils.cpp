@@ -483,6 +483,31 @@ bool usesInlineContentEditableFlow(const Node& node) {
     return flow != node.attributes.end() && trim(flow->second) == "inline";
 }
 
+bool isInlineFlowElement(std::string_view tag) {
+    return tag == "a" || tag == "abbr" || tag == "b" || tag == "code" ||
+           tag == "del" || tag == "em" || tag == "i" || tag == "img" ||
+           tag == "ins" || tag == "label" || tag == "mark" || tag == "q" ||
+           tag == "s" || tag == "selectable" || tag == "small" ||
+           tag == "span" || tag == "strong" || tag == "sub" || tag == "sup" ||
+           tag == "svg" || tag == "text" || tag == "time" || tag == "u";
+}
+
+bool usesInlineFlow(const Node& node) {
+    bool hasVisibleChild = false;
+    bool hasTextChild = false;
+    for (const auto& child : node.children) {
+        if (child->style.display == Display::None) {
+            continue;
+        }
+        if (!isInlineFlowElement(child->tag)) {
+            return false;
+        }
+        hasVisibleChild = true;
+        hasTextChild = hasTextChild || child->tag == "text";
+    }
+    return hasVisibleChild && hasTextChild;
+}
+
 bool isContentEditableTextNode(const Node& node) {
     if (!isContentEditable(node) || !isContentEditableTextTag(node.tag)) {
         return false;

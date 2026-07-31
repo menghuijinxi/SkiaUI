@@ -2291,6 +2291,62 @@ int main() {
              "wrapped selectable text should expand its auto-height parent") &&
          ok;
 
+    constexpr std::string_view emptyLineSelectableHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      position: relative;
+      width: 140px;
+      height: 100px;
+      background-color: #000000;
+    }
+    .card {
+      position: absolute;
+      left: 5px;
+      top: 5px;
+      width: 100px;
+      padding: 5px;
+      background-color: #ff0000;
+    }
+    selectable {
+      font-size: 14px;
+      color: #ffffff;
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <div class="card">
+      <selectable value="first&#10;&#10;second"></selectable>
+    </div>
+  </div>
+</body>
+</html>
+)html";
+
+    skui::Runtime emptyLineSelectableRuntime(options);
+    emptyLineSelectableRuntime.resize(kWidth, kHeight, 1.0f);
+    if (!emptyLineSelectableRuntime.loadDocumentFromString(
+            emptyLineSelectableHtml,
+            "")) {
+        std::cerr << "empty-line selectable load failed: "
+                  << emptyLineSelectableRuntime.lastError() << "\n";
+        return 1;
+    }
+    uint32_t emptyLineCardBottom = 0;
+    ok = renderPixel(
+             emptyLineSelectableRuntime,
+             7,
+             65,
+             emptyLineCardBottom) &&
+         ok;
+    ok = expect(
+             emptyLineCardBottom == solidColor(0xFF, 0x00, 0x00),
+             "empty selectable lines should expand the auto-height parent") &&
+         ok;
+
     constexpr std::string_view siblingWrappedTextHtml = R"html(
 <!doctype html>
 <html>
@@ -3567,6 +3623,114 @@ int main() {
     ok = renderPixel(dynamicDomRuntime, 10, 10, dynamicPixel) && ok;
     ok = expect(dynamicPixel == solidColor(0x11, 0x22, 0x33),
                 "removed dynamic element should no longer render") && ok;
+
+    constexpr std::string_view mixedInlineHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root { position: relative; width: 140px; height: 90px; background: #000000; }
+    .message {
+      position: absolute;
+      left: 0px;
+      top: 20px;
+      width: 140px;
+      height: 28px;
+      color: #ffffff;
+      font-size: 18px;
+      line-height: 1.2;
+      text-align: center;
+      white-space: nowrap;
+    }
+    #days { color: #ff0000; }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <div id="message" class="message">prefix <span id="days">3</span> suffix</div>
+  </div>
+</body>
+</html>
+)html";
+
+    constexpr std::string_view explicitInlineHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root { position: relative; width: 140px; height: 90px; background: #000000; }
+    .message {
+      position: absolute;
+      left: 0px;
+      top: 20px;
+      width: 140px;
+      height: 28px;
+      display: flex;
+      flex-direction: row;
+      align-items: baseline;
+      justify-content: center;
+      color: #ffffff;
+      font-size: 18px;
+      line-height: 1.2;
+      white-space: nowrap;
+    }
+    .part { flex-shrink: 0; }
+    #days { flex-shrink: 0; color: #ff0000; }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <div class="message">
+      <span class="part">prefix&nbsp;</span><span id="days">3</span><span class="part">&nbsp;suffix</span>
+    </div>
+  </div>
+</body>
+</html>
+)html";
+
+    const auto redBounds = [](const std::vector<uint32_t>& pixels) {
+        std::array<int, 3> bounds = {kWidth, -1, 0};
+        for (int y = 20; y < 48; ++y) {
+            for (int x = 0; x < kWidth; ++x) {
+                if (!isMostlyRed(pixelAt(pixels, x, y))) {
+                    continue;
+                }
+                bounds[0] = std::min(bounds[0], x);
+                bounds[1] = std::max(bounds[1], x);
+                ++bounds[2];
+            }
+        }
+        return bounds;
+    };
+
+    skui::Runtime mixedInlineRuntime(options);
+    skui::Runtime explicitInlineRuntime(options);
+    mixedInlineRuntime.resize(kWidth, kHeight, 1.0f);
+    explicitInlineRuntime.resize(kWidth, kHeight, 1.0f);
+    if (!mixedInlineRuntime.loadDocumentFromString(mixedInlineHtml, "") ||
+        !explicitInlineRuntime.loadDocumentFromString(explicitInlineHtml, "")) {
+        std::cerr << "mixed inline load failed: "
+                  << mixedInlineRuntime.lastError() << " / "
+                  << explicitInlineRuntime.lastError() << "\n";
+        return 1;
+    }
+    ok = expect(mixedInlineRuntime.setTextById("days", "30"),
+                "mixed inline text update should succeed") && ok;
+    ok = expect(explicitInlineRuntime.setTextById("days", "30"),
+                "reference inline text update should succeed") && ok;
+    ok = expect(mixedInlineRuntime.textContentById("message") ==
+                    std::optional<std::string>{"prefix 30 suffix"},
+                "mixed inline text should preserve DOM text order after an update") && ok;
+    std::vector<uint32_t> mixedInlinePixels;
+    std::vector<uint32_t> explicitInlinePixels;
+    ok = renderPixels(mixedInlineRuntime, mixedInlinePixels) && ok;
+    ok = renderPixels(explicitInlineRuntime, explicitInlinePixels) && ok;
+    const std::array<int, 3> mixedInlineRedBounds = redBounds(mixedInlinePixels);
+    const std::array<int, 3> explicitInlineRedBounds = redBounds(explicitInlinePixels);
+    ok = expect(std::abs(mixedInlineRedBounds[0] - explicitInlineRedBounds[0]) <= 1 &&
+                    std::abs(mixedInlineRedBounds[1] - explicitInlineRedBounds[1]) <= 1 &&
+                    mixedInlineRedBounds[2] == explicitInlineRedBounds[2],
+                "mixed inline text should keep the dynamic span in document order") && ok;
 
     constexpr std::string_view visibilityHtml = R"html(
 <!doctype html>

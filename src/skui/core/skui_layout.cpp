@@ -103,6 +103,10 @@ size_t wrappedTextLineCount(std::string_view value,
     size_t lineCount = 0;
     const auto countSegment = [&](size_t start, size_t hardEnd) {
         size_t lineStart = start;
+        if (lineStart == hardEnd) {
+            ++lineCount;
+            return;
+        }
         while (lineStart < hardEnd) {
             const size_t lineEnd = findWrappedLineEnd(
                 value,
@@ -914,6 +918,8 @@ void LayoutEngine::buildYoga(Node& node, YGNodeRef yogaNode, bool isRoot) {
     YGNodeSetContext(yogaNode, &node);
     const bool inlineContentEditableFlow =
         usesInlineContentEditableFlow(node);
+    const bool ordinaryInlineFlow =
+        !inlineContentEditableFlow && !s.displayFlex && usesInlineFlow(node);
     const bool isGrid = s.display == Display::Grid &&
                         !inlineContentEditableFlow;
     const bool rowOnlyGrid = isGrid && s.gridTemplateColumns.empty() && !s.gridTemplateRows.empty();
@@ -925,12 +931,19 @@ void LayoutEngine::buildYoga(Node& node, YGNodeRef yogaNode, bool isRoot) {
     }
     if (inlineContentEditableFlow) {
         flexDirection = YGFlexDirectionColumn;
+    } else if (ordinaryInlineFlow) {
+        flexDirection = YGFlexDirectionRow;
     }
     YGNodeStyleSetFlexDirection(yogaNode, flexDirection);
-    YGNodeStyleSetFlexWrap(yogaNode,
-                           inlineContentEditableFlow
-                               ? YGWrapNoWrap
-                               : (isGrid ? (rowOnlyGrid ? YGWrapNoWrap : YGWrapWrap) : s.flexWrap));
+    YGWrap flexWrap = s.flexWrap;
+    if (inlineContentEditableFlow) {
+        flexWrap = YGWrapNoWrap;
+    } else if (ordinaryInlineFlow && !s.flags.flexWrap) {
+        flexWrap = s.whiteSpaceNoWrap ? YGWrapNoWrap : YGWrapWrap;
+    } else if (isGrid) {
+        flexWrap = rowOnlyGrid ? YGWrapNoWrap : YGWrapWrap;
+    }
+    YGNodeStyleSetFlexWrap(yogaNode, flexWrap);
     if (!isGrid) {
         setFlexGap(yogaNode, YGGutterRow, s.rowGap);
         setFlexGap(yogaNode, YGGutterColumn, s.columnGap);
@@ -938,7 +951,17 @@ void LayoutEngine::buildYoga(Node& node, YGNodeRef yogaNode, bool isRoot) {
     YGNodeStyleSetAlignItems(
         yogaNode,
         usesGridCells ? YGAlignStretch : s.alignItems);
-    YGNodeStyleSetJustifyContent(yogaNode, s.justifyContent);
+    YGJustify justifyContent = s.justifyContent;
+    if (ordinaryInlineFlow && !s.flags.justifyContent) {
+        if (s.textAlign == TextAlign::Center) {
+            justifyContent = YGJustifyCenter;
+        } else if (s.textAlign == TextAlign::Right) {
+            justifyContent = YGJustifyFlexEnd;
+        } else {
+            justifyContent = YGJustifyFlexStart;
+        }
+    }
+    YGNodeStyleSetJustifyContent(yogaNode, justifyContent);
     if (s.alignSelf != YGAlignAuto) {
         YGNodeStyleSetAlignSelf(yogaNode, s.alignSelf);
     }

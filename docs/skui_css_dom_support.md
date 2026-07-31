@@ -542,6 +542,7 @@ SkUI 的事件返回值表示“UI 是否实际消费了事件”，不是“DOM
 
 - `setStyleById` 和 `RuntimeUpdates::styles` 会替换该节点完整内联 `style` 声明，不会与旧内联样式做增量合并。
 - `setTextById` 和 `RuntimeUpdates::texts` 更新节点文本；输入框、进度条和需要保留 `\n` 换行的 `selectable` 多行文本应通过 `setValueById` 或 `value` 属性更新。
+- 普通元素中的直接文本与 `span`、`strong`、`em` 等受支持的行内子节点会按 DOM 顺序参与行内布局；`setTextById` 改变行内节点宽度后会重新计算子项位置与 `text-align` 对齐，不需要业务层改写为显式 flex 子项。复杂长文本的分段换行仍受当前文本节点测量能力限制。
 - `setAttributeById`、`setAttributesById`、`removeAttributeById` 会同步已知属性到内部状态，包括 `id`、`class`、`style`、`value`、`max`、`placeholder`、`src`、`data-action`、`data-links`、`data-virtual-width`、`data-virtual-height`。
 - `class` 属性更新后会重新参与选择器匹配；`style` 属性更新后会重新解析内联样式。
 - `applyUpdates` 会按样式、文本、属性的顺序批量应用，并只请求一次重新布局。

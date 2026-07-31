@@ -591,6 +591,71 @@ void appendText(Node& node, std::string_view text) {
     }
 }
 
+std::string normalizeMixedInlineText(std::string_view text,
+                                     bool hasPreviousContent,
+                                     bool hasNextContent) {
+    bool leadingSpace = false;
+    std::string compact;
+    compact.reserve(text.size());
+    bool pendingSpace = false;
+    for (char ch : text) {
+        if (std::isspace(static_cast<unsigned char>(ch)) != 0) {
+            if (compact.empty()) {
+                leadingSpace = true;
+            } else {
+                pendingSpace = true;
+            }
+            continue;
+        }
+        if (pendingSpace) {
+            compact.push_back(' ');
+            pendingSpace = false;
+        }
+        compact.push_back(ch);
+    }
+    const bool trailingSpace = pendingSpace;
+    if (compact.empty()) {
+        return hasPreviousContent && hasNextContent && leadingSpace
+            ? " "
+            : std::string{};
+    }
+    if (leadingSpace && hasPreviousContent) {
+        compact.insert(compact.begin(), ' ');
+    }
+    if (trailingSpace && hasNextContent) {
+        compact.push_back(' ');
+    }
+    return compact;
+}
+
+bool domNodeHasInlineContent(lxb_dom_node_t* node) {
+    if (!node) {
+        return false;
+    }
+    if (node->type == LXB_DOM_NODE_TYPE_TEXT) {
+        auto* data = lxb_dom_interface_character_data(node);
+        if (!data || !data->data.data) {
+            return false;
+        }
+        for (size_t index = 0; index < data->data.length; ++index) {
+            if (std::isspace(static_cast<unsigned char>(data->data.data[index])) == 0) {
+                return true;
+            }
+        }
+        return false;
+    }
+    return node->type == LXB_DOM_NODE_TYPE_ELEMENT;
+}
+
+bool hasInlineContentAfter(lxb_dom_node_t* node) {
+    for (lxb_dom_node_t* current = node; current; current = current->next) {
+        if (domNodeHasInlineContent(current)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void flushInlineSpace(std::string& text, bool& pendingSpace) {
     if (pendingSpace && !text.empty() && text.back() != '\n') {
         text.push_back(' ');
@@ -4261,11 +4326,32 @@ convertElement(lxb_dom_element_t* element, Node* parent, std::vector<StyleRule>&
         return node;
     }
 
+    bool hasElementChild = false;
+    bool hasOnlyInlineElementChildren = true;
+    bool hasDirectTextContent = false;
+    for (lxb_dom_node_t* child = lxb_dom_interface_node(element)->first_child;
+         child;
+         child = child->next) {
+        if (child->type == LXB_DOM_NODE_TYPE_ELEMENT) {
+            hasElementChild = true;
+            hasOnlyInlineElementChildren =
+                hasOnlyInlineElementChildren &&
+                isInlineFlowElement(nodeName(lxb_dom_interface_element(child)));
+        } else if (child->type == LXB_DOM_NODE_TYPE_TEXT &&
+                   domNodeHasInlineContent(child)) {
+            hasDirectTextContent = true;
+        }
+    }
+    const bool hasMixedContent = hasElementChild &&
+                                 hasOnlyInlineElementChildren &&
+                                 hasDirectTextContent;
+
     if (tag == "selectable") {
         if (node->value.empty()) {
             parseSelectableContent(element, *node);
         }
     } else {
+        bool hasPreviousContent = false;
         for (lxb_dom_node_t* child = lxb_dom_interface_node(element)->first_child;
              child;
              child = child->next) {
@@ -4278,6 +4364,20 @@ convertElement(lxb_dom_element_t* element, Node* parent, std::vector<StyleRule>&
                     if (tag == "textarea" && node->value.empty()) {
                         node->value += trim(text);
                         ++node->textRevision;
+                    } else if (hasMixedContent) {
+                        const std::string normalized = normalizeMixedInlineText(
+                            text,
+                            hasPreviousContent,
+                            hasInlineContentAfter(child->next));
+                        if (!normalized.empty()) {
+                            auto textNode = std::make_unique<Node>();
+                            textNode->tag = "text";
+                            textNode->parent = node.get();
+                            textNode->text = normalized;
+                            textNode->textRevision = 1;
+                            node->children.push_back(std::move(textNode));
+                            hasPreviousContent = true;
+                        }
                     } else {
                         appendText(*node, text);
                     }
@@ -4288,6 +4388,7 @@ convertElement(lxb_dom_element_t* element, Node* parent, std::vector<StyleRule>&
                                    environment, basePath, error);
                 if (childNode) {
                     node->children.push_back(std::move(childNode));
+                    hasPreviousContent = true;
                 }
             }
         }

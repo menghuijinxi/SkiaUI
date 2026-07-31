@@ -977,6 +977,8 @@ ContentEditableState contentEditableState(const Node& node);
 bool isContentEditable(const Node& node);
 bool isContentEditableEditingHost(const Node& node);
 bool usesInlineContentEditableFlow(const Node& node);
+bool isInlineFlowElement(std::string_view tag);
+bool usesInlineFlow(const Node& node);
 bool isContentEditableTextNode(const Node& node);
 bool isTextEditingNode(const Node& node);
 Node* contentEditableEditingHost(Node* node);
