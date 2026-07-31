@@ -2737,11 +2737,12 @@ const SkiaRenderer::TextEntry& SkiaRenderer::textEntry(std::string_view value, f
         return it->second;
     }
 
-    const SkFont f = font(size, bold);
+    UiTextLayout layout = makeUiTextLayout(value, size, bold);
     TextEntry entry;
-    entry.width = f.measureText(value.data(), value.size(), SkTextEncoding::kUTF8, &entry.bounds);
-    f.getMetrics(&entry.metrics);
-    entry.blob = SkTextBlob::MakeFromText(value.data(), value.size(), f, SkTextEncoding::kUTF8);
+    entry.blob = std::move(layout.blob);
+    entry.width = layout.width;
+    entry.bounds = layout.bounds;
+    entry.metrics = layout.metrics;
     it = textCache_.emplace(std::move(key), std::move(entry)).first;
     return it->second;
 }

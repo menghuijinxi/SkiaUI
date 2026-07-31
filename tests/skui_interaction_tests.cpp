@@ -212,6 +212,31 @@ int countBrightPixels(const std::vector<uint32_t>& pixels, int left, int top, in
     return count;
 }
 
+bool isChromaticPixel(uint32_t color) {
+    const int red = static_cast<int>((color >> 16u) & 0xffu);
+    const int green = static_cast<int>((color >> 8u) & 0xffu);
+    const int blue = static_cast<int>(color & 0xffu);
+    const int highest = std::max({red, green, blue});
+    const int lowest = std::min({red, green, blue});
+    return highest - lowest > 35 && highest > 90;
+}
+
+int countChromaticPixels(const std::vector<uint32_t>& pixels,
+                         int left,
+                         int top,
+                         int right,
+                         int bottom) {
+    int count = 0;
+    for (int y = std::max(0, top); y < std::min(kHeight, bottom); ++y) {
+        for (int x = std::max(0, left); x < std::min(kWidth, right); ++x) {
+            if (isChromaticPixel(pixelAt(pixels, x, y))) {
+                ++count;
+            }
+        }
+    }
+    return count;
+}
+
 void sendMouse(skui::Runtime& runtime, skui::EventType type, float x, float y, bool shift = false) {
     skui::Event event;
     event.type = type;
@@ -811,6 +836,52 @@ int main() {
         sendMouse(textScaleRuntime, skui::EventType::MouseUp, 115.0f, 30.0f);
         ok = expect(markerClicks == 1,
                     "text scale should update the physical hit target") && ok;
+    }
+    {
+        constexpr std::string_view emojiFallbackHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    body {
+      width: 140px;
+      height: 90px;
+      background-color: #ffffff;
+      color: #111111;
+    }
+    .emoji {
+      font-size: 42px;
+      height: 50px;
+    }
+    .mixed {
+      font-size: 22px;
+      height: 32px;
+    }
+  </style>
+</head>
+<body>
+  <div class="emoji">😂</div>
+  <div class="mixed">中文A😂B</div>
+</body>
+</html>
+)html";
+
+        skui::Runtime emojiFallbackRuntime(options);
+        emojiFallbackRuntime.resize(kWidth, kHeight, 1.0f);
+        if (!emojiFallbackRuntime.loadDocumentFromString(emojiFallbackHtml, "")) {
+            std::cerr << "emoji fallback load failed: "
+                      << emojiFallbackRuntime.lastError() << "\n";
+            return 1;
+        }
+
+        std::vector<uint32_t> emojiFallbackPixels;
+        ok = renderPixels(emojiFallbackRuntime, emojiFallbackPixels) && ok;
+#ifdef _WIN32
+        ok = expect(
+                 countChromaticPixels(emojiFallbackPixels, 0, 0, kWidth, kHeight) > 20,
+                 "emoji fallback should render Windows color emoji glyphs") &&
+             ok;
+#endif
     }
     {
         constexpr std::string_view browserRootHtml = R"html(

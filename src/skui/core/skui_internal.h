@@ -50,6 +50,13 @@ struct Rect {
     }
 };
 
+struct UiTextLayout {
+    sk_sp<SkTextBlob> blob;
+    float width = 0.0f;
+    SkRect bounds = SkRect::MakeEmpty();
+    SkFontMetrics metrics{};
+};
+
 enum class Display {
     Flex,
     Grid,
@@ -955,6 +962,7 @@ SkColor rgba(unsigned r, unsigned g, unsigned b, unsigned a);
 SkColor parseColor(std::string_view value, SkColor fallback);
 sk_sp<SkFontMgr> uiFontManager();
 SkFont makeUiFont(float size, bool bold);
+UiTextLayout makeUiTextLayout(std::string_view value, float size, bool bold);
 float measureUiTextWidth(std::string_view value, float size, bool bold);
 float clampf(float value, float lo, float hi);
 std::string trim(std::string_view value);

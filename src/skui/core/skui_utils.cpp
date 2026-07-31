@@ -18,7 +18,10 @@
 #include <charconv>
 #include <cctype>
 #include <limits>
+#include <mutex>
 #include <sstream>
+#include <unordered_map>
+#include <vector>
 
 namespace skui {
 
@@ -32,6 +35,22 @@ struct UiFontResources {
     sk_sp<SkFontMgr> manager;
     sk_sp<SkTypeface> regular;
     sk_sp<SkTypeface> bold;
+};
+
+struct DecodedCodepoint {
+    SkUnichar value = 0;
+    size_t length = 0;
+};
+
+struct PositionedGlyph {
+    sk_sp<SkTypeface> typeface;
+    SkGlyphID glyph = 0;
+    float x = 0.0f;
+};
+
+struct FallbackTypefaceCache {
+    std::mutex mutex;
+    std::unordered_map<uint64_t, sk_sp<SkTypeface>> typefaces;
 };
 
 sk_sp<SkTypeface> pickUiTypeface(const sk_sp<SkFontMgr>& manager, bool bold) {
@@ -72,6 +91,214 @@ UiFontResources createUiFontResources() {
 const UiFontResources& uiFontResources() {
     static const UiFontResources resources = createUiFontResources();
     return resources;
+}
+
+FallbackTypefaceCache& fallbackTypefaceCache() {
+    static FallbackTypefaceCache cache;
+    return cache;
+}
+
+SkFont makeConfiguredFont(sk_sp<SkTypeface> typeface, float size) {
+    SkFont font(std::move(typeface), size);
+    font.setEdging(SkFont::Edging::kAntiAlias);
+    font.setSubpixel(true);
+    return font;
+}
+
+DecodedCodepoint decodeUtf8Codepoint(std::string_view value, size_t offset) {
+    constexpr SkUnichar kReplacementCharacter = 0xFFFD;
+    const auto byte = [&](size_t index) {
+        return static_cast<unsigned char>(value[index]);
+    };
+    const unsigned char lead = byte(offset);
+    if (lead < 0x80u) {
+        return {static_cast<SkUnichar>(lead), 1};
+    }
+
+    int continuationCount = 0;
+    uint32_t codepoint = 0;
+    uint32_t minimumCodepoint = 0;
+    if ((lead & 0xE0u) == 0xC0u) {
+        continuationCount = 1;
+        codepoint = lead & 0x1Fu;
+        minimumCodepoint = 0x80u;
+    } else if ((lead & 0xF0u) == 0xE0u) {
+        continuationCount = 2;
+        codepoint = lead & 0x0Fu;
+        minimumCodepoint = 0x800u;
+    } else if ((lead & 0xF8u) == 0xF0u) {
+        continuationCount = 3;
+        codepoint = lead & 0x07u;
+        minimumCodepoint = 0x10000u;
+    } else {
+        return {kReplacementCharacter, 1};
+    }
+
+    if (offset + static_cast<size_t>(continuationCount) >= value.size()) {
+        return {kReplacementCharacter, 1};
+    }
+    for (int i = 1; i <= continuationCount; ++i) {
+        const unsigned char next = byte(offset + static_cast<size_t>(i));
+        if ((next & 0xC0u) != 0x80u) {
+            return {kReplacementCharacter, 1};
+        }
+        codepoint = (codepoint << 6u) | (next & 0x3Fu);
+    }
+
+    const bool surrogate = codepoint >= 0xD800u && codepoint <= 0xDFFFu;
+    if (codepoint < minimumCodepoint || codepoint > 0x10FFFFu || surrogate) {
+        return {kReplacementCharacter, 1};
+    }
+    return {
+        static_cast<SkUnichar>(codepoint),
+        static_cast<size_t>(continuationCount + 1),
+    };
+}
+
+bool isEmojiCharacter(SkUnichar codepoint) {
+    return (codepoint >= 0x1F000 && codepoint <= 0x1FAFF) ||
+           (codepoint >= 0x2600 && codepoint <= 0x27BF);
+}
+
+bool isEmojiFormatCharacter(SkUnichar codepoint) {
+    return codepoint == 0x200D || codepoint == 0xFE0E || codepoint == 0xFE0F;
+}
+
+sk_sp<SkTypeface> resolveTypeface(SkUnichar codepoint, bool bold) {
+    const UiFontResources& resources = uiFontResources();
+    const sk_sp<SkTypeface>& primary = bold ? resources.bold : resources.regular;
+    if (!isEmojiCharacter(codepoint) &&
+        primary &&
+        primary->unicharToGlyph(codepoint) != 0) {
+        return primary;
+    }
+
+    const uint64_t key = static_cast<uint32_t>(codepoint) |
+                         (static_cast<uint64_t>(bold) << 32u);
+    FallbackTypefaceCache& cache = fallbackTypefaceCache();
+    std::lock_guard lock(cache.mutex);
+    if (const auto it = cache.typefaces.find(key); it != cache.typefaces.end()) {
+        return it->second;
+    }
+
+    sk_sp<SkTypeface> resolved;
+    if (resources.manager && isEmojiCharacter(codepoint)) {
+        constexpr std::array<const char*, 3> kEmojiFamilies = {
+            "Segoe UI Emoji",
+            "Apple Color Emoji",
+            "Noto Color Emoji",
+        };
+        const SkFontStyle style = bold ? SkFontStyle::Bold() : SkFontStyle::Normal();
+        for (const char* family : kEmojiFamilies) {
+            sk_sp<SkTypeface> candidate =
+                resources.manager->matchFamilyStyle(family, style);
+            if (candidate && candidate->unicharToGlyph(codepoint) != 0) {
+                resolved = std::move(candidate);
+                break;
+            }
+        }
+    }
+    if (!resolved && primary && primary->unicharToGlyph(codepoint) != 0) {
+        resolved = primary;
+    }
+    if (!resolved && resources.manager) {
+        const SkFontStyle style = bold ? SkFontStyle::Bold() : SkFontStyle::Normal();
+        const char* languages[] = {"zh-Hans"};
+        resolved = resources.manager->matchFamilyStyleCharacter(
+            nullptr,
+            style,
+            languages,
+            static_cast<int>(std::size(languages)),
+            codepoint);
+    }
+    if (!resolved) {
+        resolved = primary;
+    }
+    cache.typefaces.emplace(key, resolved);
+    return resolved;
+}
+
+UiTextLayout buildUiTextLayout(std::string_view value,
+                               float size,
+                               bool bold,
+                               bool buildBlob) {
+    UiTextLayout layout;
+    const SkFont primaryFont = makeUiFont(size, bold);
+    primaryFont.getMetrics(&layout.metrics);
+    if (value.empty()) {
+        return layout;
+    }
+
+    const UiFontResources& resources = uiFontResources();
+    const sk_sp<SkTypeface>& primary = bold ? resources.bold : resources.regular;
+    std::vector<PositionedGlyph> glyphs;
+    glyphs.reserve(value.size());
+    bool needsFallback = false;
+    float x = 0.0f;
+    for (size_t offset = 0; offset < value.size();) {
+        const DecodedCodepoint decoded = decodeUtf8Codepoint(value, offset);
+        offset += decoded.length;
+        if (isEmojiFormatCharacter(decoded.value)) {
+            needsFallback = true;
+            continue;
+        }
+
+        sk_sp<SkTypeface> typeface = resolveTypeface(decoded.value, bold);
+        if (!typeface) {
+            typeface = primary;
+        }
+        needsFallback = needsFallback || typeface.get() != primary.get();
+        const SkFont glyphFont = makeConfiguredFont(typeface, size);
+        const SkGlyphID glyph = glyphFont.unicharToGlyph(decoded.value);
+        glyphs.push_back({std::move(typeface), glyph, x});
+        x += glyphFont.getWidth(glyph);
+    }
+
+    if (!needsFallback || glyphs.empty()) {
+        layout.width = primaryFont.measureText(
+            value.data(),
+            value.size(),
+            SkTextEncoding::kUTF8,
+            &layout.bounds);
+        if (buildBlob) {
+            layout.blob = SkTextBlob::MakeFromText(
+                value.data(),
+                value.size(),
+                primaryFont,
+                SkTextEncoding::kUTF8);
+        }
+        return layout;
+    }
+
+    layout.width = x;
+    if (!buildBlob) {
+        return layout;
+    }
+
+    SkTextBlobBuilder builder;
+    for (size_t start = 0; start < glyphs.size();) {
+        size_t end = start + 1;
+        while (end < glyphs.size() &&
+               glyphs[end].typeface.get() == glyphs[start].typeface.get()) {
+            ++end;
+        }
+        const SkFont runFont = makeConfiguredFont(glyphs[start].typeface, size);
+        const auto& run = builder.allocRunPosH(
+            runFont,
+            static_cast<int>(end - start),
+            0.0f);
+        for (size_t index = start; index < end; ++index) {
+            const size_t runIndex = index - start;
+            run.glyphs[runIndex] = glyphs[index].glyph;
+            run.pos[runIndex] = glyphs[index].x;
+        }
+        start = end;
+    }
+    layout.blob = builder.make();
+    if (layout.blob) {
+        layout.bounds = layout.blob->bounds();
+    }
+    return layout;
 }
 
 template <typename NodePointer>
@@ -173,22 +400,15 @@ sk_sp<SkFontMgr> uiFontManager() {
 
 SkFont makeUiFont(float size, bool bold) {
     const UiFontResources& resources = uiFontResources();
-    SkFont font(bold ? resources.bold : resources.regular, size);
-    font.setEdging(SkFont::Edging::kAntiAlias);
-    font.setSubpixel(true);
-    return font;
+    return makeConfiguredFont(bold ? resources.bold : resources.regular, size);
+}
+
+UiTextLayout makeUiTextLayout(std::string_view value, float size, bool bold) {
+    return buildUiTextLayout(value, size, bold, true);
 }
 
 float measureUiTextWidth(std::string_view value, float size, bool bold) {
-    if (value.empty()) {
-        return 0.0f;
-    }
-
-    const SkFont font = makeUiFont(size, bold);
-    return font.measureText(
-        value.data(),
-        value.size(),
-        SkTextEncoding::kUTF8);
+    return buildUiTextLayout(value, size, bold, false).width;
 }
 
 float clampf(float value, float lo, float hi) {
