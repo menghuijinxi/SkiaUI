@@ -26,6 +26,7 @@
 #include "include/gpu/ganesh/GrRecordingContext.h"
 #include "include/gpu/ganesh/SkImageGanesh.h"
 #include "modules/svg/include/SkSVGDOM.h"
+#include "src/base/SkBase64.h"
 
 #include <algorithm>
 #include <array>
@@ -627,6 +628,70 @@ std::string lowerAscii(std::string_view value) {
         out.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
     }
     return out;
+}
+
+bool hasDataScheme(std::string_view source) {
+    constexpr std::string_view kDataScheme = "data:";
+    return source.size() >= kDataScheme.size() &&
+           lowerAscii(source.substr(0, kDataScheme.size())) == kDataScheme;
+}
+
+sk_sp<SkData> decodePngDataUrl(std::string_view source) {
+    if (!hasDataScheme(source)) {
+        return nullptr;
+    }
+
+    const size_t comma = source.find(',');
+    if (comma == std::string_view::npos) {
+        return nullptr;
+    }
+
+    constexpr std::string_view kPngMimeType = "image/png";
+    const std::string metadata = lowerAscii(trim(source.substr(5, comma - 5)));
+    if (!metadata.starts_with(kPngMimeType) ||
+        metadata.size() <= kPngMimeType.size() ||
+        metadata[kPngMimeType.size()] != ';' ||
+        !metadata.ends_with(";base64")) {
+        return nullptr;
+    }
+
+    // SkBase64::Decode accepts a C string and checks the byte after each quartet.
+    const std::string payload(source.substr(comma + 1));
+    size_t decodedSize = 0;
+    if (payload.empty() ||
+        SkBase64::Decode(payload.data(), payload.size(), nullptr, &decodedSize) !=
+            SkBase64::kNoError ||
+        decodedSize == 0) {
+        return nullptr;
+    }
+
+    sk_sp<SkData> decoded = SkData::MakeUninitialized(decodedSize);
+    if (!decoded) {
+        return nullptr;
+    }
+
+    size_t actualSize = decodedSize;
+    if (SkBase64::Decode(payload.data(),
+                         payload.size(),
+                         decoded->writable_data(),
+                         &actualSize) != SkBase64::kNoError ||
+        actualSize != decodedSize) {
+        return nullptr;
+    }
+    return decoded;
+}
+
+sk_sp<SkData> loadEncodedBitmap(std::string_view source) {
+    if (hasDataScheme(source)) {
+        return decodePngDataUrl(source);
+    }
+
+    const std::vector<unsigned char> bytes =
+        readBinaryFile(pathFromUtf8(source));
+    if (bytes.empty()) {
+        return nullptr;
+    }
+    return SkData::MakeWithCopy(bytes.data(), bytes.size());
 }
 
 bool imageBufferLayout(int width, int height, size_t& rowBytes, size_t& byteSize) {
@@ -2094,12 +2159,7 @@ SkiaRenderer::BitmapImageEntry SkiaRenderer::loadBitmapImage(const std::string& 
     BitmapImageEntry entry;
     entry.state = ImageState::Failed;
 
-    const std::vector<unsigned char> data = readBinaryFile(pathFromUtf8(path));
-    if (data.empty()) {
-        return entry;
-    }
-
-    sk_sp<SkData> encoded = SkData::MakeWithCopy(data.data(), data.size());
+    sk_sp<SkData> encoded = loadEncodedBitmap(path);
     if (!encoded) {
         return entry;
     }
@@ -2680,6 +2740,9 @@ std::string SkiaRenderer::resolveAssetPath(const Document& document, std::string
     namespace fs = std::filesystem;
     if (src.empty()) {
         return {};
+    }
+    if (hasDataScheme(src)) {
+        return std::string(src);
     }
 
     const std::string decodedSrc = decodeUrlPath(src);

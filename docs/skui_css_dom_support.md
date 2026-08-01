@@ -44,7 +44,7 @@
 | `placeholder` | 输入框占位文本 |
 | `contenteditable` | 枚举属性；支持 `true`、空值、`false`、`plaintext-only` 和从父节点继承 |
 | `href` | `selectable` 内 `<a>` 的链接目标；点击时转换为 `open-url:` 动作 |
-| `src` | `img` / `video` / `audio` 的本地资源路径；音视频也可直接交给 FFmpeg 打开 URL |
+| `src` | `img` 支持本地资源路径和 `data:image/png;base64,...`；`video` / `audio` 支持本地资源路径，也可直接交给 FFmpeg 打开 URL |
 | `preload` | video/audio 支持 `none`、`metadata`、`auto`；只有 `auto` 提前填充媒体缓冲 |
 | `data-predecode-frames` | video 显式预解码的高水位帧数 |
 | `autoplay` / `loop` / `muted` | video/audio 自动播放、有界无缝循环和静音属性 |
@@ -470,7 +470,8 @@ SkUI 的事件返回值表示“UI 是否实际消费了事件”，不是“DOM
 
 ## 图片和 SVG
 
-- `img[src]` 支持本地资源路径。`.svg` 文件按 SVG 文本读取；位图通过 Skia codec 支持 PNG、JPEG、WebP 和 BMP 异步读取和解码。
+- `img[src]` 支持本地资源路径和 `data:image/png;base64,...` 内联 PNG。`.svg` 文件按 SVG 文本读取；本地位图通过 Skia codec 支持 PNG、JPEG、WebP 和 BMP 异步读取和解码。
+- Base64 PNG Data URL 不经过本地资源路径解析，解码后仍复用普通位图的后台加载、缓存、重绘通知和固有尺寸更新流程。损坏的 MIME 信息、Base64 或 PNG 数据会作为图片加载失败处理。
 - 位图解码完成后会按图片像素宽高参与 `auto` 固有尺寸布局，不需要宿主提前读取图片头并设置元素尺寸。
 - 位图图片默认按浏览器的 eager 语义处理：样式重算后会扫描 DOM 中的非 SVG `img` 并建立异步请求，即使节点当前是 `display:none`。这用于按钮 normal / active 图这类状态切换场景，避免第一次显示隐藏状态图时出现“闪空”。
 - 大图列表、图片滚动墙等不希望提前请求全部图片的场景，应在图片上写 `loading="lazy"`。lazy 图片不会在 DOM 扫描阶段提前请求，而是在节点进入当前画布裁剪区域附近时进入后台加载队列。默认边距为视口四周各一个视口尺寸，宿主可通过 `RuntimeOptions::lazyImagePreloadMarginViewports` 调整。该策略接近浏览器的视口交叉预加载，但没有浏览器按网络状态动态调整距离的调度逻辑。`SkiaImageScrollerDemo` 的缩略图使用的就是这个模式。
@@ -580,7 +581,7 @@ SkUI 的事件返回值表示“UI 是否实际消费了事件”，不是“DOM
   `background-position`、`opacity` 和兼容函数列表内的 `transform`。
 - Grid 是面向卡片/指标面板的布局子集；伪元素只支持绝对定位装饰盒和空 `content`，不参与 Yoga 布局或事件命中。
 - 多层渐变共享当前 `background-size` / `background-repeat`；水平和垂直线性渐变支持按指定尺寸平铺，径向和任意角度渐变尚不支持完整二维平铺。`mask-image` 当前只支持单层渐变 alpha 遮罩，不支持 URL、多层遮罩和独立的遮罩尺寸、位置或重复属性。
-- `img` 只支持本地资源路径；位图支持 PNG、JPEG、WebP 和 BMP。懒加载属性使用浏览器一致的 `loading="lazy"`，不支持旧式 `data-loading`。暂不支持网络 URL、`srcset` 和浏览器图片事件。
+- `img` 支持本地资源路径和 Base64 PNG Data URL；本地位图支持 PNG、JPEG、WebP 和 BMP，Data URL 当前只支持 `data:image/png;base64,...`。懒加载属性使用浏览器一致的 `loading="lazy"`，不支持旧式 `data-loading`。暂不支持图片网络 URL、其他 MIME 类型的 Data URL、`srcset` 和浏览器图片事件。
 - 文本排版是单行、`selectable` 显式多行或简单多行编辑框，不是完整富文本排版引擎；跨节点连续选择仅支持同一个 `contenteditable` editing host 内的文本叶节点和原子子树。
 - 中文双击选词目前按单个非 ASCII 字符处理，不做自然语言分词。
 - 虚拟滚动需要业务层提供数据源并根据 `Scroll` 刷新池化 DOM；SkUI 提供滚动范围、裁剪、事件，以及 `VirtualWindowState` / `VirtualTableAdapter` 辅助类，但不会自动从任意 DOM 推导大数据源。

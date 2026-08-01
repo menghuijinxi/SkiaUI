@@ -14,6 +14,7 @@
 #include "include/encode/SkJpegEncoder.h"
 #include "include/encode/SkPngEncoder.h"
 #include "include/encode/SkWebpEncoder.h"
+#include "src/base/SkBase64.h"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -471,6 +472,18 @@ bool writeSkDataFixture(const std::filesystem::path& path, sk_sp<SkData> data) {
 bool writeRedPngFixture(const std::filesystem::path& path) {
     SkPngEncoder::Options options;
     return writeSkDataFixture(path, SkPngEncoder::Encode(redFixturePixmap(), options));
+}
+
+std::string redPngDataUrl() {
+    SkPngEncoder::Options options;
+    const sk_sp<SkData> png = SkPngEncoder::Encode(redFixturePixmap(), options);
+    if (!png || png->size() == 0) {
+        return {};
+    }
+
+    std::string base64(SkBase64::EncodedSize(png->size()), '\0');
+    SkBase64::Encode(png->data(), png->size(), base64.data());
+    return "data:image/png;base64," + base64;
 }
 
 bool writeSolidPngFixture(const std::filesystem::path& path,
@@ -4354,6 +4367,57 @@ int main() {
                     std::string("async bitmap image load should request redraw: ") + fixture.fileName) && ok;
         ok = expect(isMostlyRed(imageAfter),
                     std::string("async bitmap image should render after loading: ") + fixture.fileName) && ok;
+    }
+
+    {
+        const std::string dataUrl = redPngDataUrl();
+        ok = expect(!dataUrl.empty(),
+                    "inline PNG data URL fixture should be encoded") && ok;
+
+        std::atomic_int dataUrlRedraws{0};
+        skui::RuntimeOptions dataUrlOptions = options;
+        dataUrlOptions.requestRedraw = [&] {
+            dataUrlRedraws.fetch_add(1);
+        };
+        skui::Runtime dataUrlRuntime(dataUrlOptions);
+        dataUrlRuntime.resize(kWidth, kHeight, 1.0f);
+        ok = expect(dataUrlRuntime.loadDocumentFromString(
+                        imageHtmlForSource(dataUrl),
+                        imageFixtureDir.string()),
+                    "inline PNG data URL document should load") && ok;
+        uint32_t dataUrlPixel = 0;
+        ok = renderPixel(dataUrlRuntime, 20, 20, dataUrlPixel) && ok;
+        waitForDirty(dataUrlRuntime);
+        ok = renderPixel(dataUrlRuntime, 20, 20, dataUrlPixel) && ok;
+        ok = expect(dataUrlRedraws.load() > 0,
+                    "inline PNG data URL should request redraw after decoding") && ok;
+        ok = expect(isMostlyRed(dataUrlPixel),
+                    "inline PNG data URL should render decoded pixels") && ok;
+    }
+
+    {
+        skui::Runtime invalidDataUrlRuntime(options);
+        invalidDataUrlRuntime.resize(kWidth, kHeight, 1.0f);
+        ok = expect(invalidDataUrlRuntime.loadDocumentFromString(
+                        imageHtmlForSource("data:image/png;base64,not-base64"),
+                        imageFixtureDir.string()),
+                    "invalid inline PNG document should still load") && ok;
+        uint32_t invalidDataUrlPixel = 0;
+        ok = renderPixel(invalidDataUrlRuntime,
+                         20,
+                         20,
+                         invalidDataUrlPixel) && ok;
+        waitForDirty(invalidDataUrlRuntime);
+        ok = renderPixel(invalidDataUrlRuntime,
+                         20,
+                         20,
+                         invalidDataUrlPixel) && ok;
+        const skui::MemoryStats invalidDataUrlStats =
+            invalidDataUrlRuntime.memoryStats();
+        ok = expect(invalidDataUrlStats.bitmapImages.failedImageCount == 1,
+                    "invalid inline PNG data URL should fail without crashing") && ok;
+        ok = expect(invalidDataUrlPixel == solidColor(0x00, 0x00, 0x00),
+                    "invalid inline PNG data URL should leave the background visible") && ok;
     }
 
     {

@@ -769,6 +769,8 @@ table.refresh(ui, currentScrollY, tableViewportHeight, source);
 2. `RuntimeOptions::assetRoot`。
 3. 原始路径。
 
+`img src="data:image/png;base64,..."` 可直接携带 Base64 编码的 PNG，不经过上述本地路径查找，也不需要宿主先写入临时文件。Data URL 会进入与本地位图相同的后台解码、缓存、固有尺寸同步和 `requestRedraw` 流程。当前仅支持 Base64 PNG Data URL；图片网络 URL 和其他 Data URL MIME 类型尚不支持。
+
 `img` 的位图资源由 renderer 后台 worker 读取并交给 Skia codec 解码；当前覆盖 PNG、JPEG、WebP 和 BMP。默认 `img` 是 eager 行为：样式重算后会为 DOM 中的非 SVG 图片建立异步请求，包括当前 `display:none` 的状态图，适合按钮 normal / active 图、hover 图等需要首次切换不闪空的 UI 资源。需要长列表或图片墙按可见区域加载时，在图片上写浏览器一致的 `loading="lazy"`；lazy 图片不会在 DOM 扫描阶段提前请求，而是在节点进入当前画布裁剪区域附近时排队。默认预加载边距向视口四周扩展一个视口尺寸，可通过 `RuntimeOptions::lazyImagePreloadMarginViewports` 调整；设为 `0` 时只在节点接触实际裁剪区域后请求。`SkiaImageScrollerDemo` 的缩略图使用 `loading="lazy"`，用于避免滚动图片列表一次性请求全部文件。
 
 同一个 `img` 运行时切换 `src` 时，SkUI 会保留该节点上一张已经显示成功的位图，直到新图片加载完成后再替换。这接近浏览器 current / pending image 的表现，可以避免按下态或动态换图时先显示空白。自定义宿主如果不用 `SkuiWin32Dx12`，需要设置 `RuntimeOptions::requestRedraw`，用于在图片完成加载后安排重绘；Win32/DX12 宿主已经接入这个回调。SVG 文件仍按文本读取并交给 Skia SVG DOM 渲染。
