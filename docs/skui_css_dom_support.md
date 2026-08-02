@@ -17,9 +17,10 @@
 | 标签 | 当前行为 |
 | --- | --- |
 | `div` / `span` / `label` / `text` | 普通容器或文本节点 |
-| `button` | 普通可命中节点，可通过 `data-action` 发出事件 |
+| `button` | 普通可命中节点，可通过 `data-action` 发出事件；文字默认水平居中，作者 `text-align` 可覆盖 |
 | `input` | 单行输入框，支持焦点、光标、选区、剪贴板、IME、Ctrl+Z |
 | `textarea` | 多行输入框，复用输入框行为，支持换行、选区、剪贴板、IME、Ctrl+Z |
+| `select` / `option` | 标准单选下拉框；Skia 绘制关闭态和顶层选项弹层，支持鼠标、滚轮和键盘操作 |
 | `div[contenteditable]` | 浏览器式编辑宿主；普通 `p` / `div` 文本容器可编辑，`contenteditable="false"` 子树作为不可编辑原子节点 |
 | `selectable` | 可框选复制文本标签，支持自动折行、`<br>` 显式换行和内联 `<a href>`；普通文本默认不可选中 |
 | `progress` | 进度条，`value` / `max` 控制填充比例 |
@@ -28,7 +29,17 @@
 | `audio` | FFmpeg 纯音频播放；支持 MP3、WAV、显式预缓冲、设备时钟和循环 |
 | `svg` | 内联 SVG，由 Skia SVG DOM 绘制 |
 
-`select` / `option` 目前没有浏览器式原生下拉控件行为。需要下拉框时，用普通节点组合按钮、菜单、遮罩和选项；C++ 侧可复用 `src/skui/public/skui_dropdown.h` 里的 `skui::DropdownState`，它负责打开/关闭、同步选中文本、切换箭头文本、显示/隐藏菜单和选中项 class。
+单选下拉框直接使用标准 HTML：
+
+```html
+<select id="layer">
+  <option value="parcel" selected>地块边界</option>
+  <option value="road">道路中心线</option>
+  <option value="disabled" disabled>不可用项</option>
+</select>
+```
+
+没有显式 `selected` 时会选择第一项未禁用的 option。选项的显示名优先采用标准 `label` 属性，否则采用元素文本；缺少 `value` 时元素文本同时作为值。当前实现是单选控件，不支持 `multiple`、`size`、`optgroup` 分组标题或浏览器表单提交。
 
 ## 通用属性
 
@@ -39,7 +50,9 @@
 | `style` | 内联 CSS 声明，优先级高于 `<style>` 规则 |
 | `data-action` | 命中事件回调中的业务动作名 |
 | `data-links` | `selectable` 的兼容/运行时文本区间动作表，格式为每行 `start:end:action`，区间按 `value` 的 UTF-8 字节偏移计算 |
-| `value` | 输入框值；进度条当前值 |
+| `value` | 输入框值、进度条当前值或 option 值；option 缺少该属性时使用其文本 |
+| `label` | option 的显示名；缺少时使用 option 文本 |
+| `selected` | option 的初始/当前选中状态；单选 select 会同步清除其他 option 的该属性 |
 | `max` | 进度条最大值 |
 | `placeholder` | 输入框占位文本 |
 | `contenteditable` | 枚举属性；支持 `true`、空值、`false`、`plaintext-only` 和从父节点继承 |
@@ -51,7 +64,7 @@
 | `disabled` | 禁用当前节点及其子树的指针、文本选择和输入交互；不自带灰显外观 |
 | `data-virtual-width` / `data-virtual-height` | 虚拟滚动内容尺寸，不需要真实子元素撑开 |
 
-`disabled` 同时参与 `:disabled` 伪类匹配和实际交互禁用；`checked`、`selected` 当前主要用于 CSS 伪类匹配，不等同于完整浏览器控件状态。
+`disabled` 同时参与 `:disabled` 伪类匹配和实际交互禁用。option 的 `selected` 会参与单选 select 状态，当前选项同时匹配 `:selected` 和 `:checked`；普通节点上的 `checked` / `selected` 仍只用于伪类匹配。
 
 ## CSS 选择器
 
@@ -391,7 +404,7 @@ if (const std::optional<skui::ScrollState> state =
 
 运行时可以用 `Runtime::setConsumesEventsById(id, false)` 临时关闭某个元素的输入消耗能力，语义等价于给该元素设置 `pointer-events: none`；传入 `true` 则恢复为 `pointer-events: auto`。这个接口适合弹层动画、临时禁用按钮、装饰层显示隐藏等场景，不需要业务层手动拼接完整 `style` 字符串。
 
-SkUI 的事件返回值表示“UI 是否实际消费了事件”，不是“DOM 是否发生 hover、active 或 focus 状态变化”。因此透明全屏根节点、普通 `div`、普通装饰 `img` 不会因为被命中就阻断宿主输入；只有 `data-action`、输入框、`selectable`、滚动条、拖拽选择等真实交互路径会消费事件。
+SkUI 的事件返回值表示“UI 是否实际消费了事件”，不是“DOM 是否发生 hover、active 或 focus 状态变化”。因此透明全屏根节点、普通 `div`、普通装饰 `img` 不会因为被命中就阻断宿主输入；只有 `data-action`、输入框、`select`、`selectable`、滚动条、拖拽选择等真实交互路径会消费事件。
 
 滚轮命中真实交互路径时同样会被消费，即使当前没有可滚动内容或滚动位置已经到达边界。普通非交互区域只有在确实推动了可滚动祖先时才会消费滚轮。
 
@@ -485,14 +498,17 @@ SkUI 的事件返回值表示“UI 是否实际消费了事件”，不是“DOM
 
 ## 事件模型
 
-只有命中的节点带 `data-action` 时，业务层才需要关心事件。回调类型见 `src/skui/public/skui_runtime.h`：
+业务动作通常通过 `data-action` 接收事件；标准表单控件也会直接发出对应事件。回调类型见 `src/skui/public/skui_runtime.h`：
 
 - `MouseDown`
 - `MouseMove`
 - `MouseUp`
 - `Click`
 - `Input`
+- `Change`
 - `Scroll`
+
+单选 select 的选中值发生变化时依次发出 `Input` 和 `Change`。事件目标是 select，`event.value` 是 option 值，`event.text` 是 option 显示名。
 
 鼠标事件的 `ElementEvent` 会在进入业务回调前生成快照。业务层可以在 `MouseUp` 或 `Click` 回调中删除当前事件目标；回调返回后，运行时会重新校验命中节点和滚动条节点，不会继续解引用已经从文档树移除的节点。
 
@@ -542,9 +558,9 @@ SkUI 的事件返回值表示“UI 是否实际消费了事件”，不是“DOM
 运行时更新规则：
 
 - `setStyleById` 和 `RuntimeUpdates::styles` 会替换该节点完整内联 `style` 声明，不会与旧内联样式做增量合并。
-- `setTextById` 和 `RuntimeUpdates::texts` 更新节点文本；输入框、进度条和需要保留 `\n` 换行的 `selectable` 多行文本应通过 `setValueById` 或 `value` 属性更新。
+- `setTextById` 和 `RuntimeUpdates::texts` 更新节点文本；option 文本更新后会同步所属 select。输入框、进度条和需要保留 `\n` 换行的 `selectable` 多行文本应通过 `setValueById` 或 `value` 属性更新。
 - 普通元素中的直接文本与 `span`、`strong`、`em` 等受支持的行内子节点会按 DOM 顺序参与行内布局；`setTextById` 改变行内节点宽度后会重新计算子项位置与 `text-align` 对齐，不需要业务层改写为显式 flex 子项。复杂长文本的分段换行仍受当前文本节点测量能力限制。
-- `setAttributeById`、`setAttributesById`、`removeAttributeById` 会同步已知属性到内部状态，包括 `id`、`class`、`style`、`value`、`max`、`placeholder`、`src`、`data-action`、`data-links`、`data-virtual-width`、`data-virtual-height`。
+- `setAttributeById`、`setAttributesById`、`removeAttributeById` 会同步已知属性到内部状态，包括 `id`、`class`、`style`、`value`、`selected`、`disabled`、`label`、`max`、`placeholder`、`src`、`data-action`、`data-links`、`data-virtual-width`、`data-virtual-height`。
 - `class` 属性更新后会重新参与选择器匹配；`style` 属性更新后会重新解析内联样式。
 - `applyUpdates` 会按样式、文本、属性的顺序批量应用，并只请求一次重新布局。
 - `appendHtmlById` / `prependHtmlById` 会把 HTML 片段插入到目标父节点子列表尾部或头部。
@@ -567,7 +583,7 @@ SkUI 的事件返回值表示“UI 是否实际消费了事件”，不是“DOM
 | 头文件 | 用途 |
 | --- | --- |
 | `skui_runtime_helpers.h` | `RuntimeUpdateBatch`、逻辑宽高读取、`px(...)`、内联 style 拼接、action payload 拆分 |
-| `skui_dropdown.h` | 下拉框状态控制：打开/关闭、选中项同步、菜单和遮罩显隐、选中 class 切换 |
+| `skui_dropdown.h` | 自定义 DOM 组合菜单的状态控制；标准单选应优先使用 `select` / `option` |
 | `skui_virtual_window.h` | 通用窗口化渲染状态：根据滚动位置和视口高度计算可见池范围 |
 | `skui_virtual_table.h` | 表格窗口化渲染、表格面板自适应、工具栏自动换行高度计算、表格池化 DOM 刷新 |
 
@@ -576,7 +592,7 @@ SkUI 的事件返回值表示“UI 是否实际消费了事件”，不是“DOM
 ## 当前限制
 
 - 没有 JavaScript。
-- 没有完整浏览器表单控件。
+- 表单控件不是完整浏览器实现：select 当前只支持单选，不支持 `multiple`、`size`、`optgroup` 分组标题和表单提交。
 - 没有完整 CSS 标准或外部 stylesheet。transition 覆盖 `height`、`opacity` 和 `transform`；关键帧动画覆盖
   `background-position`、`opacity` 和兼容函数列表内的 `transform`。
 - Grid 是面向卡片/指标面板的布局子集；伪元素只支持绝对定位装饰盒和空 `content`，不参与 Yoga 布局或事件命中。

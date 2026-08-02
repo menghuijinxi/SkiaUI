@@ -66,7 +66,8 @@ enum class ElementEventType {
     Click,
     KeyDown,
     Input,
-    Scroll
+    Scroll,
+    Change
 };
 
 struct ElementEvent {

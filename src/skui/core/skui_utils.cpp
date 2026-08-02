@@ -17,6 +17,7 @@
 #include <array>
 #include <charconv>
 #include <cctype>
+#include <cmath>
 #include <limits>
 #include <mutex>
 #include <sstream>
@@ -519,6 +520,345 @@ bool isTextEditingNode(const Node& node) {
     return node.tag == "input" ||
            node.tag == "textarea" ||
            isContentEditableTextNode(node);
+}
+
+bool isSelectNode(const Node& node) {
+    return node.tag == "select";
+}
+
+bool isOptionNode(const Node& node) {
+    return node.tag == "option";
+}
+
+Node* owningSelect(Node* node) {
+    return const_cast<Node*>(owningSelect(static_cast<const Node*>(node)));
+}
+
+const Node* owningSelect(const Node* node) {
+    for (const Node* current = node; current; current = current->parent) {
+        if (isSelectNode(*current)) {
+            return current;
+        }
+    }
+    return nullptr;
+}
+
+namespace {
+
+template <typename NodeType>
+void collectSelectOptions(NodeType& node,
+                          std::vector<NodeType*>& options,
+                          bool isRoot) {
+    for (auto& childOwner : node.children) {
+        NodeType& child = *childOwner;
+        if (isOptionNode(child)) {
+            options.push_back(&child);
+        } else if (!isSelectNode(child) || isRoot) {
+            collectSelectOptions(child, options, false);
+        }
+    }
+}
+
+template <typename NodeType>
+std::vector<NodeType*> selectOptionsImpl(NodeType& select) {
+    std::vector<NodeType*> options;
+    if (!isSelectNode(select)) {
+        return options;
+    }
+    collectSelectOptions(select, options, true);
+    return options;
+}
+
+std::optional<size_t> lastOptionWithSelectedAttribute(
+    const std::vector<Node*>& options) {
+    std::optional<size_t> selected;
+    for (size_t index = 0; index < options.size(); ++index) {
+        if (options[index]->attributes.contains("selected")) {
+            selected = index;
+        }
+    }
+    return selected;
+}
+
+std::optional<size_t> firstEnabledOption(
+    const std::vector<Node*>& options) {
+    for (size_t index = 0; index < options.size(); ++index) {
+        if (!isOptionDisabled(*options[index])) {
+            return index;
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<size_t> optionIndexWithValue(const std::vector<Node*>& options,
+                                           std::string_view value) {
+    for (size_t index = 0; index < options.size(); ++index) {
+        if (optionValue(*options[index]) == value) {
+            return index;
+        }
+    }
+    return std::nullopt;
+}
+
+void appendOptionText(const Node& node, std::string& result) {
+    result += node.text;
+    for (const auto& child : node.children) {
+        appendOptionText(*child, result);
+    }
+}
+
+std::string optionText(const Node& option) {
+    std::string result;
+    appendOptionText(option, result);
+    return result;
+}
+
+}  // namespace
+
+std::vector<Node*> selectOptions(Node& select) {
+    return selectOptionsImpl(select);
+}
+
+std::vector<const Node*> selectOptions(const Node& select) {
+    return selectOptionsImpl(select);
+}
+
+std::string optionLabel(const Node& option) {
+    const auto label = option.attributes.find("label");
+    return label == option.attributes.end() ? optionText(option) : label->second;
+}
+
+std::string optionValue(const Node& option) {
+    const auto value = option.attributes.find("value");
+    return value == option.attributes.end() ? optionText(option) : value->second;
+}
+
+bool isOptionDisabled(const Node& option) {
+    if (option.attributes.contains("disabled")) {
+        return true;
+    }
+    for (const Node* current = option.parent;
+         current && !isSelectNode(*current);
+         current = current->parent) {
+        if (current->tag == "optgroup" &&
+            current->attributes.contains("disabled")) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool selectOptionAt(Node& select, size_t optionIndex) {
+    std::vector<Node*> options = selectOptions(select);
+    if (optionIndex >= options.size()) {
+        return false;
+    }
+
+    const std::string nextValue = optionValue(*options[optionIndex]);
+    bool changed = select.selectedOptionIndex != optionIndex ||
+                   select.value != nextValue;
+    for (size_t index = 0; index < options.size(); ++index) {
+        if (index == optionIndex) {
+            changed = options[index]->attributes.emplace("selected", "").second ||
+                      changed;
+        } else {
+            changed = options[index]->attributes.erase("selected") > 0 ||
+                      changed;
+        }
+    }
+    select.selectedOptionIndex = optionIndex;
+    select.highlightedOptionIndex = optionIndex;
+    select.value = nextValue;
+    return changed;
+}
+
+bool initializeSelectState(Node& select) {
+    if (!isSelectNode(select)) {
+        return false;
+    }
+    std::vector<Node*> options = selectOptions(select);
+    if (options.empty()) {
+        const bool changed = select.selectedOptionIndex.has_value() ||
+                             select.highlightedOptionIndex.has_value() ||
+                             !select.value.empty();
+        select.selectedOptionIndex.reset();
+        select.highlightedOptionIndex.reset();
+        select.selectPopupFirstOption = 0;
+        select.value.clear();
+        return changed;
+    }
+
+    const std::optional<size_t> selected =
+        lastOptionWithSelectedAttribute(options).or_else(
+            [&options] { return firstEnabledOption(options); });
+    if (!selected) {
+        const bool changed = select.selectedOptionIndex.has_value() ||
+                             select.highlightedOptionIndex.has_value() ||
+                             !select.value.empty();
+        select.selectedOptionIndex.reset();
+        select.highlightedOptionIndex.reset();
+        select.value.clear();
+        return changed;
+    }
+    return selectOptionAt(select, *selected);
+}
+
+void initializeSelectStates(Node& node) {
+    if (isSelectNode(node)) {
+        initializeSelectState(node);
+    }
+    for (auto& child : node.children) {
+        initializeSelectStates(*child);
+    }
+}
+
+bool setSelectValue(Node& select, std::string_view value) {
+    std::vector<Node*> options = selectOptions(select);
+    const std::optional<size_t> optionIndex = optionIndexWithValue(options, value);
+    if (optionIndex) {
+        return selectOptionAt(select, *optionIndex);
+    }
+
+    bool changed = select.selectedOptionIndex.has_value() ||
+                   select.highlightedOptionIndex.has_value() ||
+                   !select.value.empty();
+    for (Node* option : options) {
+        changed = option->attributes.erase("selected") > 0 || changed;
+    }
+    select.selectedOptionIndex.reset();
+    select.highlightedOptionIndex.reset();
+    select.value.clear();
+    return changed;
+}
+
+void synchronizeSelectStatesAfterMutation(Node& node) {
+    if (isSelectNode(node)) {
+        std::vector<Node*> options = selectOptions(node);
+        if (options.empty()) {
+            initializeSelectState(node);
+        } else if (const std::optional<size_t> selected =
+                       lastOptionWithSelectedAttribute(options)) {
+            selectOptionAt(node, *selected);
+        } else if (const std::optional<size_t> matchingValue =
+                       optionIndexWithValue(options, node.value)) {
+            selectOptionAt(node, *matchingValue);
+        } else {
+            initializeSelectState(node);
+        }
+    }
+    for (auto& child : node.children) {
+        synchronizeSelectStatesAfterMutation(*child);
+    }
+}
+
+Rect selectVisualRect(const Node& select) {
+    Rect rect = select.layout;
+    for (const Node* current = &select; current; current = current->parent) {
+        rect.y += stickyVisualOffsetY(*current);
+        if (current->parent) {
+            rect.x -= current->parent->scrollX;
+            rect.y -= current->parent->scrollY;
+        }
+    }
+    return rect;
+}
+
+SelectPopupGeometry selectPopupGeometry(const Node& select,
+                                        float viewportWidth,
+                                        float viewportHeight) {
+    SelectPopupGeometry geometry;
+    const std::vector<const Node*> options = selectOptions(select);
+    if (options.empty()) {
+        return geometry;
+    }
+
+    constexpr size_t kMaxVisibleOptions = 8;
+    constexpr float kPopupBorderWidth = 1.0f;
+    geometry.optionHeight = std::max(
+        28.0f,
+        select.style.fontSize * select.style.lineHeight + 12.0f);
+
+    const Rect anchor = selectVisualRect(select);
+    const float desiredHeight =
+        static_cast<float>(std::min(options.size(), kMaxVisibleOptions)) *
+            geometry.optionHeight +
+        kPopupBorderWidth * 2.0f;
+    const float spaceBelow = std::max(
+        0.0f,
+        viewportHeight - (anchor.y + anchor.h));
+    const float spaceAbove = std::max(0.0f, anchor.y);
+    const bool opensBelow = spaceBelow >= desiredHeight ||
+                            spaceBelow >= spaceAbove;
+    const float availableHeight = opensBelow ? spaceBelow : spaceAbove;
+    const size_t rowsThatFit = std::max<size_t>(
+        1,
+        static_cast<size_t>(std::floor(
+            std::max(0.0f, availableHeight - kPopupBorderWidth * 2.0f) /
+            geometry.optionHeight)));
+    geometry.visibleOptionCount = std::min(
+        options.size(),
+        std::min(kMaxVisibleOptions, rowsThatFit));
+
+    const size_t maxFirstOption = options.size() - geometry.visibleOptionCount;
+    geometry.firstOption = std::min(select.selectPopupFirstOption,
+                                    maxFirstOption);
+    if (select.highlightedOptionIndex) {
+        if (*select.highlightedOptionIndex < geometry.firstOption) {
+            geometry.firstOption = *select.highlightedOptionIndex;
+        } else if (*select.highlightedOptionIndex >=
+                   geometry.firstOption + geometry.visibleOptionCount) {
+            geometry.firstOption =
+                *select.highlightedOptionIndex -
+                geometry.visibleOptionCount + 1;
+        }
+    }
+
+    const float popupHeight =
+        static_cast<float>(geometry.visibleOptionCount) *
+            geometry.optionHeight +
+        kPopupBorderWidth * 2.0f;
+    const float popupWidth = std::min(
+        std::max(40.0f, anchor.w),
+        std::max(40.0f, viewportWidth));
+    const float popupX = clampf(
+        anchor.x,
+        0.0f,
+        std::max(0.0f, viewportWidth - popupWidth));
+    const float preferredY = opensBelow
+        ? anchor.y + anchor.h
+        : anchor.y - popupHeight;
+    const float popupY = clampf(
+        preferredY,
+        0.0f,
+        std::max(0.0f, viewportHeight - popupHeight));
+    geometry.rect = {popupX, popupY, popupWidth, popupHeight};
+    return geometry;
+}
+
+std::optional<size_t> selectPopupOptionAtPoint(const Node& select,
+                                               float x,
+                                               float y,
+                                               float viewportWidth,
+                                               float viewportHeight) {
+    const SelectPopupGeometry geometry = selectPopupGeometry(
+        select,
+        viewportWidth,
+        viewportHeight);
+    if (!geometry.rect.contains(x, y) ||
+        geometry.visibleOptionCount == 0 ||
+        geometry.optionHeight <= 0.0f) {
+        return std::nullopt;
+    }
+    constexpr float kPopupBorderWidth = 1.0f;
+    const float optionY = y - geometry.rect.y - kPopupBorderWidth;
+    if (optionY < 0.0f) {
+        return std::nullopt;
+    }
+    const size_t row = static_cast<size_t>(optionY / geometry.optionHeight);
+    if (row >= geometry.visibleOptionCount) {
+        return std::nullopt;
+    }
+    return geometry.firstOption + row;
 }
 
 Node* contentEditableEditingHost(Node* node) {

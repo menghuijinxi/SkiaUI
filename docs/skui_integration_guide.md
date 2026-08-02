@@ -175,7 +175,7 @@ src/skui/render/
 | --- | --- |
 | `skui_runtime.h` | Runtime、事件、运行时更新接口 |
 | `skui_runtime_helpers.h` | 批量更新保护、逻辑尺寸、style/px/action 辅助函数 |
-| `skui_dropdown.h` | 普通 DOM 组合下拉框的状态控制 |
+| `skui_dropdown.h` | 自定义 DOM 组合菜单的状态控制；标准单选直接使用 `select` / `option` |
 | `skui_virtual_window.h` | 列表、聊天记录等单维窗口化渲染状态 |
 | `skui_virtual_table.h` | 表格窗口化渲染、表格面板布局、工具栏换行高度计算 |
 | `skui_win32_event_adapter.h` | Win32 消息、IME、剪贴板、光标到 SkUI 事件的适配；只用 `SkuiWin32` 或 `SkuiWin32Dx12` 时需要 |
@@ -540,52 +540,30 @@ ui.setElementEventCallback([&ui](const skui::ElementEvent& event) {
 
 ### 下拉框
 
-SkUI 目前没有浏览器原生 `select` 行为。下拉框建议用普通 DOM 节点写样式，用 `skui::DropdownState` 管理状态。
-
-HTML 只需要给按钮、选中文本、箭头、菜单、遮罩和选项提供稳定 id：
+普通单选下拉框使用浏览器一致的标准标签和属性：
 
 ```html
-<div id="layer-dropdown" data-action="toggle-layer-menu">
-  <span id="layer-selected">地块边界.shp</span>
-  <span id="layer-arrow">v</span>
-</div>
-<div id="layer-menu" class="dropdown-menu page-hidden">
-  <div id="layer-option-0" data-action="select-layer:0">地块边界.shp</div>
-  <div id="layer-option-1" data-action="select-layer:1">道路中心线.shp</div>
-</div>
-<div id="layer-backdrop" class="page-hidden" data-action="close-layer-menu"></div>
+<select id="layer-select">
+  <option value="parcel" selected>地块边界.shp</option>
+  <option value="road">道路中心线.shp</option>
+  <option value="locked" disabled>只读图层.shp</option>
+</select>
 ```
 
-C++ 侧复用同一个状态对象：
+运行时由 Skia 绘制关闭态和顶层弹层，并处理鼠标、滚轮、方向键、Home、End、Space、Enter 和 Escape。选择改变时依次发出标准 `Input` / `Change` 事件：
 
 ```cpp
-skui::DropdownState layerDropdown(skui::DropdownConfig{
-    .selectedTextId = "layer-selected",
-    .arrowId = "layer-arrow",
-    .menuId = "layer-menu",
-    .backdropId = "layer-backdrop",
-    .optionIdPrefix = "layer-option-",
-    .hiddenClass = "page-hidden",
-    .selectedClass = "selected",
-    .openArrow = "^",
-    .closedArrow = "v",
-    .optionCount = layers.size(),
+ui.setElementEventCallback([&](const skui::ElementEvent& event) {
+    if (event.id == "layer-select" &&
+        event.type == skui::ElementEventType::Change) {
+        selectLayer(event.value);
+    }
 });
 
-ui.setElementEventCallback([&](const skui::ElementEvent& event) {
-    if (event.type != skui::ElementEventType::Click) {
-        return;
-    }
-    if (event.action == "toggle-layer-menu") {
-        layerDropdown.toggle(ui);
-    } else if (event.action == "close-layer-menu") {
-        layerDropdown.setOpen(ui, false);
-    } else if (event.action.starts_with("select-layer:")) {
-        const int index = parseIndex(event.action);
-        layerDropdown.select(ui, index, layers[index].name);
-    }
-});
+ui.setValueById("layer-select", "road");
 ```
+
+option 的 `label` 可单独指定显示名；没有 `value` 时文本会作为值。当前实现只支持单选，不支持 `multiple`、`size`、`optgroup` 分组标题和表单提交。需要图标、多列内容或其他非标准菜单结构时，仍可用普通 DOM 自定义，并复用 `skui::DropdownState` 管理展开和选中状态。
 
 ## 大量数据：虚拟滚动 / 窗口化渲染
 
@@ -827,7 +805,7 @@ $env:https_proxy = "http://127.0.0.1:10090"
 - 平台事件已转成 `skui::Event`。
 - 剪贴板读写回调已设置；使用 `SkuiWin32` 或 `SkuiWin32Dx12` 时默认已设置。
 - 鼠标光标读取 `Runtime::cursor()` 并映射到平台光标；使用 `SkuiWin32` 或 `SkuiWin32Dx12` 时默认已设置。
-- 普通 DOM 组合下拉框优先复用 `skui::DropdownState`，不要在每个页面重复写展开/关闭/选中同步逻辑。
+- 普通单选下拉框使用标准 `select` / `option`；只有非标准菜单结构才使用 DOM 组合和 `skui::DropdownState`。
 - 大量数据界面使用虚拟滚动，不创建全量 DOM 节点。
 - 大表格优先复用 `skui::VirtualTableAdapter`，由页面只提供列定义、池化 DOM id 规则和数据源。
 - 使用 `applyUpdates` 批量更新，避免一帧内多次重复布局。

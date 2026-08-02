@@ -745,6 +745,30 @@ Node* selectableTextTarget(Node* leaf) {
     return nullptr;
 }
 
+Node* selectTarget(Node* leaf) {
+    if (disabledTarget(leaf)) {
+        return nullptr;
+    }
+    for (Node* current = leaf; current; current = current->parent) {
+        if (isSelectNode(*current)) {
+            return current;
+        }
+    }
+    return nullptr;
+}
+
+Node* optionTarget(Node* leaf) {
+    for (Node* current = leaf; current; current = current->parent) {
+        if (isOptionNode(*current)) {
+            return current;
+        }
+        if (isSelectNode(*current)) {
+            return nullptr;
+        }
+    }
+    return nullptr;
+}
+
 Node* actionTarget(Node* leaf) {
     if (disabledTarget(leaf)) {
         return nullptr;
@@ -767,6 +791,9 @@ Node* mouseEventTarget(Node* leaf) {
     if (Node* target = inputTarget(leaf)) {
         return target;
     }
+    if (Node* target = selectTarget(leaf)) {
+        return target;
+    }
     if (Node* target = selectableTextTarget(leaf)) {
         return target;
     }
@@ -777,6 +804,8 @@ bool isPointerConsumingTarget(Node* leaf) {
     return disabledTarget(leaf) ||
            actionTarget(leaf) ||
            inputTarget(leaf) ||
+           selectTarget(leaf) ||
+           optionTarget(leaf) ||
            selectableTextTarget(leaf);
 }
 
@@ -1044,6 +1073,13 @@ ElementEvent makeElementEvent(ElementEventType type, const Node& node, const Eve
     event.classes = node.classes;
     event.action = node.action;
     event.text = node.text;
+    if (isSelectNode(node)) {
+        const std::vector<const Node*> options = selectOptions(node);
+        if (node.selectedOptionIndex &&
+            *node.selectedOptionIndex < options.size()) {
+            event.text = optionLabel(*options[*node.selectedOptionIndex]);
+        }
+    }
     event.value = isContentEditableEditingHost(node)
         ? editableTextContent(node)
         : node.value;
@@ -1070,6 +1106,64 @@ ElementEvent makeSelectableLinkEvent(const Node& node,
         event.text = event.value.substr(link.start, link.end - link.start);
     }
     return event;
+}
+
+std::optional<size_t> selectOptionIndex(const Node& select,
+                                        const Node* option) {
+    if (!option) {
+        return std::nullopt;
+    }
+    const std::vector<const Node*> options = selectOptions(select);
+    const auto found = std::find(options.begin(), options.end(), option);
+    if (found == options.end()) {
+        return std::nullopt;
+    }
+    return static_cast<size_t>(std::distance(options.begin(), found));
+}
+
+std::optional<size_t> enabledSelectOptionFrom(const Node& select,
+                                              size_t start,
+                                              int direction) {
+    const std::vector<const Node*> options = selectOptions(select);
+    if (options.empty()) {
+        return std::nullopt;
+    }
+    size_t index = std::min(start, options.size() - 1);
+    while (true) {
+        if (!isOptionDisabled(*options[index])) {
+            return index;
+        }
+        if (direction < 0) {
+            if (index == 0) {
+                return std::nullopt;
+            }
+            --index;
+        } else {
+            ++index;
+            if (index >= options.size()) {
+                return std::nullopt;
+            }
+        }
+    }
+}
+
+std::optional<size_t> adjacentEnabledSelectOption(const Node& select,
+                                                  size_t current,
+                                                  int direction) {
+    const std::vector<const Node*> options = selectOptions(select);
+    if (options.empty()) {
+        return std::nullopt;
+    }
+    if (direction < 0) {
+        if (current == 0) {
+            return std::nullopt;
+        }
+        return enabledSelectOptionFrom(select, current - 1, direction);
+    }
+    if (current + 1 >= options.size()) {
+        return std::nullopt;
+    }
+    return enabledSelectOptionFrom(select, current + 1, direction);
 }
 
 bool isUtf8Continuation(unsigned char ch) {
@@ -2277,6 +2371,10 @@ void syncNodeAttribute(Node& node, const std::string& name, const CssEnvironment
     } else if (name == "class") {
         node.classes = splitWhitespace(value);
     } else if (name == "value") {
+        if (isSelectNode(node)) {
+            setSelectValue(node, value);
+            return;
+        }
         value = editableText(node, std::move(value));
         if (node.value != value) {
             node.value = value;
@@ -2365,6 +2463,33 @@ void syncNodeAttribute(Node& node, const std::string& name, const CssEnvironment
         if (hasValue) {
             parseInlineStyle(value, node.inlineStyle, node.inlineImportantStyle, environment);
         }
+    }
+}
+
+void synchronizeOwningSelectForAttribute(Node& node,
+                                         std::string_view name) {
+    Node* select = owningSelect(&node);
+    if (!select || select == &node) {
+        return;
+    }
+    const std::vector<Node*> options = selectOptions(*select);
+    const auto found = std::find(options.begin(), options.end(), &node);
+    if (found == options.end()) {
+        return;
+    }
+    const size_t optionIndex = static_cast<size_t>(
+        std::distance(options.begin(), found));
+    if (name == "selected" && node.attributes.contains("selected")) {
+        selectOptionAt(*select, optionIndex);
+    } else if (name == "value" &&
+               select->selectedOptionIndex == optionIndex) {
+        selectOptionAt(*select, optionIndex);
+    } else if (name == "selected" &&
+               select->selectedOptionIndex == optionIndex) {
+        select->selectedOptionIndex.reset();
+        select->highlightedOptionIndex.reset();
+        select->value.clear();
+        synchronizeSelectStatesAfterMutation(*select);
     }
 }
 
@@ -3265,12 +3390,14 @@ public:
             return selectionChanged;
         }
         if (focusedNode) {
-            if (!focusedNode->compositionText.empty()) {
-                focusedNode->compositionText.clear();
-                markTextChanged(*focusedNode);
+            if (isEditableNode(focusedNode)) {
+                if (!focusedNode->compositionText.empty()) {
+                    focusedNode->compositionText.clear();
+                    markTextChanged(*focusedNode);
+                }
+                clearInputSelection(*focusedNode);
+                focusedNode->editingFocused = false;
             }
-            clearInputSelection(*focusedNode);
-            focusedNode->editingFocused = false;
             if (Node* host = contentEditableEditingHost(focusedNode)) {
                 host->focused = false;
             } else {
@@ -3279,17 +3406,51 @@ public:
         }
         focusedNode = next;
         if (focusedNode) {
-            focusedNode->editingFocused = true;
+            focusedNode->editingFocused = isEditableNode(focusedNode);
             if (Node* host = contentEditableEditingHost(focusedNode)) {
                 host->focused = true;
             } else {
                 focusedNode->focused = true;
             }
-            focusedNode->cursorIndex = focusedNode->value.size();
-            clampInputCursor(*focusedNode);
-            clearInputSelection(*focusedNode);
+            if (isEditableNode(focusedNode)) {
+                focusedNode->cursorIndex = focusedNode->value.size();
+                clampInputCursor(*focusedNode);
+                clearInputSelection(*focusedNode);
+            }
         }
         return true;
+    }
+
+    bool closeOpenSelect() {
+        if (!openSelect) {
+            return false;
+        }
+        openSelect->selectOpen = false;
+        openSelect->highlightedOptionIndex =
+            openSelect->selectedOptionIndex;
+        openSelect = nullptr;
+        return true;
+    }
+
+    bool openSelectControl(Node& select) {
+        bool changed = false;
+        if (openSelect && openSelect != &select) {
+            changed = closeOpenSelect() || changed;
+        }
+        if (!select.selectOpen) {
+            select.selectOpen = true;
+            select.highlightedOptionIndex = select.selectedOptionIndex;
+            constexpr size_t kDefaultVisibleOptions = 8;
+            if (select.highlightedOptionIndex &&
+                *select.highlightedOptionIndex >= kDefaultVisibleOptions) {
+                select.selectPopupFirstOption =
+                    *select.highlightedOptionIndex -
+                    kDefaultVisibleOptions + 1;
+            }
+            openSelect = &select;
+            changed = true;
+        }
+        return changed;
     }
 
     bool setContentEditableSelection(Node& anchorNode,
@@ -4018,6 +4179,9 @@ public:
         if (containsNode(subtree, focusedNode)) {
             setFocusedNode(nullptr);
         }
+        if (containsNode(subtree, openSelect)) {
+            closeOpenSelect();
+        }
         if (containsNode(subtree, hoveredLeaf)) {
             hoveredLeaf = nullptr;
             currentCursor = Cursor::Default;
@@ -4068,6 +4232,9 @@ public:
         if (containsNode(subtree, focusedNode)) {
             setFocusedNode(nullptr);
         }
+        if (containsNode(subtree, openSelect)) {
+            closeOpenSelect();
+        }
         if (containsNode(subtree, hoveredLeaf)) {
             hoveredLeaf = nullptr;
             currentCursor = Cursor::Default;
@@ -4112,6 +4279,9 @@ public:
     void finishDocumentMutation() {
         renderer.clearNodeCaches();
         editableLineCache.clear();
+        if (document.root) {
+            synchronizeSelectStatesAfterMutation(*document.root);
+        }
         if (document.type == DocumentType::Page) {
             mediaController.sync(document);
         }
@@ -4146,6 +4316,7 @@ public:
         if (document.root) {
             rebindParents(*document.root, nullptr);
             prepareContentEditableTree(*document.root);
+            initializeSelectStates(*document.root);
         }
         hasDocument = true;
         dirty = true;
@@ -4154,6 +4325,7 @@ public:
         hoveredLeaf = nullptr;
         pressedLeaf = nullptr;
         focusedNode = nullptr;
+        openSelect = nullptr;
         selectingInput = nullptr;
         selectingInputAnchorOffset = 0;
         selectingInputAtomicAnchor = nullptr;
@@ -4193,6 +4365,7 @@ public:
     Node* hoveredLeaf = nullptr;
     Node* pressedLeaf = nullptr;
     Node* focusedNode = nullptr;
+    Node* openSelect = nullptr;
     Node* selectingInput = nullptr;
     size_t selectingInputAnchorOffset = 0;
     Node* selectingInputAtomicAnchor = nullptr;
@@ -4298,9 +4471,39 @@ bool Runtime::handleEvent(const Event& event) {
     const float scale = impl_->effectiveScale();
     const float x = event.x / scale;
     const float y = event.y / scale;
+    const float viewportWidth = static_cast<float>(impl_->width) / scale;
+    const float viewportHeight = static_cast<float>(impl_->height) / scale;
     const bool pointerEvent = isPointerEvent(event.type);
-    Node* hit = pointerEvent && event.type != EventType::MouseLeave ? hitTest(*impl_->document.root, x, y) : nullptr;
-    std::optional<ScrollbarHit> scrollbarHit = pointerEvent && event.type != EventType::MouseLeave
+    Node* popupHit = nullptr;
+    bool pointInSelectPopup = false;
+    if (pointerEvent && event.type != EventType::MouseLeave &&
+        impl_->openSelect) {
+        const SelectPopupGeometry geometry = selectPopupGeometry(
+            *impl_->openSelect,
+            viewportWidth,
+            viewportHeight);
+        pointInSelectPopup = geometry.rect.contains(x, y);
+        if (const std::optional<size_t> optionIndex =
+                selectPopupOptionAtPoint(*impl_->openSelect,
+                                         x,
+                                         y,
+                                         viewportWidth,
+                                         viewportHeight)) {
+            std::vector<Node*> options = selectOptions(*impl_->openSelect);
+            if (*optionIndex < options.size()) {
+                popupHit = options[*optionIndex];
+            }
+        }
+    }
+    Node* hit = pointerEvent && event.type != EventType::MouseLeave
+        ? (popupHit
+               ? popupHit
+               : (pointInSelectPopup
+                      ? impl_->openSelect
+                      : hitTest(*impl_->document.root, x, y)))
+        : nullptr;
+    std::optional<ScrollbarHit> scrollbarHit = pointerEvent &&
+            event.type != EventType::MouseLeave && !pointInSelectPopup
         ? scrollbarHitTest(*impl_->document.root, x, y)
         : std::nullopt;
     const auto cursorAtPoint = [&](Node* leaf) {
@@ -4389,6 +4592,18 @@ bool Runtime::handleEvent(const Event& event) {
                                                   index) || stateChanged;
             consumed = true;
         }
+        if (impl_->openSelect && popupHit) {
+            const std::optional<size_t> optionIndex =
+                selectOptionIndex(*impl_->openSelect, popupHit);
+            if (optionIndex &&
+                impl_->openSelect->highlightedOptionIndex != optionIndex) {
+                impl_->openSelect->highlightedOptionIndex = optionIndex;
+                stateChanged = true;
+            }
+            consumed = true;
+        } else if (pointInSelectPopup) {
+            consumed = true;
+        }
         if (hit != impl_->hoveredLeaf) {
             impl_->hoveredLeaf = hit;
             stateChanged = true;
@@ -4414,6 +4629,10 @@ bool Runtime::handleEvent(const Event& event) {
         impl_->pressedButton = event.button;
         impl_->pressedLeaf = hit;
         impl_->hoveredLeaf = hit;
+        if (impl_->openSelect && owningSelect(hit) != impl_->openSelect) {
+            stateChanged = impl_->closeOpenSelect() || stateChanged;
+            layoutNeeded = true;
+        }
         if (scrollbarHit) {
             impl_->scrollingNode = scrollbarHit->node;
             impl_->scrollingAxis = scrollbarHit->axis;
@@ -4430,6 +4649,22 @@ bool Runtime::handleEvent(const Event& event) {
                                                       impl_->scrollbarDragOffset) || scrollChanged;
             scrolledNode = scrollChanged ? impl_->scrollingNode : scrolledNode;
             consumed = true;
+        } else if (Node* select = owningSelect(hit);
+                   select && !select->attributes.contains("disabled")) {
+            stateChanged = impl_->setFocusedNode(select) || stateChanged;
+            impl_->selectingInput = nullptr;
+            impl_->selectingInputAtomicAnchor = nullptr;
+            impl_->selectingAtomicHost = nullptr;
+            impl_->selectingInputDragged = false;
+            impl_->selectingText = nullptr;
+            if (impl_->selectedText) {
+                stateChanged = clearSelectableSelection(*impl_->selectedText) ||
+                               stateChanged;
+                impl_->selectedText = nullptr;
+            }
+            consumed = true;
+            stateChanged = true;
+            layoutNeeded = true;
         } else if (Node* input = impl_->editingTargetAtPoint(hit, x, y)) {
             const bool wasFocused = impl_->focusedNode == input;
             const size_t index = impl_->editableIndexAtPoint(*input, x, y);
@@ -4639,6 +4874,51 @@ bool Runtime::handleEvent(const Event& event) {
         std::optional<ElementEvent> mouseUpEvent;
         std::optional<ElementEvent> clickEvent;
         std::optional<ElementEvent> selectableLinkEvent;
+        std::optional<ElementEvent> selectInputEvent;
+        std::optional<ElementEvent> selectChangeEvent;
+        Node* pressedOption = optionTarget(pressed);
+        Node* releasedOption = optionTarget(hit);
+        Node* pressedSelect = owningSelect(pressed);
+        Node* releasedSelect = owningSelect(hit);
+        if (event.button == MouseButton::Left && pressedSelect &&
+            pressedSelect == releasedSelect &&
+            !pressedSelect->attributes.contains("disabled")) {
+            if (pressedOption && pressedOption == releasedOption &&
+                !isOptionDisabled(*pressedOption)) {
+                const std::optional<size_t> optionIndex =
+                    selectOptionIndex(*pressedSelect, pressedOption);
+                const bool valueChanged = optionIndex &&
+                    selectOptionAt(*pressedSelect, *optionIndex);
+                stateChanged = impl_->closeOpenSelect() || stateChanged;
+                if (valueChanged && impl_->options.onElementEvent) {
+                    selectInputEvent = makeElementEvent(
+                        ElementEventType::Input,
+                        *pressedSelect,
+                        event,
+                        x,
+                        y);
+                    selectChangeEvent = makeElementEvent(
+                        ElementEventType::Change,
+                        *pressedSelect,
+                        event,
+                        x,
+                        y);
+                }
+                hit = pressedSelect;
+                consumed = true;
+                layoutNeeded = true;
+            } else if (!pressedOption && !releasedOption) {
+                if (pressedSelect->selectOpen) {
+                    stateChanged = impl_->closeOpenSelect() || stateChanged;
+                } else {
+                    stateChanged =
+                        impl_->openSelectControl(*pressedSelect) ||
+                        stateChanged;
+                }
+                consumed = true;
+                layoutNeeded = true;
+            }
+        }
         if (Node* target = releasedAction ? releasedAction : pressedAction;
             target && impl_->options.onElementEvent) {
             mouseUpEvent = makeElementEvent(
@@ -4681,6 +4961,12 @@ bool Runtime::handleEvent(const Event& event) {
         } else if (selectableLinkEvent) {
             impl_->options.onElementEvent(*selectableLinkEvent);
         }
+        if (selectInputEvent) {
+            impl_->options.onElementEvent(*selectInputEvent);
+        }
+        if (selectChangeEvent) {
+            impl_->options.onElementEvent(*selectChangeEvent);
+        }
         consumed = consumed || hitConsumesPointer || pressedConsumesPointer;
         if (!containsNode(*impl_->document.root, hit)) {
             hit = nullptr;
@@ -4708,6 +4994,33 @@ bool Runtime::handleEvent(const Event& event) {
         break;
     }
     case EventType::MouseWheel: {
+        if (impl_->openSelect &&
+            (pointInSelectPopup || owningSelect(hit) == impl_->openSelect)) {
+            const std::vector<Node*> options = selectOptions(*impl_->openSelect);
+            const SelectPopupGeometry geometry = selectPopupGeometry(
+                *impl_->openSelect,
+                viewportWidth,
+                viewportHeight);
+            if (options.size() > geometry.visibleOptionCount) {
+                const size_t maxFirst =
+                    options.size() - geometry.visibleOptionCount;
+                const int direction = event.wheelDelta > 0.0f ? -1 : 1;
+                const size_t previous = geometry.firstOption;
+                impl_->openSelect->highlightedOptionIndex.reset();
+                if (direction < 0) {
+                    impl_->openSelect->selectPopupFirstOption =
+                        previous == 0 ? 0 : previous - 1;
+                } else {
+                    impl_->openSelect->selectPopupFirstOption =
+                        std::min(maxFirst, previous + 1);
+                }
+                stateChanged =
+                    previous != impl_->openSelect->selectPopupFirstOption ||
+                    stateChanged;
+            }
+            consumed = true;
+            break;
+        }
         const float step = event.wheelDelta == 0.0f ? 0.0f : -event.wheelDelta / 120.0f * 48.0f;
         const float dx = event.shiftKey ? step : 0.0f;
         const float dy = event.shiftKey ? 0.0f : step;
@@ -4717,6 +5030,18 @@ bool Runtime::handleEvent(const Event& event) {
     }
     case EventType::KeyDown: {
         Node* input = impl_->focusedNode;
+        constexpr unsigned kBackspace = 0x08;
+        constexpr unsigned kEnter = 0x0D;
+        constexpr unsigned kEscape = 0x1B;
+        constexpr unsigned kSpace = 0x20;
+        constexpr unsigned kEnd = 0x23;
+        constexpr unsigned kHome = 0x24;
+        constexpr unsigned kLeft = 0x25;
+        constexpr unsigned kUp = 0x26;
+        constexpr unsigned kRight = 0x27;
+        constexpr unsigned kDown = 0x28;
+        constexpr unsigned kDelete = 0x2E;
+
         if (event.ctrlKey && event.key == 'C' &&
             impl_->contentEditableAtomicSelectionHost) {
             const ClipboardContent content =
@@ -4725,6 +5050,101 @@ bool Runtime::handleEvent(const Event& event) {
                 impl_->writeClipboardContent(content);
                 consumed = true;
             }
+            break;
+        }
+        if (input && isSelectNode(*input)) {
+            if (impl_->options.onElementKeyDown) {
+                const ElementEvent keyEvent = makeElementEvent(
+                    ElementEventType::KeyDown,
+                    *input,
+                    event,
+                    x,
+                    y);
+                if (impl_->options.onElementKeyDown(keyEvent)) {
+                    consumed = true;
+                    break;
+                }
+            }
+
+            const std::vector<Node*> options = selectOptions(*input);
+            const std::optional<size_t> current =
+                input->selectOpen && input->highlightedOptionIndex
+                ? input->highlightedOptionIndex
+                : input->selectedOptionIndex;
+            std::optional<size_t> nextOption;
+            bool commitSelection = false;
+            if (event.key == kEscape && input->selectOpen) {
+                stateChanged = impl_->closeOpenSelect() || stateChanged;
+                consumed = true;
+            } else if (event.key == kEnter || event.key == kSpace) {
+                if (input->selectOpen) {
+                    nextOption = input->highlightedOptionIndex;
+                    commitSelection = true;
+                } else {
+                    stateChanged =
+                        impl_->openSelectControl(*input) || stateChanged;
+                }
+                consumed = true;
+            } else if (event.key == kUp || event.key == kDown) {
+                const int direction = event.key == kUp ? -1 : 1;
+                if (current) {
+                    nextOption = adjacentEnabledSelectOption(
+                        *input,
+                        *current,
+                        direction);
+                } else if (!options.empty()) {
+                    nextOption = enabledSelectOptionFrom(
+                        *input,
+                        direction < 0 ? options.size() - 1 : 0,
+                        direction);
+                }
+                commitSelection = !input->selectOpen;
+                consumed = true;
+            } else if (event.key == kHome && !options.empty()) {
+                nextOption = enabledSelectOptionFrom(*input, 0, 1);
+                commitSelection = !input->selectOpen;
+                consumed = true;
+            } else if (event.key == kEnd && !options.empty()) {
+                nextOption = enabledSelectOptionFrom(
+                    *input,
+                    options.size() - 1,
+                    -1);
+                commitSelection = !input->selectOpen;
+                consumed = true;
+            }
+
+            if (nextOption && *nextOption < options.size() &&
+                !isOptionDisabled(*options[*nextOption])) {
+                if (commitSelection) {
+                    const bool valueChanged =
+                        selectOptionAt(*input, *nextOption);
+                    stateChanged = valueChanged || stateChanged;
+                    if (input->selectOpen) {
+                        stateChanged =
+                            impl_->closeOpenSelect() || stateChanged;
+                    }
+                    if (valueChanged && impl_->options.onElementEvent) {
+                        const ElementEvent inputEvent = makeElementEvent(
+                            ElementEventType::Input,
+                            *input,
+                            event,
+                            x,
+                            y);
+                        const ElementEvent changeEvent = makeElementEvent(
+                            ElementEventType::Change,
+                            *input,
+                            event,
+                            x,
+                            y);
+                        impl_->options.onElementEvent(inputEvent);
+                        impl_->options.onElementEvent(changeEvent);
+                    }
+                } else if (input->highlightedOptionIndex != nextOption) {
+                    input->highlightedOptionIndex = nextOption;
+                    stateChanged = true;
+                }
+            }
+            layoutNeeded = layoutNeeded || stateChanged;
             break;
         }
         if (!isEditableNode(input)) {
@@ -4761,17 +5181,6 @@ bool Runtime::handleEvent(const Event& event) {
             }
             return false;
         }
-
-        constexpr unsigned kBackspace = 0x08;
-        constexpr unsigned kEnter = 0x0D;
-        constexpr unsigned kEscape = 0x1B;
-        constexpr unsigned kEnd = 0x23;
-        constexpr unsigned kHome = 0x24;
-        constexpr unsigned kLeft = 0x25;
-        constexpr unsigned kUp = 0x26;
-        constexpr unsigned kRight = 0x27;
-        constexpr unsigned kDown = 0x28;
-        constexpr unsigned kDelete = 0x2E;
 
         if (impl_->options.onElementKeyDown) {
             Node* target = inputEventTarget(*input);
@@ -5317,6 +5726,9 @@ bool Runtime::setTextById(std::string_view id, std::string_view text) {
         node->text = std::string(text);
     }
     markTextChanged(*node);
+    if (owningSelect(node)) {
+        synchronizeSelectStatesAfterMutation(*owningSelect(node));
+    }
     impl_->requestLayout();
     return true;
 }
@@ -5326,8 +5738,15 @@ bool Runtime::setValueById(std::string_view id, std::string_view value) {
         return false;
     }
     Node* node = findById(*impl_->document.root, id);
-    if (!isEditableNode(node) && !isSelectableTextNode(node)) {
+    if (!isEditableNode(node) && !isSelectableTextNode(node) &&
+        !(node && isSelectNode(*node))) {
         return false;
+    }
+
+    if (isSelectNode(*node)) {
+        setSelectValue(*node, value);
+        impl_->requestLayout();
+        return true;
     }
 
     if (isSelectableTextNode(node) && !isEditableNode(node)) {
@@ -5385,6 +5804,7 @@ bool Runtime::setAttributeById(std::string_view id, std::string_view name, std::
     }
     node->attributes[normalizedName] = std::string(value);
     syncNodeAttribute(*node, normalizedName, impl_->document.cssEnvironment);
+    synchronizeOwningSelectForAttribute(*node, normalizedName);
     if (normalizedName == "contenteditable") {
         prepareContentEditableTree(*node);
     }
@@ -5438,6 +5858,9 @@ bool Runtime::applyUpdates(const RuntimeUpdates& updates) {
             node->text = update.text;
         }
         markTextChanged(*node);
+        if (Node* select = owningSelect(node)) {
+            synchronizeSelectStatesAfterMutation(*select);
+        }
         changed = true;
     }
 
@@ -5455,6 +5878,7 @@ bool Runtime::applyUpdates(const RuntimeUpdates& updates) {
         }
         node->attributes[normalizedName] = update.value;
         syncNodeAttribute(*node, normalizedName, impl_->document.cssEnvironment);
+        synchronizeOwningSelectForAttribute(*node, normalizedName);
         if (normalizedName == "contenteditable") {
             prepareContentEditableTree(*node);
         }
@@ -5487,6 +5911,7 @@ bool Runtime::removeAttributeById(std::string_view id, std::string_view name) {
         return false;
     }
     syncNodeAttribute(*node, normalizedName, impl_->document.cssEnvironment);
+    synchronizeOwningSelectForAttribute(*node, normalizedName);
     if (normalizedName == "contenteditable") {
         prepareContentEditableTree(*node);
     }

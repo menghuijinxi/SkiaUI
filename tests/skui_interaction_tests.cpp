@@ -8427,6 +8427,184 @@ int main() {
              "flex gap should preserve a child's auto margin") &&
          ok;
 
+    constexpr std::string_view formControlHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    html, body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      background: #000000;
+    }
+    button {
+      position: absolute;
+      left: 10px;
+      width: 100px;
+      height: 30px;
+      padding: 0;
+      border: 0;
+      background: #202020;
+      color: #ffffff;
+      font-size: 16px;
+    }
+    .default-button { top: 2px; }
+    .left-button {
+      top: 34px;
+      text-align: left;
+    }
+    select {
+      position: absolute;
+      left: 10px;
+      top: 66px;
+      width: 120px;
+      height: 22px;
+      padding: 0 28px 0 6px;
+      font-size: 12px;
+      line-height: 1;
+    }
+    .default-choice { display: none; }
+  </style>
+</head>
+<body>
+  <button class="default-button">OK</button>
+  <button class="left-button">OK</button>
+  <select id="choice">
+    <option id="fallback-option">Fallback</option>
+    <option id="label-option" value="label-value" label="Shown Label">Ignored Text</option>
+    <option id="alpha" value="alpha">Alpha</option>
+    <option id="beta" value="beta" selected>Beta</option>
+    <option id="disabled-option" value="disabled" disabled>Disabled</option>
+  </select>
+  <select id="default-choice" class="default-choice">
+    <option value="disabled" disabled>Disabled</option>
+    <option value="enabled">Enabled</option>
+    <option value="last">Last</option>
+  </select>
+</body>
+</html>
+)html";
+
+    skui::Runtime formControlRuntime(options);
+    formControlRuntime.resize(kWidth, kHeight, 1.0f);
+    int selectInputEvents = 0;
+    int selectChangeEvents = 0;
+    int defaultSelectInputEvents = 0;
+    std::string selectedValue;
+    std::string selectedText;
+    std::string defaultSelectedValue;
+    formControlRuntime.setElementEventCallback(
+        [&](const skui::ElementEvent& event) {
+            if (event.id == "default-choice" &&
+                event.type == skui::ElementEventType::Input) {
+                ++defaultSelectInputEvents;
+                defaultSelectedValue = event.value;
+                return;
+            }
+            if (event.id != "choice") {
+                return;
+            }
+            if (event.type == skui::ElementEventType::Input) {
+                ++selectInputEvents;
+                selectedValue = event.value;
+                selectedText = event.text;
+            } else if (event.type == skui::ElementEventType::Change) {
+                ++selectChangeEvents;
+            }
+        });
+    if (!formControlRuntime.loadDocumentFromString(formControlHtml, "")) {
+        std::cerr << "form control load failed: "
+                  << formControlRuntime.lastError() << "\n";
+        return 1;
+    }
+    std::vector<uint32_t> formControlPixels;
+    ok = renderPixels(formControlRuntime, formControlPixels) && ok;
+    ok = expect(
+             countBrightPixels(formControlPixels, 45, 7, 78, 28) > 8 &&
+                 countBrightPixels(formControlPixels, 10, 7, 38, 28) == 0,
+             "button text should use the browser-like centered default") &&
+         ok;
+    ok = expect(
+             countBrightPixels(formControlPixels, 10, 39, 38, 60) > 8,
+             "author text-align should override the button default") &&
+         ok;
+
+    sendMouse(formControlRuntime, skui::EventType::MouseDown, 20.0f, 76.0f);
+    sendMouse(formControlRuntime, skui::EventType::MouseUp, 20.0f, 76.0f);
+    ok = renderPixels(formControlRuntime, formControlPixels) && ok;
+    ok = expect(
+             pixelAt(formControlPixels, 20, 40) != solidColor(0, 0, 0),
+             "open select popup should render in the top layer") &&
+         ok;
+    sendMouse(formControlRuntime, skui::EventType::MouseDown, 20.0f, 18.0f);
+    sendMouse(formControlRuntime, skui::EventType::MouseUp, 20.0f, 18.0f);
+    ok = expect(selectInputEvents == 1 && selectChangeEvents == 1 &&
+                    selectedValue == "alpha" && selectedText == "Alpha",
+                "mouse selection should emit standard input and change events") &&
+         ok;
+
+    sendKey(formControlRuntime, 0x28);
+    ok = expect(selectInputEvents == 2 && selectChangeEvents == 2 &&
+                    selectedValue == "beta" && selectedText == "Beta",
+                "closed select should change value with the down arrow") &&
+         ok;
+    sendKey(formControlRuntime, 0x28);
+    ok = expect(selectInputEvents == 2 && selectChangeEvents == 2,
+                "keyboard navigation should skip disabled options") &&
+         ok;
+    sendKey(formControlRuntime, 0x20);
+    sendKey(formControlRuntime, 0x26);
+    sendKey(formControlRuntime, 0x0D);
+    ok = expect(selectInputEvents == 3 && selectChangeEvents == 3 &&
+                    selectedValue == "alpha",
+                "open select should commit its highlighted option with Enter") &&
+         ok;
+    ok = expect(formControlRuntime.setValueById("choice", "beta"),
+                "setValueById should accept a standard select value") &&
+         ok;
+    sendKey(formControlRuntime, 0x26);
+    ok = expect(selectInputEvents == 4 && selectedValue == "alpha",
+                "programmatic select values should synchronize keyboard state") &&
+         ok;
+    ok = expect(formControlRuntime.setValueById("choice", "Fallback"),
+                "an option without value should use its text as the value") &&
+         ok;
+    sendKey(formControlRuntime, 0x28);
+    ok = expect(selectInputEvents == 5 && selectChangeEvents == 5 &&
+                    selectedValue == "label-value" &&
+                    selectedText == "Shown Label",
+                "option label should be distinct from its standard value") &&
+         ok;
+    ok = expect(formControlRuntime.removeAttributeById(
+                    "label-option", "selected"),
+                "selected should be removable from the current option") &&
+         ok;
+    sendKey(formControlRuntime, 0x26);
+    ok = expect(selectInputEvents == 5 && selectChangeEvents == 5,
+                "removing selected should rerun the default selection rule") &&
+         ok;
+    ok = expect(formControlRuntime.setValueById("choice", "missing"),
+                "an unknown select value should clear the selection") &&
+         ok;
+    sendKey(formControlRuntime, 0x28);
+    ok = expect(selectInputEvents == 6 && selectChangeEvents == 6 &&
+                    selectedValue == "Fallback",
+                "keyboard navigation should recover from no selection") &&
+         ok;
+    ok = expect(formControlRuntime.setVisibleById("choice", false) &&
+                    formControlRuntime.setVisibleById("default-choice", true),
+                "select visibility should update for default-state testing") &&
+         ok;
+    sendMouse(formControlRuntime, skui::EventType::MouseDown, 20.0f, 76.0f);
+    sendMouse(formControlRuntime, skui::EventType::MouseUp, 20.0f, 76.0f);
+    sendKey(formControlRuntime, 0x1B);
+    sendKey(formControlRuntime, 0x28);
+    ok = expect(defaultSelectInputEvents == 1 &&
+                    defaultSelectedValue == "last",
+                "default select state should skip a disabled first option") &&
+         ok;
+
     constexpr std::string_view lowContrastGradientHtml = R"html(
 <!doctype html>
 <html>

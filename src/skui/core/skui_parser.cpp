@@ -2302,6 +2302,41 @@ Style defaultStyleForNode(const Node& node) {
         style.alignItems = YGAlignStretch;
         style.flexGrow = 1.0f;
     }
+    if (node.tag == "button") {
+        style.textAlign = TextAlign::Center;
+        style.flags.textAlign = true;
+    }
+    if (node.tag == "select") {
+        style.boxSizing = YGBoxSizingBorderBox;
+        style.flags.boxSizing = true;
+        style.minHeight = Length{30.0f, LengthUnit::Px};
+        style.flags.minHeight = true;
+        style.padding.left = Length{8.0f, LengthUnit::Px};
+        style.padding.right = Length{30.0f, LengthUnit::Px};
+        style.flags.paddingLeft = true;
+        style.flags.paddingRight = true;
+        style.backgroundColor = SkColorSetRGB(255, 255, 255);
+        style.flags.backgroundColor = true;
+        style.color = SkColorSetRGB(32, 33, 36);
+        style.flags.color = true;
+        style.borders.left = {SkColorSetRGB(118, 118, 118), 1.0f,
+                              BorderStyle::Solid};
+        style.borders.top = style.borders.left;
+        style.borders.right = style.borders.left;
+        style.borders.bottom = style.borders.left;
+        style.borderRadius.topLeft = Length{2.0f, LengthUnit::Px};
+        style.borderRadius.topRight = Length{2.0f, LengthUnit::Px};
+        style.borderRadius.bottomRight = Length{2.0f, LengthUnit::Px};
+        style.borderRadius.bottomLeft = Length{2.0f, LengthUnit::Px};
+        style.flags.borderTopLeftRadius = true;
+        style.flags.borderTopRightRadius = true;
+        style.flags.borderBottomRightRadius = true;
+        style.flags.borderBottomLeftRadius = true;
+        style.overflowX = Overflow::Hidden;
+        style.overflowY = Overflow::Hidden;
+        style.flags.overflowX = true;
+        style.flags.overflowY = true;
+    }
     if (node.attributes.contains("disabled")) {
         style.cursor = Cursor::Default;
     }
@@ -2422,7 +2457,9 @@ bool matchesPseudo(const Node& node, const std::string& pseudo) {
         return nodeHasAttribute(node, "disabled");
     }
     if (pseudo == "checked") {
-        return nodeHasAttribute(node, "checked");
+        return nodeHasAttribute(node, "checked") ||
+               (isOptionNode(node) &&
+                nodeHasAttribute(node, "selected"));
     }
     if (pseudo == "selected") {
         return nodeHasAttribute(node, "selected");
@@ -2649,6 +2686,7 @@ void applyInheritedStyle(Node& node, const RuntimeOptions& options) {
     }
 
     if (node.tag == "text" || node.tag == "span" || node.tag == "label" || node.tag == "button" ||
+        node.tag == "select" || node.tag == "option" ||
         node.tag == "input" || node.tag == "textarea" || node.tag == "progress" ||
         node.tag == "img" || node.tag == "video" || node.tag == "svg") {
         node.style.flexShrink = 0.0f;
@@ -4493,6 +4531,7 @@ bool DocumentParser::loadString(std::string_view html,
     outDocument.cssEnvironment = std::move(environment);
     outDocument.basePath = std::string(basePath);
     outDocument.type = documentType;
+    initializeSelectStates(*outDocument.root);
     RuntimeOptions styleOptions;
     styleOptions.theme = theme_;
     recomputeStyles(outDocument, styleOptions);

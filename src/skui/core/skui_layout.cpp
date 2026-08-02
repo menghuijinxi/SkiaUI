@@ -183,6 +183,36 @@ YGSize measureTextNode(YGNodeConstRef node,
     return {std::max(0.0f, measuredWidth), std::max(0.0f, measuredHeight)};
 }
 
+YGSize measureSelectNode(YGNodeConstRef node,
+                         float width,
+                         YGMeasureMode widthMode,
+                         float height,
+                         YGMeasureMode heightMode) {
+    const auto* select = static_cast<const Node*>(YGNodeGetContext(node));
+    float measuredWidth = 0.0f;
+    for (const Node* option : selectOptions(*select)) {
+        measuredWidth = std::max(
+            measuredWidth,
+            measureUiTextWidth(optionLabel(*option),
+                               select->style.fontSize,
+                               select->style.fontBold));
+    }
+    float measuredHeight = std::max(
+        12.0f,
+        select->style.fontSize * select->style.lineHeight);
+    if (widthMode == YGMeasureModeExactly) {
+        measuredWidth = width;
+    } else if (widthMode == YGMeasureModeAtMost) {
+        measuredWidth = std::min(measuredWidth, width);
+    }
+    if (heightMode == YGMeasureModeExactly) {
+        measuredHeight = height;
+    } else if (heightMode == YGMeasureModeAtMost) {
+        measuredHeight = std::min(measuredHeight, height);
+    }
+    return {std::max(0.0f, measuredWidth), std::max(0.0f, measuredHeight)};
+}
+
 YGSize measureReplacedNode(YGNodeConstRef node,
                            float width,
                            YGMeasureMode widthMode,
@@ -1022,14 +1052,17 @@ void LayoutEngine::buildYoga(Node& node, YGNodeRef yogaNode, bool isRoot) {
                          contentEditableTextNode;
     const bool needsTextMeasure = needsIntrinsicMeasure(s.width) ||
                                   needsIntrinsicMeasure(s.height);
-    const bool hasLayoutChildren = std::any_of(
+    const bool selectNode = isSelectNode(node);
+    const bool hasLayoutChildren = !selectNode && std::any_of(
         node.children.begin(),
         node.children.end(),
         [contentEditableTextNode](const std::unique_ptr<Node>& child) {
             return !(contentEditableTextNode && child->tag == "br") &&
                    child->style.display != Display::None;
         });
-    if (!hasLayoutChildren && hasText && needsTextMeasure) {
+    if (selectNode && needsTextMeasure) {
+        YGNodeSetMeasureFunc(yogaNode, measureSelectNode);
+    } else if (!hasLayoutChildren && hasText && needsTextMeasure) {
         YGNodeSetMeasureFunc(yogaNode, measureTextNode);
     } else if (!hasLayoutChildren &&
                ((node.tag == "video" &&
@@ -1039,6 +1072,10 @@ void LayoutEngine::buildYoga(Node& node, YGNodeRef yogaNode, bool isRoot) {
                  node.intrinsicWidth > 0.0f &&
                  node.intrinsicHeight > 0.0f))) {
         YGNodeSetMeasureFunc(yogaNode, measureReplacedNode);
+    }
+
+    if (selectNode) {
+        return;
     }
 
     if (usesGridCells) {
@@ -1199,6 +1236,10 @@ void LayoutEngine::readYoga(Node& node, YGNodeRef yogaNode, float offsetX, float
         resolvedEdgeOrZero(YGNodeLayoutGetPadding(yogaNode, YGEdgeRight)),
         resolvedEdgeOrZero(YGNodeLayoutGetPadding(yogaNode, YGEdgeBottom)),
     };
+
+    if (isSelectNode(node)) {
+        return;
+    }
 
     if (node.style.display == Display::Grid &&
         (!node.style.gridTemplateColumns.empty() || !node.style.gridTemplateRows.empty())) {

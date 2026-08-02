@@ -625,6 +625,10 @@ struct Node {
     bool focused = false;
     bool editingFocused = false;
     bool atomicSelectionSelected = false;
+    bool selectOpen = false;
+    std::optional<size_t> selectedOptionIndex;
+    std::optional<size_t> highlightedOptionIndex;
+    size_t selectPopupFirstOption = 0;
     ContentEditableFlowPosition contentEditableFlowPosition =
         ContentEditableFlowPosition::ParagraphStart;
     size_t cursorIndex = 0;
@@ -894,6 +898,15 @@ private:
                              const Node& node,
                              const Rect& rect);
     void drawProgress(SkCanvas& canvas, const Node& node);
+    void drawSelect(SkCanvas& canvas, const Node& node);
+    void drawOpenSelectPopup(SkCanvas& canvas,
+                             const Document& document,
+                             float viewportWidth,
+                             float viewportHeight);
+    void drawSelectPopup(SkCanvas& canvas,
+                         const Node& select,
+                         float viewportWidth,
+                         float viewportHeight);
     void drawImage(SkCanvas& canvas, const Document& document, const Node& node);
     void drawInlineSvg(SkCanvas& canvas, const Node& node);
     void drawScrollbars(SkCanvas& canvas, const Node& node);
@@ -981,6 +994,35 @@ bool isInlineFlowElement(std::string_view tag);
 bool usesInlineFlow(const Node& node);
 bool isContentEditableTextNode(const Node& node);
 bool isTextEditingNode(const Node& node);
+bool isSelectNode(const Node& node);
+bool isOptionNode(const Node& node);
+Node* owningSelect(Node* node);
+const Node* owningSelect(const Node* node);
+std::vector<Node*> selectOptions(Node& select);
+std::vector<const Node*> selectOptions(const Node& select);
+std::string optionLabel(const Node& option);
+std::string optionValue(const Node& option);
+bool isOptionDisabled(const Node& option);
+bool initializeSelectState(Node& select);
+void initializeSelectStates(Node& node);
+bool selectOptionAt(Node& select, size_t optionIndex);
+bool setSelectValue(Node& select, std::string_view value);
+void synchronizeSelectStatesAfterMutation(Node& node);
+Rect selectVisualRect(const Node& select);
+struct SelectPopupGeometry {
+    Rect rect;
+    float optionHeight = 0.0f;
+    size_t firstOption = 0;
+    size_t visibleOptionCount = 0;
+};
+SelectPopupGeometry selectPopupGeometry(const Node& select,
+                                        float viewportWidth,
+                                        float viewportHeight);
+std::optional<size_t> selectPopupOptionAtPoint(const Node& select,
+                                               float x,
+                                               float y,
+                                               float viewportWidth,
+                                               float viewportHeight);
 Node* contentEditableEditingHost(Node* node);
 const Node* contentEditableEditingHost(const Node* node);
 void prepareContentEditableTree(Node& node);

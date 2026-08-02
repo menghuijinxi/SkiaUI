@@ -726,6 +726,18 @@ size_t normalizeBitmapWorkerCount(size_t requested) {
     return std::max<size_t>(1, std::min(requested, hardwareLimit));
 }
 
+const Node* openSelectNode(const Node& node) {
+    if (isSelectNode(node) && node.selectOpen) {
+        return &node;
+    }
+    for (const auto& child : node.children) {
+        if (const Node* select = openSelectNode(*child)) {
+            return select;
+        }
+    }
+    return nullptr;
+}
+
 }  // namespace
 
 SkiaRenderer::SkiaRenderer(RuntimeOptions options)
@@ -1035,6 +1047,10 @@ void SkiaRenderer::draw(Document& document,
     canvas.scale(scale, scale);
     if (document.root) {
         drawNode(canvas, document, *document.root);
+        drawOpenSelectPopup(canvas,
+                            document,
+                            static_cast<float>(width) / scale,
+                            static_cast<float>(height) / scale);
     }
     canvas.restore();
     endBitmapFrame();
@@ -1137,6 +1153,7 @@ void SkiaRenderer::drawNode(SkCanvas& canvas, const Document& document, const No
             traceBoxMs_ += perf::Trace::elapsedMs(start);
             start = perf::Trace::now();
         }
+        drawSelect(canvas, node);
         drawProgress(canvas, node);
         if (traceRender_) {
             traceProgressMs_ += perf::Trace::elapsedMs(start);
@@ -1180,14 +1197,16 @@ void SkiaRenderer::drawNode(SkCanvas& canvas, const Document& document, const No
         }
         canvas.translate(-node.scrollX, -node.scrollY);
     }
-    if (requiresZIndexOrdering(node)) {
-        const std::vector<const Node*> orderedChildren = childrenInPaintOrder(node);
-        for (const Node* child : orderedChildren) {
-            drawNode(canvas, document, *child);
-        }
-    } else {
-        for (const auto& child : node.children) {
-            drawNode(canvas, document, *child);
+    if (!isSelectNode(node)) {
+        if (requiresZIndexOrdering(node)) {
+            const std::vector<const Node*> orderedChildren = childrenInPaintOrder(node);
+            for (const Node* child : orderedChildren) {
+                drawNode(canvas, document, *child);
+            }
+        } else {
+            for (const auto& child : node.children) {
+                drawNode(canvas, document, *child);
+            }
         }
     }
     if (drawsSelf && node.hasAfterStyle) {
@@ -1542,6 +1561,206 @@ void SkiaRenderer::drawProgress(SkCanvas& canvas, const Node& node) {
     } else {
         canvas.drawRect(fillRect.sk(), p);
     }
+}
+
+void SkiaRenderer::drawSelect(SkCanvas& canvas, const Node& node) {
+    if (!isSelectNode(node) || node.layout.w <= 0.0f ||
+        node.layout.h <= 0.0f) {
+        return;
+    }
+
+    const std::vector<const Node*> options = selectOptions(node);
+    std::string label;
+    if (node.selectedOptionIndex &&
+        *node.selectedOptionIndex < options.size()) {
+        label = optionLabel(*options[*node.selectedOptionIndex]);
+    }
+
+    const SkRect content = contentRectForText(node);
+    const float availableWidth = std::max(0.0f, content.width());
+    const std::string drawnLabel = ellipsizedText(node, label, availableWidth);
+    if (!drawnLabel.empty()) {
+        const TextEntry& entry = textEntry(
+            drawnLabel,
+            node.style.fontSize,
+            node.style.fontBold);
+        const float baseline = content.top() + content.height() * 0.5f -
+                               (entry.metrics.fAscent +
+                                entry.metrics.fDescent) *
+                                   0.5f;
+        const float textX = textStartX(node, drawnLabel);
+        SkColor textColor = node.style.color;
+        if (node.attributes.contains("disabled")) {
+            textColor = SkColorSetA(
+                textColor,
+                static_cast<U8CPU>(SkColorGetA(textColor) * 0.48f));
+        }
+        drawStyledTextBlob(canvas,
+                           node,
+                           entry.blob,
+                           textX,
+                           baseline,
+                           textColor);
+    }
+
+    const float arrowCenterX = node.layout.x + node.layout.w - 15.0f;
+    const float arrowCenterY = node.layout.y + node.layout.h * 0.5f;
+    SkColor arrowColor = node.style.color;
+    if (node.attributes.contains("disabled")) {
+        arrowColor = SkColorSetA(
+            arrowColor,
+            static_cast<U8CPU>(SkColorGetA(arrowColor) * 0.48f));
+    }
+    SkPaint arrowPaint = stroke(arrowColor, 1.5f);
+    arrowPaint.setStrokeCap(SkPaint::kRound_Cap);
+    canvas.drawLine(arrowCenterX - 4.0f,
+                    arrowCenterY - 2.0f,
+                    arrowCenterX,
+                    arrowCenterY + 2.0f,
+                    arrowPaint);
+    canvas.drawLine(arrowCenterX,
+                    arrowCenterY + 2.0f,
+                    arrowCenterX + 4.0f,
+                    arrowCenterY - 2.0f,
+                    arrowPaint);
+
+    if (node.focused) {
+        const SkRect focusRect = SkRect::MakeXYWH(
+            node.layout.x + 2.0f,
+            node.layout.y + 2.0f,
+            std::max(0.0f, node.layout.w - 4.0f),
+            std::max(0.0f, node.layout.h - 4.0f));
+        canvas.drawRect(focusRect,
+                        stroke(SkColorSetARGB(210, 26, 115, 232), 1.0f));
+    }
+}
+
+void SkiaRenderer::drawOpenSelectPopup(SkCanvas& canvas,
+                                       const Document& document,
+                                       float viewportWidth,
+                                       float viewportHeight) {
+    if (!document.root) {
+        return;
+    }
+    if (const Node* select = openSelectNode(*document.root)) {
+        drawSelectPopup(canvas, *select, viewportWidth, viewportHeight);
+    }
+}
+
+void SkiaRenderer::drawSelectPopup(SkCanvas& canvas,
+                                   const Node& select,
+                                   float viewportWidth,
+                                   float viewportHeight) {
+    const std::vector<const Node*> options = selectOptions(select);
+    const SelectPopupGeometry geometry = selectPopupGeometry(
+        select,
+        viewportWidth,
+        viewportHeight);
+    if (options.empty() || geometry.visibleOptionCount == 0) {
+        return;
+    }
+
+    const SkColor popupColor = SkColorGetA(select.style.backgroundColor) > 0
+        ? select.style.backgroundColor
+        : SK_ColorWHITE;
+    canvas.save();
+    canvas.clipRect(geometry.rect.sk(), SkClipOp::kIntersect, true);
+    canvas.drawRect(geometry.rect.sk(), fill(popupColor));
+
+    constexpr float kPopupBorderWidth = 1.0f;
+    const SkColor defaultHighlight = SkColorSetRGB(26, 115, 232);
+    for (size_t row = 0; row < geometry.visibleOptionCount; ++row) {
+        const size_t optionIndex = geometry.firstOption + row;
+        const Node& option = *options[optionIndex];
+        const Rect optionRect{
+            geometry.rect.x + kPopupBorderWidth,
+            geometry.rect.y + kPopupBorderWidth +
+                static_cast<float>(row) * geometry.optionHeight,
+            std::max(0.0f, geometry.rect.w - kPopupBorderWidth * 2.0f),
+            geometry.optionHeight,
+        };
+        const bool highlighted = option.hovered ||
+            (select.highlightedOptionIndex &&
+             *select.highlightedOptionIndex == optionIndex);
+        const bool selected = select.selectedOptionIndex &&
+            *select.selectedOptionIndex == optionIndex;
+        SkColor backgroundColor = option.style.backgroundColor;
+        if (SkColorGetA(backgroundColor) == 0 && (highlighted || selected)) {
+            backgroundColor = highlighted
+                ? defaultHighlight
+                : SkColorSetARGB(36, 26, 115, 232);
+        }
+        if (SkColorGetA(backgroundColor) > 0) {
+            canvas.drawRect(optionRect.sk(), fill(backgroundColor));
+        }
+
+        std::string label = optionLabel(option);
+        const float textLeft = optionRect.x + 10.0f;
+        const float textRightPadding = options.size() >
+                geometry.visibleOptionCount
+            ? 16.0f
+            : 10.0f;
+        label = ellipsizedText(
+            option,
+            label,
+            std::max(0.0f,
+                     optionRect.w - 10.0f - textRightPadding));
+        if (label.empty()) {
+            continue;
+        }
+        const TextEntry& entry = textEntry(
+            label,
+            option.style.fontSize,
+            option.style.fontBold);
+        const float baseline = optionRect.y + optionRect.h * 0.5f -
+                               (entry.metrics.fAscent +
+                                entry.metrics.fDescent) *
+                                   0.5f;
+        SkColor textColor = option.style.color;
+        if (highlighted && !option.style.flags.color) {
+            textColor = SK_ColorWHITE;
+        }
+        if (isOptionDisabled(option)) {
+            textColor = SkColorSetA(
+                textColor,
+                static_cast<U8CPU>(SkColorGetA(textColor) * 0.42f));
+        }
+        drawStyledTextBlob(canvas,
+                           option,
+                           entry.blob,
+                           textLeft,
+                           baseline,
+                           textColor);
+    }
+
+    if (options.size() > geometry.visibleOptionCount) {
+        const float trackHeight = geometry.rect.h - 4.0f;
+        const float thumbHeight = std::max(
+            18.0f,
+            trackHeight * static_cast<float>(geometry.visibleOptionCount) /
+                static_cast<float>(options.size()));
+        const size_t maxFirst = options.size() - geometry.visibleOptionCount;
+        const float thumbTravel = std::max(0.0f, trackHeight - thumbHeight);
+        const float thumbTop = geometry.rect.y + 2.0f +
+            (maxFirst == 0
+                 ? 0.0f
+                 : thumbTravel *
+                       static_cast<float>(geometry.firstOption) /
+                       static_cast<float>(maxFirst));
+        const SkRect thumb = SkRect::MakeXYWH(
+            geometry.rect.x + geometry.rect.w - 5.0f,
+            thumbTop,
+            3.0f,
+            thumbHeight);
+        canvas.drawRoundRect(thumb,
+                             1.5f,
+                             1.5f,
+                             fill(SkColorSetARGB(150, 96, 102, 110)));
+    }
+
+    canvas.drawRect(geometry.rect.sk(),
+                    stroke(SkColorSetRGB(118, 118, 118), 1.0f));
+    canvas.restore();
 }
 
 void SkiaRenderer::drawScrollbars(SkCanvas& canvas, const Node& node) {
@@ -2430,7 +2649,8 @@ void SkiaRenderer::drawAtomicSelection(SkCanvas& canvas, const Node& node) {
 }
 
 void SkiaRenderer::drawText(SkCanvas& canvas, const Node& node) {
-    if (node.tag == "progress") {
+    if (node.tag == "progress" || isSelectNode(node) ||
+        isOptionNode(node)) {
         return;
     }
 
