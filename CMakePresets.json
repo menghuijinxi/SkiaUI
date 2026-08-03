@@ -24,6 +24,26 @@
         "VCPKG_TARGET_TRIPLET": "x64-windows-static-md",
         "SKIATEST_USE_SKIA_D3D": "ON"
       }
+    },
+    {
+      "name": "ue55-v143-libpng15",
+      "displayName": "UE 5.5 / MSVC 14.38 / libpng 1.5.2",
+      "generator": "Visual Studio 18 2026",
+      "architecture": "x64",
+      "toolset": "v143,version=14.38.33130",
+      "binaryDir": "${sourceDir}/build/ue55-v143-libpng15",
+      "cacheVariables": {
+        "CMAKE_INSTALL_PREFIX": "${sourceDir}/build/ue55-v143-libpng15/install",
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/../out/vcpkg/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_TARGET_TRIPLET": "x64-windows-static-md-ue55",
+        "VCPKG_OVERLAY_PORTS": "${sourceDir}/cmake/vcpkg-overlays/ue55-ports;${sourceDir}/cmake/vcpkg-overlays/ports",
+        "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/triplets",
+        "SKIAUI_REQUIRED_LIBPNG_VERSION": "1.5.2",
+        "SKIAUI_ENABLE_FFMPEG_VIDEO": "ON",
+        "SKIAUI_BUILD_DEMOS": "OFF",
+        "BUILD_TESTING": "ON",
+        "SKIATEST_USE_SKIA_D3D": "ON"
+      }
     }
   ],
   "buildPresets": [
@@ -35,6 +55,11 @@
     {
       "name": "ninja-vcpkg-release",
       "configurePreset": "ninja-vcpkg"
+    },
+    {
+      "name": "ue55-v143-libpng15-release",
+      "configurePreset": "ue55-v143-libpng15",
+      "configuration": "Release"
     }
   ]
 }

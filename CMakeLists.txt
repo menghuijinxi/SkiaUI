@@ -33,6 +33,12 @@ find_package(unofficial-skia CONFIG REQUIRED)
 find_package(yoga CONFIG REQUIRED)
 find_package(lexbor CONFIG REQUIRED)
 
+set(SKIAUI_REQUIRED_LIBPNG_VERSION "" CACHE STRING
+    "Require Skia's libpng headers to match this exact version")
+if(SKIAUI_REQUIRED_LIBPNG_VERSION)
+    find_package(PNG ${SKIAUI_REQUIRED_LIBPNG_VERSION} EXACT REQUIRED)
+endif()
+
 option(SKIAUI_BUILD_DEMOS "Build SkiaUI demo applications" ON)
 option(SKIAUI_BUILD_SKIA_UI_DESK "Build the SkiaUiDesk demo application" ${SKIAUI_BUILD_DEMOS})
 option(SKIAUI_BUILD_TEXT_FILE_DEMO "Build the text file rendering performance demo" ${SKIAUI_BUILD_DEMOS})
