@@ -1793,9 +1793,15 @@ int main() {
         return 1;
     }
     int passThroughClicks = 0;
+    int passThroughWheelEvents = 0;
+    float passThroughWheelDelta = 0.0f;
     pointerPassThroughRuntime.setElementEventCallback([&](const skui::ElementEvent& event) {
         if (event.type == skui::ElementEventType::Click && event.action == "button-click") {
             ++passThroughClicks;
+        } else if (event.type == skui::ElementEventType::MouseWheel &&
+                   event.action == "button-click") {
+            ++passThroughWheelEvents;
+            passThroughWheelDelta = event.wheelDelta;
         }
     });
     skui::Event passThroughDown;
@@ -1850,6 +1856,10 @@ int main() {
     buttonWheel.y = 30.0f;
     ok = expect(pointerPassThroughRuntime.handleEvent(buttonWheel),
                 "data-action element should consume mouse wheel without scrolling") && ok;
+    ok = expect(passThroughWheelEvents == 1,
+                "data-action element should receive mouse wheel events") && ok;
+    ok = expect(passThroughWheelDelta == -120.0f,
+                "mouse wheel element event should preserve wheel delta") && ok;
 
     ok = expect(pointerPassThroughRuntime.setConsumesEventsById("button", false),
                 "setConsumesEventsById should disable pointer events at runtime") && ok;
@@ -1861,6 +1871,8 @@ int main() {
                 "runtime-disabled pointer events should not consume mouse wheel") && ok;
     ok = expect(passThroughClicks == 1,
                 "runtime-disabled pointer events should not emit click") && ok;
+    ok = expect(passThroughWheelEvents == 1,
+                "runtime-disabled pointer events should not emit mouse wheel") && ok;
 
     ok = expect(pointerPassThroughRuntime.setConsumesEventsById("button", true),
                 "setConsumesEventsById should restore pointer events at runtime") && ok;
@@ -1872,6 +1884,8 @@ int main() {
                 "runtime-restored pointer events should consume mouse wheel") && ok;
     ok = expect(passThroughClicks == 2,
                 "runtime-restored pointer events should emit click") && ok;
+    ok = expect(passThroughWheelEvents == 2,
+                "runtime-restored pointer events should emit mouse wheel") && ok;
 
     constexpr std::string_view selectorHtml = R"html(
 <!doctype html>

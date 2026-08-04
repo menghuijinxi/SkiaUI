@@ -67,7 +67,8 @@ enum class ElementEventType {
     KeyDown,
     Input,
     Scroll,
-    Change
+    Change,
+    MouseWheel
 };
 
 struct ElementEvent {
@@ -86,6 +87,7 @@ struct ElementEvent {
     unsigned key = 0;
     bool shiftKey = false;
     bool ctrlKey = false;
+    float wheelDelta = 0.0f;
 };
 
 enum class ClipboardItemType {

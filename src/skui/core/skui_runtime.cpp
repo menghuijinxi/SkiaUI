@@ -1091,6 +1091,7 @@ ElementEvent makeElementEvent(ElementEventType type, const Node& node, const Eve
     event.key = source.key;
     event.shiftKey = source.shiftKey;
     event.ctrlKey = source.ctrlKey;
+    event.wheelDelta = source.wheelDelta;
     return event;
 }
 
@@ -5026,6 +5027,11 @@ bool Runtime::handleEvent(const Event& event) {
         const float dy = event.shiftKey ? 0.0f : step;
         scrollChanged = impl_->scrollNearest(hit, dx, dy, &scrolledNode);
         consumed = scrollChanged || scrollbarHit.has_value() || isPointerConsumingTarget(hit);
+        if (Node* target = mouseEventTarget(hit);
+            target && impl_->options.onElementEvent) {
+            impl_->options.onElementEvent(makeElementEvent(
+                ElementEventType::MouseWheel, *target, event, x, y));
+        }
         break;
     }
     case EventType::KeyDown: {
