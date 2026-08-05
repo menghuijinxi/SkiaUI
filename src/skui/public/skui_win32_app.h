@@ -14,10 +14,14 @@
 #include <functional>
 #include <string>
 
+class SkCanvas;
+
 namespace skui::win32 {
 
 using WindowMessageCallback =
     std::function<bool(HWND, UINT, WPARAM, LPARAM, Runtime&)>;
+using CanvasRenderCallback =
+    std::function<void(SkCanvas&, int, int, float)>;
 
 struct WindowOptions {
     std::wstring title = L"SkiaUiDesk";
@@ -31,6 +35,8 @@ struct WindowOptions {
     std::function<void(Runtime&)> onRuntimeReady;
     std::function<void(Runtime&)> onRuntimeResize;
     std::function<void(Runtime&, float)> onRuntimeTick;
+    CanvasRenderCallback onBeforeUiRender;
+    CanvasRenderCallback onAfterUiRender;
     WindowMessageCallback onWindowMessage;
 };
 

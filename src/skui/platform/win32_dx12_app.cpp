@@ -633,8 +633,8 @@ private:
             hwnd,
             width,
             height,
-            [this](SkCanvas& canvas, int, int) {
-                runtime_.render(canvas);
+            [this](SkCanvas& canvas, int drawWidth, int drawHeight) {
+                renderCanvas(canvas, drawWidth, drawHeight);
             },
             [this](uint32_t* pixels, int drawWidth, int drawHeight, size_t rowBytes) {
                 return renderCpuSurface(pixels, drawWidth, drawHeight, rowBytes);
@@ -659,8 +659,26 @@ private:
         if (!surface) {
             return false;
         }
-        runtime_.render(*surface->getCanvas());
+        renderCanvas(*surface->getCanvas(), width, height);
         return true;
+    }
+
+    void renderCanvas(SkCanvas& canvas, int width, int height) {
+        invokeCanvasCallback(options_.onBeforeUiRender, canvas, width, height);
+        runtime_.render(canvas);
+        invokeCanvasCallback(options_.onAfterUiRender, canvas, width, height);
+    }
+
+    void invokeCanvasCallback(const CanvasRenderCallback& callback,
+                              SkCanvas& canvas,
+                              int width,
+                              int height) {
+        if (!callback) {
+            return;
+        }
+
+        SkAutoCanvasRestore restore(&canvas, true);
+        callback(canvas, width, height, runtimeDpiScale());
     }
 
     bool renderCpuSurface(int width, int height) {
