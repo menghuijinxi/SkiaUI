@@ -355,6 +355,31 @@ SkRRect makeRRect(const Rect& rect, const CornerRadii& radii) {
     return rrect;
 }
 
+SkRRect makeInnerBorderRRect(const SkRRect& outer,
+                             const SkRect& inner,
+                             float leftWidth,
+                             float topWidth,
+                             float rightWidth,
+                             float bottomWidth) {
+    const SkVector upperLeft = outer.radii(SkRRect::kUpperLeft_Corner);
+    const SkVector upperRight = outer.radii(SkRRect::kUpperRight_Corner);
+    const SkVector lowerRight = outer.radii(SkRRect::kLowerRight_Corner);
+    const SkVector lowerLeft = outer.radii(SkRRect::kLowerLeft_Corner);
+    SkVector corners[4] = {
+        {std::max(0.0f, upperLeft.fX - leftWidth),
+         std::max(0.0f, upperLeft.fY - topWidth)},
+        {std::max(0.0f, upperRight.fX - rightWidth),
+         std::max(0.0f, upperRight.fY - topWidth)},
+        {std::max(0.0f, lowerRight.fX - rightWidth),
+         std::max(0.0f, lowerRight.fY - bottomWidth)},
+        {std::max(0.0f, lowerLeft.fX - leftWidth),
+         std::max(0.0f, lowerLeft.fY - bottomWidth)},
+    };
+    SkRRect rrect;
+    rrect.setRectRadii(inner, corners);
+    return rrect;
+}
+
 SkRRect makeInsetRRect(const Rect& rect, const CornerRadii& radii, float inset) {
     const auto insetRadius = [&](const Length& radius, float extent) {
         const float resolved =
@@ -1294,22 +1319,88 @@ void SkiaRenderer::drawBoxDirect(SkCanvas& canvas,
     const bool uniformBorder = bordersMatch(left, top, node.style) &&
                                bordersMatch(top, right, node.style) &&
                                bordersMatch(right, bottom, node.style);
-    if (uniformBorder && hasVisibleBorder(top, node.style) &&
-        node.style.borderRadius.any()) {
-        const float width = resolvedBorderWidth(top);
-        const float half = width * 0.5f;
-        const SkRect border = SkRect::MakeXYWH(
-            r.x + half,
-            r.y + half,
-            std::max(0.0f, r.w - width),
-            std::max(0.0f, r.h - width));
-        canvas.drawRRect(
-            makeInsetRRect(
-                {border.x(), border.y(), border.width(), border.height()},
-                node.style.borderRadius,
-                half),
-            stroke(resolvedBorderColor(top, node.style), width));
-        return;
+    const bool hasRoundedBorder = node.style.borderRadius.any() &&
+                                  (hasVisibleBorder(left, node.style) ||
+                                   hasVisibleBorder(top, node.style) ||
+                                   hasVisibleBorder(right, node.style) ||
+                                   hasVisibleBorder(bottom, node.style));
+    if (hasRoundedBorder) {
+        const float leftWidth = std::min(resolvedBorderWidth(left), r.w);
+        const float topWidth = std::min(resolvedBorderWidth(top), r.h);
+        const float rightWidth = std::min(resolvedBorderWidth(right), r.w);
+        const float bottomWidth = std::min(resolvedBorderWidth(bottom), r.h);
+        const float innerLeft = r.x + leftWidth;
+        const float innerTop = r.y + topWidth;
+        const float innerRight = r.x + r.w - rightWidth;
+        const float innerBottom = r.y + r.h - bottomWidth;
+        if (innerRight > innerLeft && innerBottom > innerTop) {
+            const SkRRect outerBorder = makeRRect(r, node.style.borderRadius);
+            const SkRect innerBorder =
+                SkRect::MakeLTRB(innerLeft, innerTop, innerRight, innerBottom);
+            canvas.save();
+            canvas.clipRRect(outerBorder, SkClipOp::kIntersect, true);
+            canvas.clipRRect(
+                makeInnerBorderRRect(outerBorder,
+                                     innerBorder,
+                                     leftWidth,
+                                     topWidth,
+                                     rightWidth,
+                                     bottomWidth),
+                SkClipOp::kDifference,
+                true);
+
+            if (uniformBorder && hasVisibleBorder(top, node.style)) {
+                canvas.drawRect(
+                    r.sk(),
+                    fill(resolvedBorderColor(top, node.style)));
+            } else {
+                const auto drawBorderSide = [&](const BorderSide& side,
+                                                const std::array<SkPoint, 5>& points) {
+                    if (!hasVisibleBorder(side, node.style)) {
+                        return;
+                    }
+                    SkPathBuilder path;
+                    path.moveTo(points.front());
+                    for (size_t i = 1; i < points.size(); ++i) {
+                        path.lineTo(points[i]);
+                    }
+                    path.close();
+                    canvas.drawPath(
+                        path.detach(),
+                        fill(resolvedBorderColor(side, node.style)));
+                };
+                const SkPoint innerCenter = {
+                    (innerLeft + innerRight) * 0.5f,
+                    (innerTop + innerBottom) * 0.5f,
+                };
+                drawBorderSide(top,
+                               {{{r.x, r.y},
+                                 {r.x + r.w, r.y},
+                                 {innerRight, innerTop},
+                                 innerCenter,
+                                 {innerLeft, innerTop}}});
+                drawBorderSide(right,
+                               {{{r.x + r.w, r.y},
+                                 {r.x + r.w, r.y + r.h},
+                                 {innerRight, innerBottom},
+                                 innerCenter,
+                                 {innerRight, innerTop}}});
+                drawBorderSide(bottom,
+                               {{{r.x + r.w, r.y + r.h},
+                                 {r.x, r.y + r.h},
+                                 {innerLeft, innerBottom},
+                                 innerCenter,
+                                 {innerRight, innerBottom}}});
+                drawBorderSide(left,
+                               {{{r.x, r.y + r.h},
+                                 {r.x, r.y},
+                                 {innerLeft, innerTop},
+                                 innerCenter,
+                                 {innerLeft, innerBottom}}});
+            }
+            canvas.restore();
+            return;
+        }
     }
 
     const auto drawHorizontalBorder = [&](const BorderSide& side,

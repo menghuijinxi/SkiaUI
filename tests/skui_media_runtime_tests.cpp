@@ -23,28 +23,25 @@ bool expect(bool condition, std::string_view message) {
     return condition;
 }
 
-sk_sp<SkImage> makeRedFrame() {
-    constexpr int kSize = 2;
+sk_sp<SkImage> makeRedFrame(int width = 2, int height = 2) {
     const SkImageInfo info = SkImageInfo::Make(
-        kSize,
-        kSize,
+        width,
+        height,
         kBGRA_8888_SkColorType,
         kPremul_SkAlphaType,
         SkColorSpace::MakeSRGB());
-    const uint32_t pixels[kSize * kSize] = {
-        0xFFFF0000u,
-        0xFFFF0000u,
-        0xFFFF0000u,
-        0xFFFF0000u,
-    };
+    std::vector<uint32_t> pixels(static_cast<size_t>(width) * height, 0xFFFF0000u);
     return SkImages::RasterFromPixmapCopy(
-        SkPixmap(info, pixels, kSize * sizeof(uint32_t)));
+        SkPixmap(info, pixels.data(), width * sizeof(uint32_t)));
 }
 
 struct FakePlayerState {
     skui::MediaSourceOptions source;
     skui::MediaPlaybackState playback;
     sk_sp<SkImage> frame;
+    int videoWidth = 2;
+    int videoHeight = 2;
+    bool deferFrameUntilTick = false;
     int setSourceCalls = 0;
     int metadataCalls = 0;
     int prepareCalls = 0;
@@ -79,20 +76,22 @@ public:
     bool loadMetadata() override {
         ++state_->metadataCalls;
         state_->playback.readyState = skui::MediaReadyState::Ready;
-        state_->playback.videoWidth = 2;
-        state_->playback.videoHeight = 2;
+        state_->playback.videoWidth = state_->videoWidth;
+        state_->playback.videoHeight = state_->videoHeight;
         return true;
     }
 
     bool prepare() override {
         ++state_->prepareCalls;
         state_->playback.readyState = skui::MediaReadyState::Ready;
-        state_->playback.videoWidth = 2;
-        state_->playback.videoHeight = 2;
         state_->playback.bufferedVideoFrames = state_->source.predecodeFrames;
-        state_->frame = makeRedFrame();
-        if (options_.requestRedraw) {
-            options_.requestRedraw();
+        if (!state_->deferFrameUntilTick) {
+            state_->playback.videoWidth = state_->videoWidth;
+            state_->playback.videoHeight = state_->videoHeight;
+            state_->frame = makeRedFrame(state_->videoWidth, state_->videoHeight);
+            if (options_.requestRedraw) {
+                options_.requestRedraw();
+            }
         }
         return true;
     }
@@ -126,6 +125,14 @@ public:
         if (state_->playback.readyState != skui::MediaReadyState::Playing) {
             return false;
         }
+        if (!state_->frame && state_->deferFrameUntilTick) {
+            state_->playback.videoWidth = state_->videoWidth;
+            state_->playback.videoHeight = state_->videoHeight;
+            state_->frame = makeRedFrame(state_->videoWidth, state_->videoHeight);
+            if (options_.requestRedraw) {
+                options_.requestRedraw();
+            }
+        }
         state_->playback.currentSeconds += deltaSeconds;
         return true;
     }
@@ -149,10 +156,16 @@ private:
 
 struct FakePlayerFactory {
     std::vector<std::shared_ptr<FakePlayerState>> players;
+    int videoWidth = 2;
+    int videoHeight = 2;
+    bool deferFrameUntilTick = false;
 
     skui::MediaPlayerFactory callback() {
         return [this](skui::MediaPlayerCreateOptions options) {
             auto state = std::make_shared<FakePlayerState>();
+            state->videoWidth = videoWidth;
+            state->videoHeight = videoHeight;
+            state->deferFrameUntilTick = deferFrameUntilTick;
             players.push_back(state);
             return std::make_unique<FakePlayer>(state, std::move(options));
         };
@@ -350,6 +363,59 @@ bool testVideoMetadataProvidesIntrinsicLayoutSize() {
     return ok;
 }
 
+bool testFullscreenVideoFillsExplicitContainingBlock() {
+    FakePlayerFactory factory;
+    factory.videoWidth = 16;
+    factory.videoHeight = 9;
+    factory.deferFrameUntilTick = true;
+    skui::RuntimeOptions options;
+    options.clearColor = SK_ColorBLACK;
+    options.mediaPlayerFactory = factory.callback();
+    skui::Runtime runtime(std::move(options));
+    bool ok = expect(runtime.loadDocumentFromString(R"html(
+<html><head><style>
+html, body, .video-test {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background-color: #000000;
+}
+.video-test-fallback, .video-test-video {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+}
+.video-test-fallback { background-color: #000000; }
+</style></head><body>
+  <div class="video-test">
+    <div class="video-test-fallback"></div>
+    <video id="clip" class="video-test-video" preload="auto"></video>
+  </div>
+</body></html>)html"),
+                     "fullscreen video document loads");
+    ok = expect(runtime.setAttributeById("clip", "data-predecode-frames", "3"),
+                "fullscreen video accepts its predecode count") && ok;
+    ok = expect(runtime.setAttributeById("clip", "src", "clip.webm"),
+                "fullscreen video accepts its dynamic source") && ok;
+    ok = expect(runtime.prepareVideoById("clip"),
+                "fullscreen video prepares after its source is assigned") && ok;
+    ok = expect(runtime.playVideoById("clip"),
+                "fullscreen video starts before its first frame is available") && ok;
+    ok = expect(runtime.tick(0.1f),
+                "fullscreen video publishes its first frame during tick") && ok;
+    std::vector<uint32_t> pixels(160 * 100, 0);
+    ok = expect(runtime.renderToBgraPixels(
+                    pixels.data(), 160, 100, 160 * sizeof(uint32_t), 1.0f),
+                "fullscreen video renders") && ok;
+    ok = expect(pixels[95 * 160 + 80] == 0xFFFF0000u,
+                "fullscreen video covers the bottom of its explicit containing block") && ok;
+    return ok;
+}
+
 }  // namespace
 
 int main() {
@@ -360,6 +426,7 @@ int main() {
     ok = testMetadataAutoplayAndRemovalLifecycle() && ok;
     ok = testMetadataPreloadCanEscalateToExplicitPredecode() && ok;
     ok = testVideoMetadataProvidesIntrinsicLayoutSize() && ok;
+    ok = testFullscreenVideoFillsExplicitContainingBlock() && ok;
     if (!ok) {
         return 1;
     }

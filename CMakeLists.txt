@@ -3,9 +3,11 @@ cmake_minimum_required(VERSION 3.24)
 option(SKIAUI_ENABLE_FFMPEG_VIDEO
     "Build FFmpeg video and audio playback support"
     OFF)
+set(SKIAUI_FFMPEG_ROOT "" CACHE PATH
+    "Optional FFmpeg distribution root containing include and lib directories")
 
 # vcpkg 会在 project() 加载工具链时解析清单依赖，因此必须提前选择可选 feature。
-if(SKIAUI_ENABLE_FFMPEG_VIDEO)
+if(SKIAUI_ENABLE_FFMPEG_VIDEO AND NOT SKIAUI_FFMPEG_ROOT)
     list(APPEND VCPKG_MANIFEST_FEATURES "ffmpeg-video")
     list(REMOVE_DUPLICATES VCPKG_MANIFEST_FEATURES)
 endif()
@@ -64,15 +66,47 @@ set(SKIAUI_FFMPEG_TEST_MEDIA "" CACHE FILEPATH
 option(SKIATEST_USE_SKIA_D3D "Render SkiaLayerDesk through Skia Ganesh D3D12 backend" ON)
 
 if(SKIAUI_ENABLE_FFMPEG_VIDEO)
-    find_package(FFMPEG REQUIRED)
-    if(NOT TARGET FFMPEG::FFMPEG)
+    if(SKIAUI_FFMPEG_ROOT)
+        set(SKIAUI_FFMPEG_INCLUDE_DIR "${SKIAUI_FFMPEG_ROOT}/include")
+        set(SKIAUI_FFMPEG_LIBRARY_DIR "${SKIAUI_FFMPEG_ROOT}/lib")
+        set(SKIAUI_FFMPEG_REQUIRED_FILES
+            "${SKIAUI_FFMPEG_INCLUDE_DIR}/libavcodec/avcodec.h"
+            "${SKIAUI_FFMPEG_LIBRARY_DIR}/avcodec.lib"
+            "${SKIAUI_FFMPEG_LIBRARY_DIR}/avformat.lib"
+            "${SKIAUI_FFMPEG_LIBRARY_DIR}/avutil.lib"
+            "${SKIAUI_FFMPEG_LIBRARY_DIR}/swresample.lib"
+            "${SKIAUI_FFMPEG_LIBRARY_DIR}/swscale.lib"
+        )
+        foreach(SKIAUI_FFMPEG_REQUIRED_FILE IN LISTS SKIAUI_FFMPEG_REQUIRED_FILES)
+            if(NOT EXISTS "${SKIAUI_FFMPEG_REQUIRED_FILE}")
+                message(FATAL_ERROR
+                    "SKIAUI_FFMPEG_ROOT is missing ${SKIAUI_FFMPEG_REQUIRED_FILE}")
+            endif()
+        endforeach()
+
         add_library(FFMPEG::FFMPEG INTERFACE IMPORTED)
         target_include_directories(FFMPEG::FFMPEG INTERFACE
-            ${FFMPEG_INCLUDE_DIRS}
+            "${SKIAUI_FFMPEG_INCLUDE_DIR}"
         )
         target_link_libraries(FFMPEG::FFMPEG INTERFACE
-            ${FFMPEG_LIBRARIES}
+            "${SKIAUI_FFMPEG_LIBRARY_DIR}/avformat.lib"
+            "${SKIAUI_FFMPEG_LIBRARY_DIR}/avcodec.lib"
+            "${SKIAUI_FFMPEG_LIBRARY_DIR}/swresample.lib"
+            "${SKIAUI_FFMPEG_LIBRARY_DIR}/swscale.lib"
+            "${SKIAUI_FFMPEG_LIBRARY_DIR}/avutil.lib"
         )
+        message(STATUS "Using external FFmpeg from ${SKIAUI_FFMPEG_ROOT}")
+    else()
+        find_package(FFMPEG REQUIRED)
+        if(NOT TARGET FFMPEG::FFMPEG)
+            add_library(FFMPEG::FFMPEG INTERFACE IMPORTED)
+            target_include_directories(FFMPEG::FFMPEG INTERFACE
+                ${FFMPEG_INCLUDE_DIRS}
+            )
+            target_link_libraries(FFMPEG::FFMPEG INTERFACE
+                ${FFMPEG_LIBRARIES}
+            )
+        endif()
     endif()
 endif()
 
@@ -695,6 +729,7 @@ if(SKIAUI_BUILD_TESTS)
     if(SKIAUI_ENABLE_FFMPEG_VIDEO)
         target_link_libraries(SkuiFfmpegPlayerTests PRIVATE
             SkuiFfmpeg
+            usp10
         )
     endif()
 

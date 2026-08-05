@@ -1,4 +1,5 @@
 #include "skui_ffmpeg.h"
+#include "skui_runtime.h"
 
 #include "include/core/SkColor.h"
 #include "include/core/SkPixmap.h"
@@ -16,9 +17,11 @@
 #include <memory>
 #include <mutex>
 #include <numbers>
+#include <optional>
 #include <span>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace {
 
@@ -456,6 +459,7 @@ bool testPredecodeAndAudioClock(const std::string& mediaPath,
     }
 
     const skui::MediaPlaybackState prepared = player->state();
+    const sk_sp<SkImage> preparedFrame = player->currentFrame();
     if (expectVp9Alpha) {
         SkPixmap pixels;
         const sk_sp<SkImage> frame = player->currentFrame();
@@ -473,12 +477,15 @@ bool testPredecodeAndAudioClock(const std::string& mediaPath,
         }
     }
 
-    if (!check(player->currentFrame() != nullptr,
+    if (!check(preparedFrame != nullptr,
                "explicit predecode should expose the first frame") ||
         !check(prepared.bufferedVideoFrames >= 3,
                "explicit predecode should fill the requested frame count") ||
         !check(prepared.videoWidth > 0 && prepared.videoHeight > 0,
                "decoded metadata should include video dimensions") ||
+        !check(preparedFrame && preparedFrame->width() == prepared.videoWidth &&
+                   preparedFrame->height() == prepared.videoHeight,
+               "decoded frame dimensions should match video metadata") ||
         !check(!prepared.decoderName.empty(),
                "decoded metadata should expose the selected decoder")) {
         return false;
@@ -556,6 +563,75 @@ bool testPredecodeAndAudioClock(const std::string& mediaPath,
     return true;
 }
 
+bool testRuntimeVideoFillsExplicitBox(const std::string& mediaPath) {
+    skui::RuntimeOptions options;
+    options.clearColor = SK_ColorGREEN;
+    options.videoPredecodeFrames = 1;
+    options.mediaPlayerFactory = skui::ffmpeg::makeMediaPlayerFactory();
+    skui::Runtime runtime(std::move(options));
+    bool ok = check(runtime.loadDocumentFromString(R"html(
+<html><head><style>
+html, body, .video-test {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background-color: #00ff00;
+}
+.video-test-video {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 100%;
+}
+</style></head><body>
+  <div class="video-test">
+    <video id="clip" class="video-test-video" preload="auto"></video>
+  </div>
+</body></html>)html"),
+                    "runtime video document should load");
+    ok = check(runtime.setAttributeById("clip", "data-predecode-frames", "1"),
+               "runtime video should accept its predecode count") && ok;
+    ok = check(runtime.setAttributeById("clip", "src", mediaPath),
+               "runtime video should accept its dynamic source") && ok;
+    ok = check(runtime.prepareVideoById("clip"),
+               "runtime video should begin predecode") && ok;
+    ok = check(runtime.playVideoById("clip"),
+               "runtime video should begin playback") && ok;
+    runtime.resize(160, 100, 1.0f);
+
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    bool frameReady = false;
+    while (std::chrono::steady_clock::now() < deadline) {
+        (void)runtime.tick(0.01f);
+        const std::optional<skui::MediaPlaybackState> state =
+            runtime.videoStateById("clip");
+        if (state && state->bufferedVideoFrames > 0) {
+            frameReady = true;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    ok = check(frameReady, "runtime video should publish a decoded frame") && ok;
+
+    std::vector<uint32_t> pixels(160 * 100, 0);
+    ok = check(runtime.renderToBgraPixels(
+                   pixels.data(), 160, 100, 160 * sizeof(uint32_t), 1.0f),
+               "runtime video should render through Skia") && ok;
+    size_t fallbackPixels = 0;
+    for (int x = 0; x < 160; ++x) {
+        if (pixels[95 * 160 + x] == 0xFF00FF00u) {
+            ++fallbackPixels;
+        }
+    }
+    ok = check(fallbackPixels < 8,
+               "runtime video should cover the bottom of its explicit box") && ok;
+    return ok;
+}
+
 bool testLoopKeepsAFrameAcrossBoundaries(const std::string& mediaPath) {
     const skui::MediaPlayerFactory factory =
         skui::ffmpeg::makeMediaPlayerFactory();
@@ -620,6 +696,9 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (!testPredecodeAndAudioClock(argv[1], expectVp9Alpha)) {
+        return 1;
+    }
+    if (!testRuntimeVideoFillsExplicitBox(argv[1])) {
         return 1;
     }
     if (expectVp9Alpha && !testLoopKeepsAFrameAcrossBoundaries(argv[1])) {

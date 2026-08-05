@@ -3334,6 +3334,66 @@ int main() {
     ok = expect(squareBottomLeft == solidColor(0xAB, 0xCD, 0xEF), "border-radius shorthand should keep the bottom-left corner square") && ok;
     ok = expect(squareBottomRight == solidColor(0xAB, 0xCD, 0xEF), "border-radius shorthand should keep the bottom-right corner square") && ok;
 
+    constexpr std::string_view mixedColorRoundedBorderHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      position: relative;
+      width: 140px;
+      height: 90px;
+      background-color: #000000;
+    }
+    .spinner {
+      position: absolute;
+      left: 10px;
+      top: 10px;
+      box-sizing: border-box;
+      width: 30px;
+      height: 30px;
+      border: 4px solid #666666;
+      border-top: 4px solid #ffffff;
+      border-radius: 50%;
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <div class="spinner"></div>
+  </div>
+</body>
+</html>
+)html";
+    skui::Runtime mixedColorRoundedBorderRuntime(options);
+    mixedColorRoundedBorderRuntime.resize(kWidth, kHeight, 1.0f);
+    if (!mixedColorRoundedBorderRuntime.loadDocumentFromString(
+            mixedColorRoundedBorderHtml,
+            "")) {
+        std::cerr << "mixed-color rounded border load failed: "
+                  << mixedColorRoundedBorderRuntime.lastError() << "\n";
+        return 1;
+    }
+    std::vector<uint32_t> mixedColorRoundedBorderPixels;
+    ok = renderPixels(mixedColorRoundedBorderRuntime,
+                      mixedColorRoundedBorderPixels) && ok;
+    ok = expect(pixelAt(mixedColorRoundedBorderPixels, 10, 10) ==
+                    solidColor(0x00, 0x00, 0x00) &&
+                    pixelAt(mixedColorRoundedBorderPixels, 25, 25) ==
+                    solidColor(0x00, 0x00, 0x00),
+                "rounded borders should preserve the outer corner and inner hole") &&
+         ok;
+    ok = expect(pixelAt(mixedColorRoundedBorderPixels, 25, 11) ==
+                    solidColor(0xFF, 0xFF, 0xFF) &&
+                    pixelAt(mixedColorRoundedBorderPixels, 11, 25) ==
+                    solidColor(0x66, 0x66, 0x66),
+                "rounded borders should preserve each side color") &&
+         ok;
+    ok = expect(pixelAt(mixedColorRoundedBorderPixels, 16, 17) !=
+                    solidColor(0x00, 0x00, 0x00),
+                "mixed-color rounded borders should keep a rounded inner edge") &&
+         ok;
+
     constexpr std::string_view highDpiRoundedBoxHtml = R"html(
 <!doctype html>
 <html>
