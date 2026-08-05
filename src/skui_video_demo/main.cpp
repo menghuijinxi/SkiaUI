@@ -232,6 +232,20 @@ void pauseSequence(skui::Runtime& runtime, DemoState& state) {
     }
 }
 
+bool switchToLoop(skui::Runtime& runtime, DemoState& state) {
+    runtime.pauseVideoById("intro-video");
+
+    // 循环片段已提前解码；同一帧切换可见节点即可直接显示缓存中的首帧。
+    setSequenceVideo(runtime, false);
+    if (!runtime.playVideoById("loop-video")) {
+        state.sequencePhase = SequencePhase::Failed;
+        return false;
+    }
+
+    state.sequencePhase = SequencePhase::LoopPlaying;
+    return true;
+}
+
 void advanceSequence(skui::Runtime& runtime, DemoState& state) {
     const std::optional<skui::MediaPlaybackState> intro =
         runtime.videoStateById("intro-video");
@@ -253,13 +267,7 @@ void advanceSequence(skui::Runtime& runtime, DemoState& state) {
         return;
     }
 
-    // loop-video 已经显式预解码；切换可见节点后，同一渲染帧直接使用其首帧。
-    setSequenceVideo(runtime, false);
-    if (!runtime.playVideoById("loop-video")) {
-        state.sequencePhase = SequencePhase::Failed;
-        return;
-    }
-    state.sequencePhase = SequencePhase::LoopPlaying;
+    (void)switchToLoop(runtime, state);
 }
 
 void refreshTelemetry(skui::Runtime& runtime,
@@ -352,6 +360,8 @@ void installInteractions(skui::Runtime& runtime, DemoState& state) {
                 selectFrameRate(runtime, state, value);
             } else if (event.action == "play-sequence") {
                 beginSequence(runtime, state);
+            } else if (event.action == "skip-to-loop") {
+                switchToLoop(runtime, state);
             } else if (event.action == "pause-sequence") {
                 pauseSequence(runtime, state);
             } else if (event.action == "play-logo") {
