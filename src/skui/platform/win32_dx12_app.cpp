@@ -526,6 +526,24 @@ private:
             return 0;
         }
 
+        if (message == WM_MOUSEWHEEL || message == WM_MOUSEHWHEEL) {
+            app->framePacing_.noteWheelInput();
+        } else if (message == WM_MOUSEMOVE && (wParam & MK_LBUTTON) != 0) {
+            app->framePacing_.notePointerDragInput();
+        }
+
+        if (app->options_.enableWin32Input) {
+            if (const std::optional<LRESULT> result =
+                    app->eventAdapter_.handleMessage(hwnd, message, wParam, lParam)) {
+                if (message == WM_MOUSEMOVE &&
+                    GetCapture() == hwnd &&
+                    app->frameDirty_) {
+                    app->requestRepaint(hwnd, true);
+                }
+                return *result;
+            }
+        }
+
         if (app->options_.onWindowMessage &&
             app->options_.onWindowMessage(
                 hwnd,
@@ -536,22 +554,6 @@ private:
             app->markFrameDirty();
             app->requestRepaint(hwnd, false);
             return 0;
-        }
-
-        if (message == WM_MOUSEWHEEL || message == WM_MOUSEHWHEEL) {
-            app->framePacing_.noteWheelInput();
-        } else if (message == WM_MOUSEMOVE && (wParam & MK_LBUTTON) != 0) {
-            app->framePacing_.notePointerDragInput();
-        }
-
-        if (const std::optional<LRESULT> result =
-                app->eventAdapter_.handleMessage(hwnd, message, wParam, lParam)) {
-            if (message == WM_MOUSEMOVE &&
-                GetCapture() == hwnd &&
-                app->frameDirty_) {
-                app->requestRepaint(hwnd, true);
-            }
-            return *result;
         }
 
         switch (message) {
@@ -603,7 +605,7 @@ private:
             return 0;
         }
         case WM_KEYDOWN:
-            if (wParam == VK_ESCAPE) {
+            if (app->options_.enableWin32Input && wParam == VK_ESCAPE) {
                 DestroyWindow(hwnd);
                 return 0;
             }

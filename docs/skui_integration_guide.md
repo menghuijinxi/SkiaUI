@@ -310,6 +310,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCmd) {
     options.runtime.assetRoot = "assets/ui";
     options.useSystemDpiScale = true;
     options.useSystemTextScale = true;
+    options.enableWin32Input = true;
     options.runtime.scale = 1.0f;
     options.onRuntimeReady = [](skui::Runtime& ui) {
         ui.setElementEventCallback([&ui](const skui::ElementEvent& event) {
@@ -330,7 +331,22 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCmd) {
 
 `RuntimeOptions::textScale` 是宿主提供的手动内容文字倍率，默认 `1.0f`。它不会直接改写各节点的 `font-size`，而是作为独立的辅助功能倍率合入 Runtime 的有效倍率。Win32 系统文本缩放开启时，实际文字倍率为“系统文字倍率乘以 `RuntimeOptions::textScale`”；关闭时只使用 `RuntimeOptions::textScale`。自定义宿主可以调用 `Runtime::setTextScale(textScale)` 动态更新，`Runtime::textScale()` 返回当前文字倍率。
 
-`WindowOptions::onWindowMessage` 是可选的宿主消息扩展点。回调返回 `true` 时表示消息已处理，宿主会标记画面为脏并请求重绘；菜单命令、文件拖放和工具级快捷键可以放在这里，普通 SkUI 输入仍由内置 Win32 事件适配器处理。
+`WindowOptions::enableWin32Input` 控制是否启用内置 `Win32EventAdapter`，默认是 `true`。启用时，适配器先把鼠标、键盘和 IME 消息交给 SkUI；只有 SkUI 实际消费的消息才会在窗口层拦截。未消费的消息继续进入 `WindowOptions::onWindowMessage`，回调返回 `false` 后再交给 `DefWindowProcW`。这样宿主自己的输入系统可以接收 UI 没有处理的消息。
+
+如果目标程序已经有完整输入系统，应关闭内置接管并自行处理窗口消息：
+
+```cpp
+options.enableWin32Input = false;
+options.onWindowMessage = [](HWND hwnd,
+                             UINT message,
+                             WPARAM wParam,
+                             LPARAM lParam,
+                             skui::Runtime&) {
+    return applicationInputSystem(hwnd, message, wParam, lParam);
+};
+```
+
+`WindowOptions::onWindowMessage` 返回 `true` 时表示宿主已经消费消息，窗口会标记画面为脏并请求重绘；菜单命令、文件拖放和工具级快捷键也可以放在这里。启用内置输入时，宿主回调不会抢先截获已被 SkUI 消费的输入。
 
 `RuntimeOptions::scale` 是 SkUI 自身的用户缩放倍率，默认 `1.0f`。最终生效倍率为“Win32 系统 DPI 倍率（如果启用）乘以 `RuntimeOptions::scale`，再乘以实际文字倍率”。因此：
 

@@ -11,6 +11,7 @@
 
 #include <windows.h>
 
+#include <bitset>
 #include <functional>
 #include <optional>
 #include <string>
@@ -32,11 +33,14 @@ public:
 
 private:
     void notifyRuntimeDirty() const;
-    void sendMouseEvent(EventType type,
-                        LPARAM lParam,
-                        MouseButton button = MouseButton::None);
-    void sendWheelEvent(HWND hwnd, WPARAM wParam, LPARAM lParam, bool horizontal);
-    [[nodiscard]] bool sendKeyEvent(WPARAM key);
+    [[nodiscard]] bool sendMouseEvent(EventType type,
+                                       LPARAM lParam,
+                                       MouseButton button = MouseButton::None);
+    [[nodiscard]] bool sendWheelEvent(HWND hwnd,
+                                      WPARAM wParam,
+                                      LPARAM lParam,
+                                      bool horizontal);
+    [[nodiscard]] bool sendKeyEvent(EventType type, WPARAM key);
     [[nodiscard]] bool sendImeEvent(EventType type, std::string text = {});
     [[nodiscard]] bool sendTextInputEvent(std::string text);
     void updateImePosition(HWND hwnd) const;
@@ -46,6 +50,9 @@ private:
     Runtime& runtime_;
     std::function<void()> onRuntimeDirty_;
     bool trackingMouseLeave_ = false;
+    bool captureOwned_ = false;
+    MouseButton capturedButton_ = MouseButton::None;
+    std::bitset<256> consumedKeys_;
     std::wstring suppressedImeChars_;
     HCURSOR currentCursor_ = nullptr;
 };

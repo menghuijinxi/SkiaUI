@@ -1673,12 +1673,94 @@ int main() {
             ok = expect(normal != active,
                         "win32 adapter mouse down should render the active state") && ok;
 
+            const std::optional<LRESULT> capturedMoveResult =
+                adapter.handleMessage(window.hwnd(),
+                                      WM_MOUSEMOVE,
+                                      MK_LBUTTON,
+                                      MAKELPARAM(100, 70));
+            ok = expect(capturedMoveResult.has_value() && *capturedMoveResult == 0,
+                        "win32 adapter should keep captured mouse moves in the UI") && ok;
+
             const std::optional<LRESULT> upResult =
                 adapter.handleMessage(window.hwnd(), WM_LBUTTONUP, 0, MAKELPARAM(20, 20));
             ok = expect(upResult.has_value() && *upResult == 0,
                         "win32 adapter should consume left button up") && ok;
             ok = expect(clicks == 1,
                         "win32 adapter should emit click after left button up") && ok;
+
+            SetFocus(nullptr);
+            const std::optional<LRESULT> passThroughDown =
+                adapter.handleMessage(window.hwnd(),
+                                      WM_LBUTTONDOWN,
+                                      0,
+                                      MAKELPARAM(100, 70));
+            ok = expect(!passThroughDown.has_value(),
+                        "win32 adapter should pass through unconsumed mouse down") && ok;
+            ok = expect(GetCapture() != window.hwnd() &&
+                            GetFocus() != window.hwnd(),
+                        "unconsumed mouse down should not capture or focus the host") && ok;
+
+            const std::optional<LRESULT> passThroughUp =
+                adapter.handleMessage(window.hwnd(),
+                                      WM_LBUTTONUP,
+                                      0,
+                                      MAKELPARAM(100, 70));
+            ok = expect(!passThroughUp.has_value(),
+                        "win32 adapter should pass through unconsumed mouse up") && ok;
+
+            const std::optional<LRESULT> passThroughWheel =
+                adapter.handleMessage(window.hwnd(),
+                                      WM_MOUSEWHEEL,
+                                      MAKEWPARAM(0, WHEEL_DELTA),
+                                      MAKELPARAM(100, 70));
+            ok = expect(!passThroughWheel.has_value(),
+                        "win32 adapter should pass through unconsumed mouse wheel") && ok;
+
+            const std::optional<LRESULT> passThroughKeyDown =
+                adapter.handleMessage(window.hwnd(), WM_KEYDOWN, VK_F1, 0);
+            ok = expect(!passThroughKeyDown.has_value(),
+                        "win32 adapter should pass through unconsumed key down") && ok;
+            const std::optional<LRESULT> passThroughKeyUp =
+                adapter.handleMessage(window.hwnd(), WM_KEYUP, VK_F1, 0);
+            ok = expect(!passThroughKeyUp.has_value(),
+                        "win32 adapter should pass through key up") && ok;
+        }
+    }
+
+    {
+        constexpr std::string_view keyboardHtml = R"html(
+<html><body>
+  <input id="editor" style="width:80px;height:24px" value="abc">
+</body></html>
+)html";
+        skui::Runtime keyboardRuntime(options);
+        keyboardRuntime.resize(kWidth, kHeight, 1.0f);
+        ok = expect(keyboardRuntime.loadDocumentFromString(keyboardHtml, ""),
+                    "win32 adapter keyboard document should load") && ok;
+        skui::win32::Win32EventAdapter keyboardAdapter(keyboardRuntime);
+        TestWin32Window window;
+        ok = expect(window.hwnd() != nullptr,
+                    "win32 adapter keyboard test window should be created") && ok;
+        if (window.hwnd()) {
+            const std::optional<LRESULT> focusResult =
+                keyboardAdapter.handleMessage(window.hwnd(),
+                                              WM_LBUTTONDOWN,
+                                              MK_LBUTTON,
+                                              MAKELPARAM(10, 10));
+            ok = expect(focusResult.has_value() && *focusResult == 0,
+                        "win32 adapter should focus editable controls") && ok;
+            (void)keyboardAdapter.handleMessage(window.hwnd(),
+                                                WM_LBUTTONUP,
+                                                0,
+                                                MAKELPARAM(10, 10));
+            const std::optional<LRESULT> keyDownResult =
+                keyboardAdapter.handleMessage(window.hwnd(), WM_KEYDOWN, VK_LEFT, 0);
+            ok = expect(keyDownResult.has_value() && *keyDownResult == 0,
+                        "win32 adapter should consume editable key down") && ok;
+            const std::optional<LRESULT> keyUpResult =
+                keyboardAdapter.handleMessage(window.hwnd(), WM_KEYUP, VK_LEFT, 0);
+            ok = expect(keyUpResult.has_value() && *keyUpResult == 0,
+                        "win32 adapter should keep key up paired with consumed key down") && ok;
         }
     }
 #endif

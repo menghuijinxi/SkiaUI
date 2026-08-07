@@ -466,73 +466,154 @@ std::optional<LRESULT> Win32EventAdapter::handleMessage(HWND hwnd,
                                                         UINT message,
                                                         WPARAM wParam,
                                                         LPARAM lParam) {
+    const auto handleMousePress = [&](EventType type,
+                                      MouseButton button) {
+        const bool consumed = sendMouseEvent(type, lParam, button);
+        if (consumed) {
+            beginMousePress(hwnd);
+            captureOwned_ = true;
+            capturedButton_ = button;
+            updateImePosition(hwnd);
+        }
+        return consumed;
+    };
+    const auto handleMouseRelease = [&](MouseButton button) {
+        const bool hadCapture = captureOwned_;
+        const bool consumed = sendMouseEvent(EventType::MouseUp, lParam, button);
+        if (hadCapture) {
+            captureOwned_ = false;
+            capturedButton_ = MouseButton::None;
+            if (GetCapture() == hwnd) {
+                ReleaseCapture();
+            }
+        }
+        return consumed || hadCapture;
+    };
+    const auto cancelMouseCapture = [&]() {
+        if (!captureOwned_) {
+            return;
+        }
+        const MouseButton button = capturedButton_;
+        captureOwned_ = false;
+        capturedButton_ = MouseButton::None;
+        if (GetCapture() == hwnd) {
+            ReleaseCapture();
+        }
+        (void)sendMouseEvent(EventType::MouseUp,
+                             MAKELPARAM(static_cast<short>(-32768),
+                                        static_cast<short>(-32768)),
+                             button);
+    };
+
     switch (message) {
     case WM_MOUSEMOVE:
         beginMouseLeaveTracking(hwnd);
-        sendMouseEvent(EventType::MouseMove, lParam);
-        return 0;
+        if (sendMouseEvent(EventType::MouseMove, lParam) || captureOwned_) {
+            return 0;
+        }
+        break;
     case WM_MOUSELEAVE:
         trackingMouseLeave_ = false;
-        sendMouseEvent(EventType::MouseLeave, lParam);
-        return 0;
+        if (sendMouseEvent(EventType::MouseLeave, lParam) || captureOwned_) {
+            return 0;
+        }
+        break;
+    case WM_CAPTURECHANGED:
+        if (reinterpret_cast<HWND>(lParam) != hwnd) {
+            cancelMouseCapture();
+        }
+        break;
+    case WM_CANCELMODE:
+        cancelMouseCapture();
+        break;
     case WM_SETCURSOR:
         if (LOWORD(lParam) == HTCLIENT) {
             updateCursor();
-            return TRUE;
+            const Cursor cursor = runtime_.cursor();
+            if (cursor != Cursor::Auto && cursor != Cursor::Default) {
+                return TRUE;
+            }
         }
         break;
     case WM_LBUTTONDOWN:
-        beginMousePress(hwnd);
-        sendMouseEvent(EventType::MouseDown, lParam, MouseButton::Left);
-        updateImePosition(hwnd);
-        return 0;
+        if (handleMousePress(EventType::MouseDown, MouseButton::Left)) {
+            return 0;
+        }
+        break;
     case WM_LBUTTONDBLCLK:
-        beginMousePress(hwnd);
-        sendMouseEvent(EventType::MouseDoubleClick, lParam, MouseButton::Left);
-        updateImePosition(hwnd);
-        return 0;
+        if (handleMousePress(EventType::MouseDoubleClick, MouseButton::Left)) {
+            return 0;
+        }
+        break;
     case WM_LBUTTONUP:
-        if (GetCapture() == hwnd) {
-            ReleaseCapture();
+        if (handleMouseRelease(MouseButton::Left)) {
+            return 0;
         }
-        sendMouseEvent(EventType::MouseUp, lParam, MouseButton::Left);
-        return 0;
+        break;
     case WM_MBUTTONDOWN:
-        beginMousePress(hwnd);
-        sendMouseEvent(EventType::MouseDown, lParam, MouseButton::Middle);
-        return 0;
+        if (handleMousePress(EventType::MouseDown, MouseButton::Middle)) {
+            return 0;
+        }
+        break;
     case WM_MBUTTONUP:
-        if (GetCapture() == hwnd) {
-            ReleaseCapture();
+        if (handleMouseRelease(MouseButton::Middle)) {
+            return 0;
         }
-        sendMouseEvent(EventType::MouseUp, lParam, MouseButton::Middle);
-        return 0;
+        break;
     case WM_RBUTTONDOWN:
-        beginMousePress(hwnd);
-        sendMouseEvent(EventType::MouseDown, lParam, MouseButton::Right);
-        return 0;
-    case WM_RBUTTONUP:
-        if (GetCapture() == hwnd) {
-            ReleaseCapture();
+        if (handleMousePress(EventType::MouseDown, MouseButton::Right)) {
+            return 0;
         }
-        sendMouseEvent(EventType::MouseUp, lParam, MouseButton::Right);
-        return 0;
+        break;
+    case WM_RBUTTONUP:
+        if (handleMouseRelease(MouseButton::Right)) {
+            return 0;
+        }
+        break;
     case WM_MOUSEWHEEL:
-        sendWheelEvent(hwnd, wParam, lParam, false);
+        if (sendWheelEvent(hwnd, wParam, lParam, false)) {
+            updateImePosition(hwnd);
+            return 0;
+        }
         updateImePosition(hwnd);
-        return 0;
+        break;
     case WM_MOUSEHWHEEL:
-        sendWheelEvent(hwnd, wParam, lParam, true);
+        if (sendWheelEvent(hwnd, wParam, lParam, true)) {
+            updateImePosition(hwnd);
+            return 0;
+        }
         updateImePosition(hwnd);
-        return 0;
-    case WM_KEYDOWN: {
-        const bool consumed = sendKeyEvent(wParam);
+        break;
+    case WM_KEYDOWN:
+    case WM_SYSKEYDOWN: {
+        const bool consumed = sendKeyEvent(EventType::KeyDown, wParam);
         updateImePosition(hwnd);
         if (consumed) {
+            if (wParam < consumedKeys_.size()) {
+                consumedKeys_.set(wParam);
+            }
             return 0;
         }
         break;
     }
+    case WM_KEYUP:
+    case WM_SYSKEYUP: {
+        const bool hadConsumedKeyDown = wParam < consumedKeys_.size() &&
+                                        consumedKeys_.test(wParam);
+        if (wParam < consumedKeys_.size()) {
+            consumedKeys_.reset(wParam);
+        }
+        if (sendKeyEvent(EventType::KeyUp, wParam) || hadConsumedKeyDown) {
+            updateImePosition(hwnd);
+            return 0;
+        }
+        updateImePosition(hwnd);
+        break;
+    }
+    case WM_KILLFOCUS:
+        consumedKeys_.reset();
+        cancelMouseCapture();
+        break;
     case WM_CHAR:
         if (!suppressedImeChars_.empty() &&
             static_cast<wchar_t>(wParam) == suppressedImeChars_.front()) {
@@ -548,28 +629,37 @@ std::optional<LRESULT> Win32EventAdapter::handleMessage(HWND hwnd,
         break;
     case WM_IME_STARTCOMPOSITION:
         updateImePosition(hwnd);
-        return 0;
+        break;
     case WM_IME_COMPOSITION:
         updateImePosition(hwnd);
         if (lParam & GCS_RESULTSTR) {
+            bool consumed = false;
             const std::wstring result = imeCompositionString(hwnd, GCS_RESULTSTR);
             if (!result.empty()) {
-                suppressedImeChars_ += result;
-                (void)sendTextInputEvent(utf8FromWide(result));
+                consumed = sendTextInputEvent(utf8FromWide(result));
+                if (consumed) {
+                    suppressedImeChars_ += result;
+                }
             }
-            (void)sendImeEvent(EventType::ImeEnd);
+            consumed = sendImeEvent(EventType::ImeEnd) || consumed;
             updateImePosition(hwnd);
-            return 0;
+            if (consumed) {
+                return 0;
+            }
+            break;
         }
         if (lParam & GCS_COMPSTR) {
-            (void)sendImeEvent(EventType::ImeComposition,
-                               utf8FromWide(imeCompositionString(hwnd, GCS_COMPSTR)));
-            return 0;
+            if (sendImeEvent(EventType::ImeComposition,
+                             utf8FromWide(imeCompositionString(hwnd, GCS_COMPSTR)))) {
+                return 0;
+            }
         }
         break;
     case WM_IME_ENDCOMPOSITION:
-        (void)sendImeEvent(EventType::ImeEnd);
-        return 0;
+        if (sendImeEvent(EventType::ImeEnd)) {
+            return 0;
+        }
+        break;
     case WM_IME_REQUEST:
         if (wParam == IMR_QUERYCHARPOSITION &&
             queryImeCharacterPosition(hwnd, lParam)) {
@@ -605,9 +695,9 @@ void Win32EventAdapter::notifyRuntimeDirty() const {
     }
 }
 
-void Win32EventAdapter::sendMouseEvent(EventType type,
-                                      LPARAM lParam,
-                                      MouseButton button) {
+bool Win32EventAdapter::sendMouseEvent(EventType type,
+                                       LPARAM lParam,
+                                       MouseButton button) {
     Event event;
     event.type = type;
     event.button = button;
@@ -617,15 +707,16 @@ void Win32EventAdapter::sendMouseEvent(EventType type,
         event.x = static_cast<float>(GET_X_LPARAM(lParam));
         event.y = static_cast<float>(GET_Y_LPARAM(lParam));
     }
-    runtime_.handleEvent(event);
+    const bool consumed = runtime_.handleEvent(event);
     updateCursor();
     notifyRuntimeDirty();
+    return consumed;
 }
 
-void Win32EventAdapter::sendWheelEvent(HWND hwnd,
-                                      WPARAM wParam,
-                                      LPARAM lParam,
-                                      bool horizontal) {
+bool Win32EventAdapter::sendWheelEvent(HWND hwnd,
+                                       WPARAM wParam,
+                                       LPARAM lParam,
+                                       bool horizontal) {
     POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
     ScreenToClient(hwnd, &point);
     Event event;
@@ -635,13 +726,14 @@ void Win32EventAdapter::sendWheelEvent(HWND hwnd,
     event.wheelDelta = static_cast<float>(GET_WHEEL_DELTA_WPARAM(wParam));
     event.shiftKey = horizontal || (GetKeyState(VK_SHIFT) & 0x8000) != 0;
     event.ctrlKey = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
-    runtime_.handleEvent(event);
+    const bool consumed = runtime_.handleEvent(event);
     notifyRuntimeDirty();
+    return consumed;
 }
 
-bool Win32EventAdapter::sendKeyEvent(WPARAM key) {
+bool Win32EventAdapter::sendKeyEvent(EventType type, WPARAM key) {
     Event event;
-    event.type = EventType::KeyDown;
+    event.type = type;
     event.key = static_cast<unsigned>(key);
     event.shiftKey = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
     event.ctrlKey = (GetKeyState(VK_CONTROL) & 0x8000) != 0;

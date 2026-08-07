@@ -33,6 +33,14 @@
 - 可复用经验：自绘 Win32 host 一旦选择消费鼠标消息并跳过 `DefWindowProc` 的默认处理，就必须显式补齐窗口激活、焦点、capture 和重绘调度这些平台边界行为。
 - 参考文档：[SetFocus](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setfocus)、[WM_MOUSEACTIVATE](https://learn.microsoft.com/en-us/windows/win32/inputdev/wm-mouseactivate)。
 
+## Win32 输入接管与宿主输入透传
+
+- 现象：SkUI 窗口启用自绘输入后，鼠标或键盘消息在 UI 和应用输入系统之间交替丢失；应用无法稳定收到 UI 未使用的鼠标消息。
+- 根因：`Win32EventAdapter` 过去对大部分鼠标、滚轮和 IME 消息无条件返回 `0`，即使 `Runtime::handleEvent` 没有消费；窗口层也没有提供关闭内置输入接管的选项。
+- 最终方案：`Win32EventAdapter` 只在 Runtime 返回已消费时拦截平台消息；UI 未消费的消息继续进入 `WindowOptions::onWindowMessage`。新增 `WindowOptions::enableWin32Input`，关闭后由宿主完全负责输入。鼠标 capture 和 focus 只在 UI 消费按下事件后建立，IME 结果字符只在文本事件被消费时抑制。
+- 验证方式：适配器测试覆盖已消费按钮输入、未消费鼠标按下/抬起、滚轮、键盘按下和键盘抬起的透传结果；构建后运行 `SkuiInteractionTests`。
+- 可复用经验：平台适配层的返回值必须来自实际 UI 消费结果，不能用“消息类型属于输入”替代消费判定；可选输入系统应在窗口边界提供明确开关，而不是要求宿主绕过整个窗口封装。
+
 ## 持续动画让 Win32 窗口显示正常但无法交互
 
 - 现象：CSS 雪碧动画能够持续显示，但窗口拖动、按钮点击、键盘输入和关闭操作表现为无响应。

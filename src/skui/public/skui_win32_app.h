@@ -29,6 +29,7 @@ struct WindowOptions {
     int logicalHeight = 941;
     bool useSystemDpiScale = true;
     bool useSystemTextScale = true;
+    bool enableWin32Input = true;
     COLORREF clearColor = RGB(7, 12, 18);
     std::string documentPath;
     RuntimeOptions runtime;
