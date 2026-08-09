@@ -1629,6 +1629,47 @@ int main() {
 
 #ifdef _WIN32
     {
+        skui::Runtime adapterInputRuntime(options);
+        adapterInputRuntime.resize(kWidth, kHeight, 1.0f);
+        ok = expect(adapterInputRuntime.loadDocumentFromString(mouseDownTargetHtml),
+                    "win32 adapter input document should load") && ok;
+
+        std::string editorValue;
+        adapterInputRuntime.setElementEventCallback([&](const skui::ElementEvent& event) {
+            if (event.type == skui::ElementEventType::Input && event.id == "editor") {
+                editorValue = event.value;
+            }
+        });
+
+        skui::win32::Win32EventAdapter adapter(adapterInputRuntime);
+        TestWin32Window window;
+        ok = expect(window.hwnd() != nullptr,
+                    "win32 adapter input test window should be created") && ok;
+        if (window.hwnd()) {
+            SetFocus(nullptr);
+            const std::optional<LRESULT> downResult =
+                adapter.handleMessage(window.hwnd(),
+                                      WM_LBUTTONDOWN,
+                                      MK_LBUTTON,
+                                      MAKELPARAM(20, 78));
+            ok = expect(downResult.has_value() && *downResult == 0,
+                        "win32 adapter should consume editable mouse down") && ok;
+            ok = expect(GetFocus() == window.hwnd(),
+                        "editable mouse down should focus the host window") && ok;
+
+            const std::optional<LRESULT> upResult =
+                adapter.handleMessage(window.hwnd(), WM_LBUTTONUP, 0, MAKELPARAM(20, 78));
+            ok = expect(upResult.has_value() && *upResult == 0,
+                        "win32 adapter should consume editable mouse up") && ok;
+
+            const std::optional<LRESULT> charResult =
+                adapter.handleMessage(window.hwnd(), WM_CHAR, 'A', 0);
+            ok = expect(charResult.has_value() && *charResult == 0 && editorValue == "A",
+                        "focused input should consume WM_CHAR and update its value") && ok;
+        }
+    }
+
+    {
         skui::Runtime adapterRuntime(options);
         adapterRuntime.resize(kWidth, kHeight, 1.0f);
         ok = expect(adapterRuntime.loadDocumentFromString(html, ""),

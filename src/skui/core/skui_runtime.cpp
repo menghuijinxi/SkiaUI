@@ -4909,6 +4909,7 @@ bool Runtime::handleEvent(const Event& event) {
             }
             stateChanged = true;
             layoutNeeded = true;
+            consumed = true;
         } else if (Node* atomic = contentEditableAtomicTarget(hit)) {
             stateChanged = impl_->setFocusedNode(nullptr) || stateChanged;
             layoutNeeded = true;
