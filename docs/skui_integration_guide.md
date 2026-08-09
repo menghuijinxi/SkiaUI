@@ -579,7 +579,29 @@ ui.setElementEventCallback([&](const skui::ElementEvent& event) {
 ui.setValueById("layer-select", "road");
 ```
 
-option 的 `label` 可单独指定显示名；没有 `value` 时文本会作为值。当前实现只支持单选，不支持 `multiple`、`size`、`optgroup` 分组标题和表单提交。需要图标、多列内容或其他非标准菜单结构时，仍可用普通 DOM 自定义，并复用 `skui::DropdownState` 管理展开和选中状态。
+option 的 `label` 可单独指定显示名；没有 `value` 时文本会作为值。单选 select 使用顶层弹层，多选 select 使用浏览器式常驻列表框。
+
+标准复选框和单选框使用浏览器标签、属性和事件语义：
+
+```html
+<input id="visible" type="checkbox" name="visible" value="yes" checked>
+<input id="mode-road" type="radio" name="mode" value="road" checked>
+<input id="mode-satellite" type="radio" name="mode" value="satellite">
+```
+
+鼠标或 Space 改变状态时依次发出 `Click`、`Input`、`Change`。事件的 `checked` 表示当前勾选状态，缺少显式 `value` 的 checkbox / radio 按浏览器规则返回 `"on"`；同 `name` 的 radio 自动互斥，并支持方向键在组内循环切换。`<label for="...">` 和包裹控件的 label 都能激活关联项。动态 `setAttributeById` / `removeAttributeById` 同样会同步 `checked` 状态和 `:checked` 样式。
+
+浏览器中 `size` 大于 1 的单选 select 和标准多选都使用常驻列表框，而不是带复选框的下拉菜单：
+
+```html
+<select id="layer-select" multiple size="4">
+  <option value="parcel" selected>地块边界.shp</option>
+  <option value="road" selected>道路中心线.shp</option>
+  <option value="locked" disabled>只读图层.shp</option>
+</select>
+```
+
+多选列表支持 Ctrl/Shift 点击、滚轮、方向键、Home、End、Space 和 Ctrl+A。`event.value` 与浏览器 `select.value` 一样返回第一个选中值，全部选中值通过 `event.selectedValues` 按 option 顺序提供。当前仍不支持浏览器表单提交和 `optgroup` 分组标题；需要图标、多列内容或非标准多选下拉时，继续使用普通 DOM，并复用 `skui::DropdownState` 管理展开状态。
 
 ## 大量数据：虚拟滚动 / 窗口化渲染
 

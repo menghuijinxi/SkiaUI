@@ -625,9 +625,12 @@ struct Node {
     bool focused = false;
     bool editingFocused = false;
     bool atomicSelectionSelected = false;
+    bool checked = false;
     bool selectOpen = false;
     std::optional<size_t> selectedOptionIndex;
+    std::vector<size_t> selectedOptionIndices;
     std::optional<size_t> highlightedOptionIndex;
+    std::optional<size_t> selectAnchorOptionIndex;
     size_t selectPopupFirstOption = 0;
     ContentEditableFlowPosition contentEditableFlowPosition =
         ContentEditableFlowPosition::ParagraphStart;
@@ -898,6 +901,7 @@ private:
                              const Node& node,
                              const Rect& rect);
     void drawProgress(SkCanvas& canvas, const Node& node);
+    void drawCheckable(SkCanvas& canvas, const Node& node);
     void drawSelect(SkCanvas& canvas, const Node& node);
     void drawOpenSelectPopup(SkCanvas& canvas,
                              const Document& document,
@@ -994,8 +998,14 @@ bool isInlineFlowElement(std::string_view tag);
 bool usesInlineFlow(const Node& node);
 bool isContentEditableTextNode(const Node& node);
 bool isTextEditingNode(const Node& node);
+bool isCheckboxNode(const Node& node);
+bool isRadioNode(const Node& node);
+bool isCheckableNode(const Node& node);
 bool isSelectNode(const Node& node);
 bool isOptionNode(const Node& node);
+bool isMultipleSelect(const Node& node);
+bool isSelectListBox(const Node& node);
+size_t selectVisibleOptionCount(const Node& select);
 Node* owningSelect(Node* node);
 const Node* owningSelect(const Node* node);
 std::vector<Node*> selectOptions(Node& select);
@@ -1003,9 +1013,16 @@ std::vector<const Node*> selectOptions(const Node& select);
 std::string optionLabel(const Node& option);
 std::string optionValue(const Node& option);
 bool isOptionDisabled(const Node& option);
+bool isOptionSelected(const Node& select, size_t optionIndex);
+bool setCheckableState(Node& node, bool checked);
+void initializeCheckableStates(Node& node);
 bool initializeSelectState(Node& select);
 void initializeSelectStates(Node& node);
 bool selectOptionAt(Node& select, size_t optionIndex);
+bool toggleSelectOptionAt(Node& select,
+                         size_t optionIndex,
+                         bool additive,
+                         bool range);
 bool setSelectValue(Node& select, std::string_view value);
 void synchronizeSelectStatesAfterMutation(Node& node);
 Rect selectVisualRect(const Node& select);

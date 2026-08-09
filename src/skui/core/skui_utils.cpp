@@ -517,9 +517,31 @@ bool isContentEditableTextNode(const Node& node) {
 }
 
 bool isTextEditingNode(const Node& node) {
-    return node.tag == "input" ||
+    return (node.tag == "input" && !isCheckableNode(node)) ||
            node.tag == "textarea" ||
            isContentEditableTextNode(node);
+}
+
+bool isCheckboxNode(const Node& node) {
+    if (node.tag != "input") {
+        return false;
+    }
+    const auto type = node.attributes.find("type");
+    return type != node.attributes.end() &&
+           lowerAsciiText(trim(type->second)) == "checkbox";
+}
+
+bool isRadioNode(const Node& node) {
+    if (node.tag != "input") {
+        return false;
+    }
+    const auto type = node.attributes.find("type");
+    return type != node.attributes.end() &&
+           lowerAsciiText(trim(type->second)) == "radio";
+}
+
+bool isCheckableNode(const Node& node) {
+    return isCheckboxNode(node) || isRadioNode(node);
 }
 
 bool isSelectNode(const Node& node) {
@@ -528,6 +550,29 @@ bool isSelectNode(const Node& node) {
 
 bool isOptionNode(const Node& node) {
     return node.tag == "option";
+}
+
+bool isMultipleSelect(const Node& node) {
+    return isSelectNode(node) && node.attributes.contains("multiple");
+}
+
+size_t selectVisibleOptionCount(const Node& select) {
+    const auto size = select.attributes.find("size");
+    if (size != select.attributes.end()) {
+        size_t parsed = 0;
+        const char* begin = size->second.data();
+        const char* end = begin + size->second.size();
+        const auto result = std::from_chars(begin, end, parsed);
+        if (result.ec == std::errc{} && result.ptr == end && parsed > 0) {
+            return parsed;
+        }
+    }
+    return isMultipleSelect(select) ? 4 : 1;
+}
+
+bool isSelectListBox(const Node& node) {
+    return isSelectNode(node) &&
+           (isMultipleSelect(node) || selectVisibleOptionCount(node) > 1);
 }
 
 Node* owningSelect(Node* node) {
@@ -575,6 +620,17 @@ std::optional<size_t> lastOptionWithSelectedAttribute(
     for (size_t index = 0; index < options.size(); ++index) {
         if (options[index]->attributes.contains("selected")) {
             selected = index;
+        }
+    }
+    return selected;
+}
+
+std::vector<size_t> optionIndicesWithSelectedAttribute(
+    const std::vector<Node*>& options) {
+    std::vector<size_t> selected;
+    for (size_t index = 0; index < options.size(); ++index) {
+        if (options[index]->attributes.contains("selected")) {
+            selected.push_back(index);
         }
     }
     return selected;
@@ -633,6 +689,16 @@ std::string optionValue(const Node& option) {
     return value == option.attributes.end() ? optionText(option) : value->second;
 }
 
+bool isOptionSelected(const Node& select, size_t optionIndex) {
+    if (!isMultipleSelect(select)) {
+        return select.selectedOptionIndex &&
+               *select.selectedOptionIndex == optionIndex;
+    }
+    return std::find(select.selectedOptionIndices.begin(),
+                     select.selectedOptionIndices.end(),
+                     optionIndex) != select.selectedOptionIndices.end();
+}
+
 bool isOptionDisabled(const Node& option) {
     if (option.attributes.contains("disabled")) {
         return true;
@@ -648,6 +714,101 @@ bool isOptionDisabled(const Node& option) {
     return false;
 }
 
+namespace {
+
+Node* documentRoot(Node& node) {
+    Node* root = &node;
+    while (root->parent) {
+        root = root->parent;
+    }
+    return root;
+}
+
+bool sameRadioGroup(const Node& first, const Node& second) {
+    if (!isRadioNode(first) || !isRadioNode(second)) {
+        return false;
+    }
+    const auto firstName = first.attributes.find("name");
+    const auto secondName = second.attributes.find("name");
+    if (firstName == first.attributes.end() ||
+        secondName == second.attributes.end() ||
+        firstName->second.empty() || secondName->second.empty()) {
+        return false;
+    }
+    return firstName->second == secondName->second;
+}
+
+bool uncheckRadioGroup(Node& node, const Node& target) {
+    bool changed = false;
+    if (&node != &target && sameRadioGroup(node, target) && node.checked) {
+        node.checked = false;
+        node.attributes.erase("checked");
+        changed = true;
+    }
+    for (auto& child : node.children) {
+        changed = uncheckRadioGroup(*child, target) || changed;
+    }
+    return changed;
+}
+
+void normalizeRadioGroups(Node& node, std::vector<Node*>& checkedRadios) {
+    if (isRadioNode(node)) {
+        const bool attributeChecked = node.attributes.contains("checked");
+        node.checked = attributeChecked;
+        if (node.checked) {
+            bool replaced = false;
+            for (Node*& checkedRadio : checkedRadios) {
+                if (sameRadioGroup(*checkedRadio, node)) {
+                    checkedRadio->checked = false;
+                    checkedRadio->attributes.erase("checked");
+                    checkedRadio = &node;
+                    replaced = true;
+                    break;
+                }
+            }
+            if (!replaced) {
+                checkedRadios.push_back(&node);
+            }
+        }
+    }
+    for (auto& child : node.children) {
+        normalizeRadioGroups(*child, checkedRadios);
+    }
+}
+
+}  // namespace
+
+bool setCheckableState(Node& node, bool checked) {
+    if (!isCheckableNode(node)) {
+        return false;
+    }
+    bool changed = node.checked != checked;
+    node.checked = checked;
+    if (checked) {
+        changed = node.attributes.emplace("checked", "").second || changed;
+        if (isRadioNode(node)) {
+            changed = uncheckRadioGroup(*documentRoot(node), node) || changed;
+        }
+    } else {
+        changed = node.attributes.erase("checked") > 0 || changed;
+    }
+    return changed;
+}
+
+void initializeCheckableStates(Node& node) {
+    std::vector<Node*> checkedRadios;
+    normalizeRadioGroups(node, checkedRadios);
+    const auto initialize = [](Node& current, const auto& self) -> void {
+        if (isCheckboxNode(current)) {
+            current.checked = current.attributes.contains("checked");
+        }
+        for (auto& child : current.children) {
+            self(*child, self);
+        }
+    };
+    initialize(node, initialize);
+}
+
 bool selectOptionAt(Node& select, size_t optionIndex) {
     std::vector<Node*> options = selectOptions(select);
     if (optionIndex >= options.size()) {
@@ -656,7 +817,9 @@ bool selectOptionAt(Node& select, size_t optionIndex) {
 
     const std::string nextValue = optionValue(*options[optionIndex]);
     bool changed = select.selectedOptionIndex != optionIndex ||
-                   select.value != nextValue;
+                   select.value != nextValue ||
+                   select.selectedOptionIndices.size() != 1 ||
+                   select.selectedOptionIndices.front() != optionIndex;
     for (size_t index = 0; index < options.size(); ++index) {
         if (index == optionIndex) {
             changed = options[index]->attributes.emplace("selected", "").second ||
@@ -667,8 +830,68 @@ bool selectOptionAt(Node& select, size_t optionIndex) {
         }
     }
     select.selectedOptionIndex = optionIndex;
+    select.selectedOptionIndices = {optionIndex};
     select.highlightedOptionIndex = optionIndex;
+    select.selectAnchorOptionIndex = optionIndex;
     select.value = nextValue;
+    return changed;
+}
+
+bool toggleSelectOptionAt(Node& select,
+                          size_t optionIndex,
+                          bool additive,
+                          bool range) {
+    if (!isMultipleSelect(select)) {
+        return selectOptionAt(select, optionIndex);
+    }
+    std::vector<Node*> options = selectOptions(select);
+    if (optionIndex >= options.size() || isOptionDisabled(*options[optionIndex])) {
+        return false;
+    }
+
+    std::vector<size_t> next = select.selectedOptionIndices;
+    if (range && select.selectAnchorOptionIndex) {
+        if (!additive) {
+            next.clear();
+        }
+        const size_t begin = std::min(*select.selectAnchorOptionIndex, optionIndex);
+        const size_t end = std::max(*select.selectAnchorOptionIndex, optionIndex);
+        for (size_t index = begin; index <= end; ++index) {
+            if (!isOptionDisabled(*options[index]) &&
+                std::find(next.begin(), next.end(), index) == next.end()) {
+                next.push_back(index);
+            }
+        }
+    } else if (additive) {
+        const auto selected = std::find(next.begin(), next.end(), optionIndex);
+        if (selected == next.end()) {
+            next.push_back(optionIndex);
+        } else {
+            next.erase(selected);
+        }
+        select.selectAnchorOptionIndex = optionIndex;
+    } else {
+        next = {optionIndex};
+        select.selectAnchorOptionIndex = optionIndex;
+    }
+    std::sort(next.begin(), next.end());
+    const bool changed = next != select.selectedOptionIndices;
+    for (size_t index = 0; index < options.size(); ++index) {
+        const bool selected = std::find(next.begin(), next.end(), index) != next.end();
+        if (selected) {
+            options[index]->attributes["selected"] = {};
+        } else {
+            options[index]->attributes.erase("selected");
+        }
+    }
+    select.selectedOptionIndices = std::move(next);
+    select.selectedOptionIndex = select.selectedOptionIndices.empty()
+        ? std::nullopt
+        : std::optional<size_t>(select.selectedOptionIndices.front());
+    select.highlightedOptionIndex = optionIndex;
+    select.value = select.selectedOptionIndex
+        ? optionValue(*options[*select.selectedOptionIndex])
+        : std::string{};
     return changed;
 }
 
@@ -682,9 +905,41 @@ bool initializeSelectState(Node& select) {
                              select.highlightedOptionIndex.has_value() ||
                              !select.value.empty();
         select.selectedOptionIndex.reset();
+        select.selectedOptionIndices.clear();
         select.highlightedOptionIndex.reset();
+        select.selectAnchorOptionIndex.reset();
         select.selectPopupFirstOption = 0;
         select.value.clear();
+        return changed;
+    }
+
+    if (isMultipleSelect(select)) {
+        std::vector<size_t> selected =
+            optionIndicesWithSelectedAttribute(options);
+        const std::optional<size_t> selectedIndex = selected.empty()
+            ? std::nullopt
+            : std::optional<size_t>(selected.front());
+        const std::optional<size_t> highlighted = selectedIndex.or_else(
+            [&options] { return firstEnabledOption(options); });
+        const std::string value = selectedIndex
+            ? optionValue(*options[*selectedIndex])
+            : std::string{};
+        const size_t visible = selectVisibleOptionCount(select);
+        const size_t maxFirst = options.size() > visible
+            ? options.size() - visible
+            : 0;
+        const size_t first = std::min(select.selectPopupFirstOption, maxFirst);
+        const bool changed = select.selectedOptionIndices != selected ||
+                             select.selectedOptionIndex != selectedIndex ||
+                             select.highlightedOptionIndex != highlighted ||
+                             select.value != value ||
+                             select.selectPopupFirstOption != first;
+        select.selectedOptionIndices = std::move(selected);
+        select.selectedOptionIndex = selectedIndex;
+        select.highlightedOptionIndex = highlighted;
+        select.selectAnchorOptionIndex = selectedIndex;
+        select.selectPopupFirstOption = first;
+        select.value = value;
         return changed;
     }
 
@@ -696,7 +951,9 @@ bool initializeSelectState(Node& select) {
                              select.highlightedOptionIndex.has_value() ||
                              !select.value.empty();
         select.selectedOptionIndex.reset();
+        select.selectedOptionIndices.clear();
         select.highlightedOptionIndex.reset();
+        select.selectAnchorOptionIndex.reset();
         select.value.clear();
         return changed;
     }
@@ -721,12 +978,15 @@ bool setSelectValue(Node& select, std::string_view value) {
 
     bool changed = select.selectedOptionIndex.has_value() ||
                    select.highlightedOptionIndex.has_value() ||
+                   !select.selectedOptionIndices.empty() ||
                    !select.value.empty();
     for (Node* option : options) {
         changed = option->attributes.erase("selected") > 0 || changed;
     }
     select.selectedOptionIndex.reset();
+    select.selectedOptionIndices.clear();
     select.highlightedOptionIndex.reset();
+    select.selectAnchorOptionIndex.reset();
     select.value.clear();
     return changed;
 }
@@ -735,6 +995,8 @@ void synchronizeSelectStatesAfterMutation(Node& node) {
     if (isSelectNode(node)) {
         std::vector<Node*> options = selectOptions(node);
         if (options.empty()) {
+            initializeSelectState(node);
+        } else if (isMultipleSelect(node)) {
             initializeSelectState(node);
         } else if (const std::optional<size_t> selected =
                        lastOptionWithSelectedAttribute(options)) {

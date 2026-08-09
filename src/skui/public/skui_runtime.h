@@ -79,6 +79,8 @@ struct ElementEvent {
     std::string action;
     std::string text;
     std::string value;
+    std::vector<std::string> selectedValues;
+    bool checked = false;
     float x = 0.0f;
     float y = 0.0f;
     float scrollX = 0.0f;

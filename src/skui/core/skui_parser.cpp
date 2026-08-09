@@ -2306,14 +2306,44 @@ Style defaultStyleForNode(const Node& node) {
         style.textAlign = TextAlign::Center;
         style.flags.textAlign = true;
     }
+    if (isCheckableNode(node)) {
+        style.boxSizing = YGBoxSizingBorderBox;
+        style.flags.boxSizing = true;
+        style.width = Length{18.0f, LengthUnit::Px};
+        style.flags.width = true;
+        style.height = Length{18.0f, LengthUnit::Px};
+        style.flags.height = true;
+        style.padding.left = Length{0.0f, LengthUnit::Px};
+        style.padding.top = Length{0.0f, LengthUnit::Px};
+        style.padding.right = Length{0.0f, LengthUnit::Px};
+        style.padding.bottom = Length{0.0f, LengthUnit::Px};
+        style.flags.paddingLeft = true;
+        style.flags.paddingTop = true;
+        style.flags.paddingRight = true;
+        style.flags.paddingBottom = true;
+        style.color = SkColorSetRGB(32, 33, 36);
+        style.flags.color = true;
+    }
     if (node.tag == "select") {
         style.boxSizing = YGBoxSizingBorderBox;
         style.flags.boxSizing = true;
-        style.minHeight = Length{30.0f, LengthUnit::Px};
+        style.minHeight = Length{
+            isSelectListBox(node)
+                ? std::max(30.0f,
+                           24.0f * static_cast<float>(
+                               selectVisibleOptionCount(node)))
+                : 30.0f,
+            LengthUnit::Px};
         style.flags.minHeight = true;
         style.padding.left = Length{8.0f, LengthUnit::Px};
+        style.padding.top = Length{isSelectListBox(node) ? 4.0f : 0.0f,
+                                   LengthUnit::Px};
+        style.padding.bottom = Length{isSelectListBox(node) ? 4.0f : 0.0f,
+                                      LengthUnit::Px};
         style.padding.right = Length{30.0f, LengthUnit::Px};
         style.flags.paddingLeft = true;
+        style.flags.paddingTop = true;
+        style.flags.paddingBottom = true;
         style.flags.paddingRight = true;
         style.backgroundColor = SkColorSetRGB(255, 255, 255);
         style.flags.backgroundColor = true;
@@ -2336,6 +2366,10 @@ Style defaultStyleForNode(const Node& node) {
         style.overflowY = Overflow::Hidden;
         style.flags.overflowX = true;
         style.flags.overflowY = true;
+        if (isSelectListBox(node)) {
+            style.padding.right = Length{4.0f, LengthUnit::Px};
+            style.flags.paddingRight = true;
+        }
     }
     if (node.attributes.contains("disabled")) {
         style.cursor = Cursor::Default;
@@ -2457,7 +2491,7 @@ bool matchesPseudo(const Node& node, const std::string& pseudo) {
         return nodeHasAttribute(node, "disabled");
     }
     if (pseudo == "checked") {
-        return nodeHasAttribute(node, "checked") ||
+        return node.checked ||
                (isOptionNode(node) &&
                 nodeHasAttribute(node, "selected"));
     }
@@ -4531,6 +4565,7 @@ bool DocumentParser::loadString(std::string_view html,
     outDocument.cssEnvironment = std::move(environment);
     outDocument.basePath = std::string(basePath);
     outDocument.type = documentType;
+    initializeCheckableStates(*outDocument.root);
     initializeSelectStates(*outDocument.root);
     RuntimeOptions styleOptions;
     styleOptions.theme = theme_;

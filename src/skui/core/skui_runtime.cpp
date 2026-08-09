@@ -745,6 +745,52 @@ Node* selectableTextTarget(Node* leaf) {
     return nullptr;
 }
 
+Node* checkableTarget(Node* leaf) {
+    if (disabledTarget(leaf)) {
+        return nullptr;
+    }
+    for (Node* current = leaf; current; current = current->parent) {
+        if (isCheckableNode(*current)) {
+            return current;
+        }
+    }
+    return nullptr;
+}
+
+Node* firstCheckableDescendant(Node& node) {
+    if (isCheckableNode(node) && !isNodeDisabled(node)) {
+        return &node;
+    }
+    for (auto& child : node.children) {
+        if (Node* checkable = firstCheckableDescendant(*child)) {
+            return checkable;
+        }
+    }
+    return nullptr;
+}
+
+Node* associatedCheckableTarget(Node* leaf, Node& root) {
+    if (Node* checkable = checkableTarget(leaf)) {
+        return checkable;
+    }
+    for (Node* current = leaf; current; current = current->parent) {
+        if (current->tag != "label") {
+            continue;
+        }
+        const auto controlId = current->attributes.find("for");
+        if (controlId != current->attributes.end() &&
+            !controlId->second.empty()) {
+            Node* control = findById(root, controlId->second);
+            return control && isCheckableNode(*control) &&
+                           !isNodeDisabled(*control)
+                ? control
+                : nullptr;
+        }
+        return firstCheckableDescendant(*current);
+    }
+    return nullptr;
+}
+
 Node* selectTarget(Node* leaf) {
     if (disabledTarget(leaf)) {
         return nullptr;
@@ -791,6 +837,9 @@ Node* mouseEventTarget(Node* leaf) {
     if (Node* target = inputTarget(leaf)) {
         return target;
     }
+    if (Node* target = checkableTarget(leaf)) {
+        return target;
+    }
     if (Node* target = selectTarget(leaf)) {
         return target;
     }
@@ -804,6 +853,7 @@ bool isPointerConsumingTarget(Node* leaf) {
     return disabledTarget(leaf) ||
            actionTarget(leaf) ||
            inputTarget(leaf) ||
+           checkableTarget(leaf) ||
            selectTarget(leaf) ||
            optionTarget(leaf) ||
            selectableTextTarget(leaf);
@@ -1075,14 +1125,24 @@ ElementEvent makeElementEvent(ElementEventType type, const Node& node, const Eve
     event.text = node.text;
     if (isSelectNode(node)) {
         const std::vector<const Node*> options = selectOptions(node);
-        if (node.selectedOptionIndex &&
-            *node.selectedOptionIndex < options.size()) {
+        if (isMultipleSelect(node)) {
+            for (size_t index : node.selectedOptionIndices) {
+                if (index < options.size()) {
+                    event.selectedValues.push_back(optionValue(*options[index]));
+                }
+            }
+        }
+        if (node.selectedOptionIndex && *node.selectedOptionIndex < options.size()) {
             event.text = optionLabel(*options[*node.selectedOptionIndex]);
         }
     }
     event.value = isContentEditableEditingHost(node)
         ? editableTextContent(node)
         : node.value;
+    if (isCheckableNode(node) && !node.attributes.contains("value")) {
+        event.value = "on";
+    }
+    event.checked = node.checked;
     event.x = x;
     event.y = y;
     event.scrollX = node.scrollX;
@@ -1165,6 +1225,100 @@ std::optional<size_t> adjacentEnabledSelectOption(const Node& select,
         return std::nullopt;
     }
     return enabledSelectOptionFrom(select, current + 1, direction);
+}
+
+float selectListRowHeight(const Node& select) {
+    return std::max(
+        20.0f,
+        select.style.fontSize * select.style.lineHeight + 4.0f);
+}
+
+size_t selectListVisibleRowCount(const Node& select) {
+    const size_t requested = selectVisibleOptionCount(select);
+    if (select.layout.h <= 0.0f) {
+        return requested;
+    }
+    const float rowHeight = selectListRowHeight(select);
+    const float contentHeight = std::max(
+        0.0f,
+        select.layout.h - select.resolvedPadding.top -
+            select.resolvedPadding.bottom);
+    const size_t heightRows = std::max<size_t>(
+        1,
+        static_cast<size_t>(std::floor(contentHeight / rowHeight)));
+    return std::min(requested, heightRows);
+}
+
+std::optional<size_t> selectListOptionAtPoint(const Node& select,
+                                              float x,
+                                              float y) {
+    if (!isSelectListBox(select) || !select.layout.contains(x, y)) {
+        return std::nullopt;
+    }
+    const float rowHeight = selectListRowHeight(select);
+    const float contentTop = select.layout.y + select.resolvedPadding.top;
+    if (y < contentTop || rowHeight <= 0.0f) {
+        return std::nullopt;
+    }
+    const size_t row = static_cast<size_t>((y - contentTop) / rowHeight);
+    const size_t visible = selectListVisibleRowCount(select);
+    if (row >= visible) {
+        return std::nullopt;
+    }
+    const size_t optionIndex = select.selectPopupFirstOption + row;
+    return optionIndex < selectOptions(select).size()
+        ? std::optional<size_t>(optionIndex)
+        : std::nullopt;
+}
+
+bool scrollSelectListOptionIntoView(Node& select, size_t optionIndex) {
+    const size_t visible = selectListVisibleRowCount(select);
+    if (visible == 0) {
+        return false;
+    }
+    const size_t previous = select.selectPopupFirstOption;
+    if (optionIndex < select.selectPopupFirstOption) {
+        select.selectPopupFirstOption = optionIndex;
+    } else if (optionIndex >= select.selectPopupFirstOption + visible) {
+        select.selectPopupFirstOption = optionIndex - visible + 1;
+    }
+    return previous != select.selectPopupFirstOption;
+}
+
+void collectRadioGroup(Node& node,
+                       std::string_view name,
+                       std::vector<Node*>& radios) {
+    const auto nodeName = node.attributes.find("name");
+    if (isRadioNode(node) && nodeName != node.attributes.end() &&
+        nodeName->second == name && !node.attributes.contains("disabled")) {
+        radios.push_back(&node);
+    }
+    for (auto& child : node.children) {
+        collectRadioGroup(*child, name, radios);
+    }
+}
+
+Node* adjacentRadioInGroup(Node& radio, int direction) {
+    const auto name = radio.attributes.find("name");
+    if (name == radio.attributes.end() || name->second.empty()) {
+        return nullptr;
+    }
+    Node* root = &radio;
+    while (root->parent) {
+        root = root->parent;
+    }
+    std::vector<Node*> radios;
+    collectRadioGroup(*root, name->second, radios);
+    const auto current = std::find(radios.begin(), radios.end(), &radio);
+    if (current == radios.end() || radios.size() < 2) {
+        return nullptr;
+    }
+    const size_t index = static_cast<size_t>(
+        std::distance(radios.begin(), current));
+    if (direction < 0) {
+        return radios[index == 0 ? radios.size() - 1 : index - 1];
+    }
+    return radios[(index + 1) % radios.size()];
 }
 
 bool isUtf8Continuation(unsigned char ch) {
@@ -2391,6 +2545,8 @@ void syncNodeAttribute(Node& node, const std::string& name, const CssEnvironment
         node.selectionEnd = std::min(node.selectionEnd, node.value.size());
         node.undoStack.clear();
         clampInputCursor(node);
+    } else if (name == "checked") {
+        node.checked = hasValue;
     } else if (name == "placeholder") {
         node.placeholder = value;
     } else if (name == "max") {
@@ -2480,6 +2636,11 @@ void synchronizeOwningSelectForAttribute(Node& node,
     }
     const size_t optionIndex = static_cast<size_t>(
         std::distance(options.begin(), found));
+    if (isMultipleSelect(*select) &&
+        (name == "selected" || name == "value")) {
+        synchronizeSelectStatesAfterMutation(*select);
+        return;
+    }
     if (name == "selected" && node.attributes.contains("selected")) {
         selectOptionAt(*select, optionIndex);
     } else if (name == "value" &&
@@ -2491,6 +2652,16 @@ void synchronizeOwningSelectForAttribute(Node& node,
         select->highlightedOptionIndex.reset();
         select->value.clear();
         synchronizeSelectStatesAfterMutation(*select);
+    }
+}
+
+void synchronizeCheckableForAttribute(Node& root,
+                                      Node& node,
+                                      std::string_view name) {
+    if (name == "checked" && isCheckableNode(node)) {
+        setCheckableState(node, node.attributes.contains("checked"));
+    } else if (name == "type" || name == "name") {
+        initializeCheckableStates(root);
     }
 }
 
@@ -4281,6 +4452,7 @@ public:
         renderer.clearNodeCaches();
         editableLineCache.clear();
         if (document.root) {
+            initializeCheckableStates(*document.root);
             synchronizeSelectStatesAfterMutation(*document.root);
         }
         if (document.type == DocumentType::Page) {
@@ -4317,6 +4489,7 @@ public:
         if (document.root) {
             rebindParents(*document.root, nullptr);
             prepareContentEditableTree(*document.root);
+            initializeCheckableStates(*document.root);
             initializeSelectStates(*document.root);
         }
         hasDocument = true;
@@ -4604,6 +4777,16 @@ bool Runtime::handleEvent(const Event& event) {
             consumed = true;
         } else if (pointInSelectPopup) {
             consumed = true;
+        } else if (Node* select = owningSelect(hit);
+                   select && isSelectListBox(*select)) {
+            const std::optional<size_t> optionIndex =
+                selectListOptionAtPoint(*select, x, y);
+            if (optionIndex &&
+                select->highlightedOptionIndex != optionIndex) {
+                select->highlightedOptionIndex = optionIndex;
+                stateChanged = true;
+            }
+            consumed = true;
         }
         if (hit != impl_->hoveredLeaf) {
             impl_->hoveredLeaf = hit;
@@ -4650,6 +4833,23 @@ bool Runtime::handleEvent(const Event& event) {
                                                       impl_->scrollbarDragOffset) || scrollChanged;
             scrolledNode = scrollChanged ? impl_->scrollingNode : scrolledNode;
             consumed = true;
+        } else if (Node* checkable = associatedCheckableTarget(
+                       hit,
+                       *impl_->document.root)) {
+            stateChanged = impl_->setFocusedNode(checkable) || stateChanged;
+            impl_->selectingInput = nullptr;
+            impl_->selectingInputAtomicAnchor = nullptr;
+            impl_->selectingAtomicHost = nullptr;
+            impl_->selectingInputDragged = false;
+            impl_->selectingText = nullptr;
+            if (impl_->selectedText) {
+                stateChanged = clearSelectableSelection(*impl_->selectedText) ||
+                               stateChanged;
+                impl_->selectedText = nullptr;
+            }
+            consumed = true;
+            stateChanged = true;
+            layoutNeeded = true;
         } else if (Node* select = owningSelect(hit);
                    select && !select->attributes.contains("disabled")) {
             stateChanged = impl_->setFocusedNode(select) || stateChanged;
@@ -4881,10 +5081,81 @@ bool Runtime::handleEvent(const Event& event) {
         Node* releasedOption = optionTarget(hit);
         Node* pressedSelect = owningSelect(pressed);
         Node* releasedSelect = owningSelect(hit);
-        if (event.button == MouseButton::Left && pressedSelect &&
+        Node* pressedCheckable = associatedCheckableTarget(
+            pressed,
+            *impl_->document.root);
+        Node* releasedCheckable = associatedCheckableTarget(
+            hit,
+            *impl_->document.root);
+        if (event.button == MouseButton::Left && pressedCheckable &&
+            pressedCheckable == releasedCheckable) {
+            const bool valueChanged = isCheckboxNode(*pressedCheckable)
+                ? setCheckableState(*pressedCheckable,
+                                    !pressedCheckable->checked)
+                : setCheckableState(*pressedCheckable, true);
+            stateChanged = valueChanged || stateChanged;
+            consumed = true;
+            hit = pressedCheckable;
+            if (impl_->options.onElementEvent) {
+                mouseUpEvent = makeElementEvent(
+                    ElementEventType::MouseUp,
+                    *pressedCheckable,
+                    event,
+                    x,
+                    y);
+                clickEvent = makeElementEvent(
+                    ElementEventType::Click,
+                    *pressedCheckable,
+                    event,
+                    x,
+                    y);
+                if (valueChanged) {
+                    selectInputEvent = makeElementEvent(
+                        ElementEventType::Input,
+                        *pressedCheckable,
+                        event,
+                        x,
+                        y);
+                    selectChangeEvent = makeElementEvent(
+                        ElementEventType::Change,
+                        *pressedCheckable,
+                        event,
+                        x,
+                        y);
+                }
+            }
+        } else if (event.button == MouseButton::Left && pressedSelect &&
             pressedSelect == releasedSelect &&
             !pressedSelect->attributes.contains("disabled")) {
-            if (pressedOption && pressedOption == releasedOption &&
+            if (isSelectListBox(*pressedSelect)) {
+                const std::optional<size_t> optionIndex =
+                    selectListOptionAtPoint(*pressedSelect, x, y);
+                const bool valueChanged = optionIndex &&
+                    (isMultipleSelect(*pressedSelect)
+                         ? toggleSelectOptionAt(*pressedSelect,
+                                                *optionIndex,
+                                                event.ctrlKey,
+                                                event.shiftKey)
+                         : selectOptionAt(*pressedSelect, *optionIndex));
+                stateChanged = valueChanged || stateChanged;
+                if (valueChanged && impl_->options.onElementEvent) {
+                    selectInputEvent = makeElementEvent(
+                        ElementEventType::Input,
+                        *pressedSelect,
+                        event,
+                        x,
+                        y);
+                    selectChangeEvent = makeElementEvent(
+                        ElementEventType::Change,
+                        *pressedSelect,
+                        event,
+                        x,
+                        y);
+                }
+                hit = pressedSelect;
+                consumed = true;
+                layoutNeeded = true;
+            } else if (pressedOption && pressedOption == releasedOption &&
                 !isOptionDisabled(*pressedOption)) {
                 const std::optional<size_t> optionIndex =
                     selectOptionIndex(*pressedSelect, pressedOption);
@@ -5022,6 +5293,27 @@ bool Runtime::handleEvent(const Event& event) {
             consumed = true;
             break;
         }
+        if (Node* select = owningSelect(hit);
+            select && isSelectListBox(*select)) {
+            const size_t optionCount = selectOptions(*select).size();
+            const size_t visible = selectListVisibleRowCount(*select);
+            if (optionCount > visible) {
+                const size_t previous = select->selectPopupFirstOption;
+                const size_t maxFirst = optionCount - visible;
+                if (event.wheelDelta > 0.0f) {
+                    select->selectPopupFirstOption = previous == 0
+                        ? 0
+                        : previous - 1;
+                } else if (event.wheelDelta < 0.0f) {
+                    select->selectPopupFirstOption =
+                        std::min(maxFirst, previous + 1);
+                }
+                stateChanged = previous != select->selectPopupFirstOption ||
+                               stateChanged;
+            }
+            consumed = true;
+            break;
+        }
         const float step = event.wheelDelta == 0.0f ? 0.0f : -event.wheelDelta / 120.0f * 48.0f;
         const float dx = event.shiftKey ? step : 0.0f;
         const float dy = event.shiftKey ? 0.0f : step;
@@ -5058,6 +5350,84 @@ bool Runtime::handleEvent(const Event& event) {
             }
             break;
         }
+        if (input && isCheckableNode(*input)) {
+            if (impl_->options.onElementKeyDown) {
+                const ElementEvent keyEvent = makeElementEvent(
+                    ElementEventType::KeyDown,
+                    *input,
+                    event,
+                    x,
+                    y);
+                if (impl_->options.onElementKeyDown(keyEvent)) {
+                    consumed = true;
+                    break;
+                }
+            }
+            Node* activated = input;
+            bool dispatchClick = false;
+            bool valueChanged = false;
+            if (event.key == kSpace) {
+                dispatchClick = true;
+                valueChanged = isCheckboxNode(*activated)
+                    ? setCheckableState(*activated, !activated->checked)
+                    : setCheckableState(*activated, true);
+                consumed = true;
+            } else if (isRadioNode(*input) &&
+                       (event.key == kLeft || event.key == kUp ||
+                        event.key == kRight || event.key == kDown)) {
+                const int direction = event.key == kLeft || event.key == kUp
+                    ? -1
+                    : 1;
+                if (Node* adjacent = adjacentRadioInGroup(*input, direction)) {
+                    activated = adjacent;
+                    stateChanged = impl_->setFocusedNode(activated) ||
+                                   stateChanged;
+                    valueChanged = setCheckableState(*activated, true);
+                }
+                consumed = true;
+            }
+            if (consumed) {
+                stateChanged = valueChanged || stateChanged;
+                if (impl_->options.onElementEvent) {
+                    std::optional<ElementEvent> clickEvent;
+                    std::optional<ElementEvent> inputEvent;
+                    std::optional<ElementEvent> changeEvent;
+                    if (dispatchClick) {
+                        clickEvent = makeElementEvent(
+                            ElementEventType::Click,
+                            *activated,
+                            event,
+                            x,
+                            y);
+                    }
+                    if (valueChanged) {
+                        inputEvent = makeElementEvent(
+                            ElementEventType::Input,
+                            *activated,
+                            event,
+                            x,
+                            y);
+                        changeEvent = makeElementEvent(
+                            ElementEventType::Change,
+                            *activated,
+                            event,
+                            x,
+                            y);
+                    }
+                    if (clickEvent) {
+                        impl_->options.onElementEvent(*clickEvent);
+                    }
+                    if (inputEvent) {
+                        impl_->options.onElementEvent(*inputEvent);
+                    }
+                    if (changeEvent) {
+                        impl_->options.onElementEvent(*changeEvent);
+                    }
+                }
+            }
+            layoutNeeded = layoutNeeded || stateChanged;
+            break;
+        }
         if (input && isSelectNode(*input)) {
             if (impl_->options.onElementKeyDown) {
                 const ElementEvent keyEvent = makeElementEvent(
@@ -5073,6 +5443,104 @@ bool Runtime::handleEvent(const Event& event) {
             }
 
             const std::vector<Node*> options = selectOptions(*input);
+            if (isMultipleSelect(*input)) {
+                std::optional<size_t> current = input->highlightedOptionIndex;
+                if (!current) {
+                    current = input->selectedOptionIndex.or_else(
+                        [input] {
+                            return enabledSelectOptionFrom(*input, 0, 1);
+                        });
+                }
+                std::optional<size_t> nextOption;
+                bool valueChanged = false;
+                if (event.ctrlKey && event.key == 'A' && !options.empty()) {
+                    const std::optional<size_t> first =
+                        enabledSelectOptionFrom(*input, 0, 1);
+                    const std::optional<size_t> last =
+                        enabledSelectOptionFrom(
+                            *input,
+                            options.size() - 1,
+                            -1);
+                    if (first && last) {
+                        input->selectAnchorOptionIndex = first;
+                        valueChanged = toggleSelectOptionAt(
+                            *input,
+                            *last,
+                            false,
+                            true);
+                        nextOption = last;
+                    }
+                    consumed = true;
+                } else if (event.key == kSpace && current) {
+                    valueChanged = toggleSelectOptionAt(
+                        *input,
+                        *current,
+                        true,
+                        false);
+                    nextOption = current;
+                    consumed = true;
+                } else if (event.key == kUp || event.key == kDown) {
+                    const int direction = event.key == kUp ? -1 : 1;
+                    if (current) {
+                        nextOption = adjacentEnabledSelectOption(
+                            *input,
+                            *current,
+                            direction);
+                    } else if (!options.empty()) {
+                        nextOption = enabledSelectOptionFrom(
+                            *input,
+                            direction < 0 ? options.size() - 1 : 0,
+                            direction);
+                    }
+                    consumed = true;
+                } else if (event.key == kHome && !options.empty()) {
+                    nextOption = enabledSelectOptionFrom(*input, 0, 1);
+                    consumed = true;
+                } else if (event.key == kEnd && !options.empty()) {
+                    nextOption = enabledSelectOptionFrom(
+                        *input,
+                        options.size() - 1,
+                        -1);
+                    consumed = true;
+                }
+
+                if (nextOption && *nextOption < options.size()) {
+                    if (event.shiftKey && event.key != kSpace) {
+                        valueChanged = toggleSelectOptionAt(
+                            *input,
+                            *nextOption,
+                            event.ctrlKey,
+                            true) || valueChanged;
+                    }
+                    if (input->highlightedOptionIndex != nextOption) {
+                        input->highlightedOptionIndex = nextOption;
+                        stateChanged = true;
+                    }
+                    stateChanged = scrollSelectListOptionIntoView(
+                        *input,
+                        *nextOption) || stateChanged;
+                }
+                stateChanged = valueChanged || stateChanged;
+                if (valueChanged && impl_->options.onElementEvent) {
+                    const ElementEvent inputEvent = makeElementEvent(
+                        ElementEventType::Input,
+                        *input,
+                        event,
+                        x,
+                        y);
+                    const ElementEvent changeEvent = makeElementEvent(
+                        ElementEventType::Change,
+                        *input,
+                        event,
+                        x,
+                        y);
+                    impl_->options.onElementEvent(inputEvent);
+                    impl_->options.onElementEvent(changeEvent);
+                }
+                layoutNeeded = layoutNeeded || stateChanged;
+                break;
+            }
+
             const std::optional<size_t> current =
                 input->selectOpen && input->highlightedOptionIndex
                 ? input->highlightedOptionIndex
@@ -5083,7 +5551,10 @@ bool Runtime::handleEvent(const Event& event) {
                 stateChanged = impl_->closeOpenSelect() || stateChanged;
                 consumed = true;
             } else if (event.key == kEnter || event.key == kSpace) {
-                if (input->selectOpen) {
+                if (isSelectListBox(*input)) {
+                    nextOption = current;
+                    commitSelection = true;
+                } else if (input->selectOpen) {
                     nextOption = input->highlightedOptionIndex;
                     commitSelection = true;
                 } else {
@@ -5148,6 +5619,11 @@ bool Runtime::handleEvent(const Event& event) {
                 } else if (input->highlightedOptionIndex != nextOption) {
                     input->highlightedOptionIndex = nextOption;
                     stateChanged = true;
+                }
+                if (isSelectListBox(*input)) {
+                    stateChanged = scrollSelectListOptionIntoView(
+                        *input,
+                        *nextOption) || stateChanged;
                 }
             }
             layoutNeeded = layoutNeeded || stateChanged;
@@ -5811,6 +6287,14 @@ bool Runtime::setAttributeById(std::string_view id, std::string_view name, std::
     node->attributes[normalizedName] = std::string(value);
     syncNodeAttribute(*node, normalizedName, impl_->document.cssEnvironment);
     synchronizeOwningSelectForAttribute(*node, normalizedName);
+    synchronizeCheckableForAttribute(
+        *impl_->document.root,
+        *node,
+        normalizedName);
+    if (node->tag == "select" &&
+        (normalizedName == "multiple" || normalizedName == "size")) {
+        initializeSelectStates(*impl_->document.root);
+    }
     if (normalizedName == "contenteditable") {
         prepareContentEditableTree(*node);
     }
@@ -5885,6 +6369,14 @@ bool Runtime::applyUpdates(const RuntimeUpdates& updates) {
         node->attributes[normalizedName] = update.value;
         syncNodeAttribute(*node, normalizedName, impl_->document.cssEnvironment);
         synchronizeOwningSelectForAttribute(*node, normalizedName);
+        synchronizeCheckableForAttribute(
+            *impl_->document.root,
+            *node,
+            normalizedName);
+        if (node->tag == "select" &&
+            (normalizedName == "multiple" || normalizedName == "size")) {
+            initializeSelectStates(*impl_->document.root);
+        }
         if (normalizedName == "contenteditable") {
             prepareContentEditableTree(*node);
         }
@@ -5918,6 +6410,14 @@ bool Runtime::removeAttributeById(std::string_view id, std::string_view name) {
     }
     syncNodeAttribute(*node, normalizedName, impl_->document.cssEnvironment);
     synchronizeOwningSelectForAttribute(*node, normalizedName);
+    synchronizeCheckableForAttribute(
+        *impl_->document.root,
+        *node,
+        normalizedName);
+    if (node->tag == "select" &&
+        (normalizedName == "multiple" || normalizedName == "size")) {
+        initializeSelectStates(*impl_->document.root);
+    }
     if (normalizedName == "contenteditable") {
         prepareContentEditableTree(*node);
     }

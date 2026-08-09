@@ -39,7 +39,7 @@
 </select>
 ```
 
-没有显式 `selected` 时会选择第一项未禁用的 option。选项的显示名优先采用标准 `label` 属性，否则采用元素文本；缺少 `value` 时元素文本同时作为值。当前实现是单选控件，不支持 `multiple`、`size`、`optgroup` 分组标题或浏览器表单提交。
+没有显式 `selected` 时，单选 select 会选择第一项未禁用的 option。选项的显示名优先采用标准 `label` 属性，否则采用元素文本；缺少 `value` 时元素文本同时作为值。`size` 大于 1 的单选 select 和 `<select multiple size="4">` 都按浏览器语义绘制为常驻列表框；多选列表支持鼠标、滚轮、Ctrl/Shift 多选、方向键、Home、End、Space 和 Ctrl+A。标准多选列表不是带复选标记的自定义下拉菜单。
 
 ## 通用属性
 
@@ -51,8 +51,14 @@
 | `data-action` | 命中事件回调中的业务动作名 |
 | `data-links` | `selectable` 的兼容/运行时文本区间动作表，格式为每行 `start:end:action`，区间按 `value` 的 UTF-8 字节偏移计算 |
 | `value` | 输入框值、进度条当前值或 option 值；option 缺少该属性时使用其文本 |
+| `type` | input 类型；当前标准控件支持文本输入、`checkbox` 和 `radio` |
+| `name` | radio 的互斥组名；同名 radio 只保留一个选中项 |
+| `checked` | checkbox / radio 的初始和当前选中状态，参与 `:checked` 匹配 |
+| `for` | label 关联的 checkbox / radio id；包裹控件的 label 也会自动关联 |
 | `label` | option 的显示名；缺少时使用 option 文本 |
-| `selected` | option 的初始/当前选中状态；单选 select 会同步清除其他 option 的该属性 |
+| `selected` | option 的初始/当前选中状态；单选 select 会清除其他项，多选 select 可保留多项 |
+| `multiple` | 将 select 切换为浏览器式多选列表框 |
+| `size` | 列表框同时显示的 option 行数；multiple 缺少该属性时默认为 4 |
 | `max` | 进度条最大值 |
 | `placeholder` | 输入框占位文本 |
 | `contenteditable` | 枚举属性；支持 `true`、空值、`false`、`plaintext-only` 和从父节点继承 |
@@ -64,7 +70,7 @@
 | `disabled` | 禁用当前节点及其子树的指针、文本选择和输入交互；不自带灰显外观 |
 | `data-virtual-width` / `data-virtual-height` | 虚拟滚动内容尺寸，不需要真实子元素撑开 |
 
-`disabled` 同时参与 `:disabled` 伪类匹配和实际交互禁用。option 的 `selected` 会参与单选 select 状态，当前选项同时匹配 `:selected` 和 `:checked`；普通节点上的 `checked` / `selected` 仍只用于伪类匹配。
+`disabled` 同时参与 `:disabled` 伪类匹配和实际交互禁用。checkbox / radio 的 `checked` 与 option 的 `selected` 都是实时控件状态，并分别参与 `:checked`、`:selected` 匹配；多选 select 中可有多个 option 同时匹配。
 
 ## CSS 选择器
 
@@ -592,7 +598,7 @@ SkUI 的事件返回值表示“UI 是否实际消费了事件”，不是“DOM
 ## 当前限制
 
 - 没有 JavaScript。
-- 表单控件不是完整浏览器实现：select 当前只支持单选，不支持 `multiple`、`size`、`optgroup` 分组标题和表单提交。
+- 表单控件尚未实现浏览器表单提交、`form` 所有者和 `optgroup` 分组标题；带复选标记的多选下拉属于自定义组合控件，不由标准 `<select multiple>` 提供。
 - 没有完整 CSS 标准或外部 stylesheet。transition 覆盖 `height`、`opacity` 和 `transform`；关键帧动画覆盖
   `background-position`、`opacity` 和兼容函数列表内的 `transform`。
 - Grid 是面向卡片/指标面板的布局子集；伪元素只支持绝对定位装饰盒和空 `content`，不参与 Yoga 布局或事件命中。

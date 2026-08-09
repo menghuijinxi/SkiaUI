@@ -1178,6 +1178,7 @@ void SkiaRenderer::drawNode(SkCanvas& canvas, const Document& document, const No
             traceBoxMs_ += perf::Trace::elapsedMs(start);
             start = perf::Trace::now();
         }
+        drawCheckable(canvas, node);
         drawSelect(canvas, node);
         drawProgress(canvas, node);
         if (traceRender_) {
@@ -1654,6 +1655,65 @@ void SkiaRenderer::drawProgress(SkCanvas& canvas, const Node& node) {
     }
 }
 
+void SkiaRenderer::drawCheckable(SkCanvas& canvas, const Node& node) {
+    if (!isCheckableNode(node) || node.layout.w <= 0.0f ||
+        node.layout.h <= 0.0f) {
+        return;
+    }
+
+    const float side = std::max(0.0f, std::min(node.layout.w, node.layout.h) - 2.0f);
+    const float left = node.layout.x + (node.layout.w - side) * 0.5f;
+    const float top = node.layout.y + (node.layout.h - side) * 0.5f;
+    const SkRect control = SkRect::MakeXYWH(left, top, side, side);
+    const bool disabled = node.attributes.contains("disabled");
+    SkColor borderColor = SkColorSetRGB(95, 99, 104);
+    SkColor accentColor = SkColorSetRGB(26, 115, 232);
+    if (disabled) {
+        borderColor = SkColorSetA(borderColor, 110);
+        accentColor = SkColorSetA(accentColor, 110);
+    }
+
+    if (isRadioNode(node)) {
+        canvas.drawOval(control, fill(SK_ColorWHITE));
+        canvas.drawOval(control, stroke(node.checked ? accentColor : borderColor, 1.5f));
+        if (node.checked) {
+            const float dotInset = side * 0.28f;
+            canvas.drawOval(control.makeInset(dotInset, dotInset),
+                            fill(accentColor));
+        }
+    } else {
+        canvas.drawRoundRect(control,
+                             2.5f,
+                             2.5f,
+                             fill(node.checked ? accentColor : SK_ColorWHITE));
+        canvas.drawRoundRect(control,
+                             2.5f,
+                             2.5f,
+                             stroke(node.checked ? accentColor : borderColor, 1.5f));
+        if (node.checked) {
+            SkPaint checkPaint = stroke(SK_ColorWHITE, 2.0f);
+            checkPaint.setStrokeCap(SkPaint::kRound_Cap);
+            checkPaint.setStrokeJoin(SkPaint::kRound_Join);
+            SkPathBuilder check;
+            check.moveTo(control.left() + side * 0.22f,
+                         control.top() + side * 0.52f);
+            check.lineTo(control.left() + side * 0.43f,
+                         control.top() + side * 0.72f);
+            check.lineTo(control.left() + side * 0.79f,
+                         control.top() + side * 0.30f);
+            canvas.drawPath(check.detach(), checkPaint);
+        }
+    }
+
+    if (node.focused) {
+        const SkRect focus = control.makeOutset(2.0f, 2.0f);
+        canvas.drawRoundRect(focus,
+                             isRadioNode(node) ? focus.width() * 0.5f : 4.0f,
+                             isRadioNode(node) ? focus.height() * 0.5f : 4.0f,
+                             stroke(SkColorSetARGB(210, 26, 115, 232), 1.0f));
+    }
+}
+
 void SkiaRenderer::drawSelect(SkCanvas& canvas, const Node& node) {
     if (!isSelectNode(node) || node.layout.w <= 0.0f ||
         node.layout.h <= 0.0f) {
@@ -1661,6 +1721,75 @@ void SkiaRenderer::drawSelect(SkCanvas& canvas, const Node& node) {
     }
 
     const std::vector<const Node*> options = selectOptions(node);
+    if (isSelectListBox(node)) {
+        const SkRect content = contentRectForText(node);
+        const float rowHeight = std::max(
+            20.0f,
+            node.style.fontSize * node.style.lineHeight + 4.0f);
+        const size_t first = std::min(node.selectPopupFirstOption,
+                                      options.size());
+        const size_t heightRows = rowHeight > 0.0f
+            ? static_cast<size_t>(std::floor(content.height() / rowHeight))
+            : 0;
+        const size_t visibleRows = std::min(
+            selectVisibleOptionCount(node),
+            std::max<size_t>(1, heightRows));
+        canvas.save();
+        canvas.clipRect(node.layout.sk(), SkClipOp::kIntersect, true);
+        for (size_t row = 0;
+             row < visibleRows && first + row < options.size();
+             ++row) {
+            const size_t optionIndex = first + row;
+            const Node& option = *options[optionIndex];
+            const SkRect rowRect = SkRect::MakeXYWH(
+                content.left(),
+                content.top() + static_cast<float>(row) * rowHeight,
+                content.width(),
+                rowHeight);
+            const bool selected = isOptionSelected(node, optionIndex);
+            const bool highlighted = node.highlightedOptionIndex &&
+                *node.highlightedOptionIndex == optionIndex;
+            if (selected) {
+                canvas.drawRect(rowRect,
+                                fill(SkColorSetRGB(26, 115, 232)));
+            } else if (highlighted && node.focused) {
+                canvas.drawRect(rowRect,
+                                fill(SkColorSetARGB(28, 26, 115, 232)));
+            }
+
+            std::string label = ellipsizedText(
+                option,
+                optionLabel(option),
+                std::max(0.0f, rowRect.width() - 12.0f));
+            if (label.empty()) {
+                continue;
+            }
+            const TextEntry& entry = textEntry(
+                label,
+                option.style.fontSize,
+                option.style.fontBold);
+            const float baseline = rowRect.centerY() -
+                (entry.metrics.fAscent + entry.metrics.fDescent) * 0.5f;
+            SkColor textColor = selected ? SK_ColorWHITE : option.style.color;
+            if (isOptionDisabled(option)) {
+                textColor = SkColorSetA(textColor, 105);
+            }
+            drawStyledTextBlob(canvas,
+                               option,
+                               entry.blob,
+                               rowRect.left() + 6.0f,
+                               baseline,
+                               textColor);
+        }
+        canvas.restore();
+        if (node.focused) {
+            const SkRect focusRect = node.layout.sk().makeInset(2.0f, 2.0f);
+            canvas.drawRect(focusRect,
+                            stroke(SkColorSetARGB(210, 26, 115, 232), 1.0f));
+        }
+        return;
+    }
+
     std::string label;
     if (node.selectedOptionIndex &&
         *node.selectedOptionIndex < options.size()) {
@@ -2740,7 +2869,8 @@ void SkiaRenderer::drawAtomicSelection(SkCanvas& canvas, const Node& node) {
 }
 
 void SkiaRenderer::drawText(SkCanvas& canvas, const Node& node) {
-    if (node.tag == "progress" || isSelectNode(node) ||
+    if (node.tag == "progress" || isCheckableNode(node) ||
+        isSelectNode(node) ||
         isOptionNode(node)) {
         return;
     }

@@ -246,9 +246,10 @@ struct Element {
 - `input`
 - `select`
 - `option`
-- `checkbox`
 - `line`
 - `spacer`
+
+复选框和单选框不使用自定义标签，分别采用标准 `<input type="checkbox">` 和 `<input type="radio">`；多选列表采用 `<select multiple>`。
 
 后面可以做控件注册表，让使用者注册自己的标签：
 
@@ -607,7 +608,8 @@ SkiaUiDesk.exe --html assets/skui_demo/layers.html --width 1280 --height 800 --b
     <button id="import">导入SHP</button>
     <button id="new-layer">新建图层</button>
     <input id="search" placeholder="搜索图层..." />
-    <checkbox id="visible" checked>显示图层</checkbox>
+    <label>显示图层</label>
+    <input id="visible" type="checkbox" checked />
     <select id="type">
       <option value="polygon">Polygon</option>
       <option value="line">LineString</option>

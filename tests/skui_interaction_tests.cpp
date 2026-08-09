@@ -238,12 +238,18 @@ int countChromaticPixels(const std::vector<uint32_t>& pixels,
     return count;
 }
 
-void sendMouse(skui::Runtime& runtime, skui::EventType type, float x, float y, bool shift = false) {
+void sendMouse(skui::Runtime& runtime,
+               skui::EventType type,
+               float x,
+               float y,
+               bool shift = false,
+               bool ctrl = false) {
     skui::Event event;
     event.type = type;
     event.x = x;
     event.y = y;
     event.shiftKey = shift;
+    event.ctrlKey = ctrl;
     if (type == skui::EventType::MouseDown ||
         type == skui::EventType::MouseDoubleClick ||
         type == skui::EventType::MouseUp) {
@@ -8759,6 +8765,328 @@ int main() {
     ok = expect(defaultSelectInputEvents == 1 &&
                     defaultSelectedValue == "last",
                 "default select state should skip a disabled first option") &&
+         ok;
+
+    constexpr std::string_view browserChoiceControlHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    html, body { width:100%; height:100%; margin:0; background:#000000; }
+    input { position:absolute; left:10px; width:18px; height:18px; }
+    #notify { top:10px; }
+    #notify-label {
+      position:absolute;
+      left:5px;
+      top:5px;
+      width:33px;
+      height:28px;
+    }
+    #mode-a { top:37px; }
+    #mode-b { top:64px; }
+    select {
+      position:absolute;
+      left:40px;
+      top:5px;
+      width:95px;
+      height:80px;
+      padding:4px;
+      font-size:14px;
+      line-height:1;
+    }
+  </style>
+</head>
+<body>
+  <input id="notify" type="checkbox" value="mail" checked>
+  <label id="notify-label" for="notify"></label>
+  <input id="mode-a" type="radio" name="mode" value="a" checked>
+  <input id="mode-b" type="radio" name="mode" value="b">
+  <select id="layers" multiple size="3">
+    <option value="roads" selected>Roads</option>
+    <option value="disabled" disabled>Disabled</option>
+    <option value="labels" selected>Labels</option>
+    <option value="terrain">Terrain</option>
+  </select>
+</body>
+</html>
+)html";
+    skui::Runtime browserChoiceControlRuntime(options);
+    browserChoiceControlRuntime.resize(kWidth, kHeight, 1.0f);
+    int checkboxInputEvents = 0;
+    int checkboxChangeEvents = 0;
+    bool checkboxChecked = true;
+    int radioInputEvents = 0;
+    std::string checkedRadioValue;
+    int multipleInputEvents = 0;
+    std::vector<std::string> multipleValues;
+    browserChoiceControlRuntime.setElementEventCallback(
+        [&](const skui::ElementEvent& event) {
+            if (event.id == "notify") {
+                if (event.type == skui::ElementEventType::Input) {
+                    ++checkboxInputEvents;
+                    checkboxChecked = event.checked;
+                    ok = expect(event.value == "mail",
+                                "checkbox events should expose the standard value") &&
+                         ok;
+                } else if (event.type == skui::ElementEventType::Change) {
+                    ++checkboxChangeEvents;
+                }
+                return;
+            }
+            if ((event.id == "mode-a" || event.id == "mode-b") &&
+                event.type == skui::ElementEventType::Input) {
+                ++radioInputEvents;
+                checkedRadioValue = event.value;
+                ok = expect(event.checked,
+                            "activated radio events should expose checked=true") &&
+                     ok;
+                return;
+            }
+            if (event.id == "layers" &&
+                event.type == skui::ElementEventType::Input) {
+                ++multipleInputEvents;
+                multipleValues = event.selectedValues;
+            }
+        });
+    if (!browserChoiceControlRuntime.loadDocumentFromString(
+            browserChoiceControlHtml,
+            "")) {
+        std::cerr << "browser choice control load failed: "
+                  << browserChoiceControlRuntime.lastError() << "\n";
+        return 1;
+    }
+    std::vector<uint32_t> browserChoiceControlPixels;
+    ok = renderPixels(browserChoiceControlRuntime,
+                      browserChoiceControlPixels) &&
+         ok;
+    const uint32_t checkedCheckboxPixel =
+        pixelAt(browserChoiceControlPixels, 14, 14);
+    sendMouse(browserChoiceControlRuntime,
+              skui::EventType::MouseDown,
+              19.0f,
+              19.0f);
+    sendMouse(browserChoiceControlRuntime,
+              skui::EventType::MouseUp,
+              19.0f,
+              19.0f);
+    ok = renderPixels(browserChoiceControlRuntime,
+                      browserChoiceControlPixels) &&
+         ok;
+    ok = expect(checkboxInputEvents == 1 && checkboxChangeEvents == 1 &&
+                    !checkboxChecked &&
+                    pixelAt(browserChoiceControlPixels, 14, 14) !=
+                        checkedCheckboxPixel,
+                "checkbox clicks should toggle state, paint, input, and change") &&
+         ok;
+    sendKey(browserChoiceControlRuntime, 0x20);
+    ok = expect(checkboxInputEvents == 2 && checkboxChangeEvents == 2 &&
+                    checkboxChecked,
+                "Space should toggle the focused checkbox") &&
+         ok;
+    ok = expect(browserChoiceControlRuntime.removeAttributeById(
+                    "notify",
+                    "checked") &&
+                    browserChoiceControlRuntime.setAttributeById(
+                        "notify",
+                        "checked",
+                        ""),
+                "dynamic checked attributes should synchronize checkbox state") &&
+         ok;
+    ok = expect(checkboxInputEvents == 2 && checkboxChangeEvents == 2,
+                "programmatic checked changes should not emit input or change") &&
+         ok;
+    sendMouse(browserChoiceControlRuntime,
+              skui::EventType::MouseDown,
+              34.0f,
+              19.0f);
+    sendMouse(browserChoiceControlRuntime,
+              skui::EventType::MouseUp,
+              34.0f,
+              19.0f);
+    ok = expect(checkboxInputEvents == 3 && checkboxChangeEvents == 3 &&
+                    !checkboxChecked,
+                "label for should activate its associated checkbox") &&
+         ok;
+    ok = expect(browserChoiceControlRuntime.setAttributeById(
+                    "notify",
+                    "disabled",
+                    ""),
+                "checkbox should accept the standard disabled attribute") &&
+         ok;
+    sendMouse(browserChoiceControlRuntime,
+              skui::EventType::MouseDown,
+              34.0f,
+              19.0f);
+    sendMouse(browserChoiceControlRuntime,
+              skui::EventType::MouseUp,
+              34.0f,
+              19.0f);
+    ok = expect(checkboxInputEvents == 3 && checkboxChangeEvents == 3,
+                "disabled checkboxes should ignore label activation") &&
+         ok;
+
+    sendMouse(browserChoiceControlRuntime,
+              skui::EventType::MouseDown,
+              19.0f,
+              73.0f);
+    sendMouse(browserChoiceControlRuntime,
+              skui::EventType::MouseUp,
+              19.0f,
+              73.0f);
+    ok = expect(radioInputEvents == 1 && checkedRadioValue == "b",
+                "radio activation should select the new value") &&
+         ok;
+    sendMouse(browserChoiceControlRuntime,
+              skui::EventType::MouseDown,
+              19.0f,
+              73.0f);
+    sendMouse(browserChoiceControlRuntime,
+              skui::EventType::MouseUp,
+              19.0f,
+              73.0f);
+    ok = expect(radioInputEvents == 1,
+                "clicking an already checked radio should not emit input") &&
+         ok;
+    ok = expect(browserChoiceControlRuntime.setAttributeById(
+                    "mode-a",
+                    "checked",
+                    ""),
+                "programmatic radio checking should update its group") &&
+         ok;
+    sendMouse(browserChoiceControlRuntime,
+              skui::EventType::MouseDown,
+              19.0f,
+              46.0f);
+    sendMouse(browserChoiceControlRuntime,
+              skui::EventType::MouseUp,
+              19.0f,
+              46.0f);
+    ok = expect(radioInputEvents == 1,
+                "checking one radio should uncheck its same-name siblings") &&
+         ok;
+    sendKey(browserChoiceControlRuntime, 0x27);
+    ok = expect(radioInputEvents == 2 && checkedRadioValue == "b",
+                "radio arrow keys should move focus and selection within the group") &&
+         ok;
+
+    sendMouse(browserChoiceControlRuntime,
+              skui::EventType::MouseDown,
+              60.0f,
+              59.0f,
+              false,
+              true);
+    sendMouse(browserChoiceControlRuntime,
+              skui::EventType::MouseUp,
+              60.0f,
+              59.0f,
+              false,
+              true);
+    ok = expect(multipleInputEvents == 1 &&
+                    multipleValues == std::vector<std::string>{"roads"},
+                "Ctrl+click should toggle one multiple-select option") &&
+         ok;
+    sendMouse(browserChoiceControlRuntime,
+              skui::EventType::MouseDown,
+              60.0f,
+              19.0f);
+    sendMouse(browserChoiceControlRuntime,
+              skui::EventType::MouseUp,
+              60.0f,
+              19.0f);
+    sendMouse(browserChoiceControlRuntime,
+              skui::EventType::MouseDown,
+              60.0f,
+              59.0f,
+              true);
+    sendMouse(browserChoiceControlRuntime,
+              skui::EventType::MouseUp,
+              60.0f,
+              59.0f,
+              true);
+    ok = expect(multipleInputEvents == 2 &&
+                    multipleValues ==
+                        std::vector<std::string>{"roads", "labels"},
+                "Shift+click should select a range and skip disabled options") &&
+         ok;
+    sendWheel(browserChoiceControlRuntime, 60.0f, 59.0f, -120.0f);
+    sendMouse(browserChoiceControlRuntime,
+              skui::EventType::MouseDown,
+              60.0f,
+              59.0f);
+    sendMouse(browserChoiceControlRuntime,
+              skui::EventType::MouseUp,
+              60.0f,
+              59.0f);
+    ok = expect(multipleInputEvents == 3 &&
+                    multipleValues == std::vector<std::string>{"terrain"},
+                "multiple select should scroll and select an offscreen option") &&
+         ok;
+    sendKey(browserChoiceControlRuntime, 'A', false, true);
+    ok = expect(multipleInputEvents == 4 &&
+                    multipleValues ==
+                        std::vector<std::string>{"roads", "labels", "terrain"},
+                "Ctrl+A should select every enabled multiple-select option") &&
+         ok;
+    sendKey(browserChoiceControlRuntime, 0x24);
+    sendKey(browserChoiceControlRuntime, 0x20);
+    ok = expect(multipleInputEvents == 5 &&
+                    multipleValues ==
+                        std::vector<std::string>{"labels", "terrain"},
+                "keyboard focus and Space should toggle a list option") &&
+         ok;
+
+    constexpr std::string_view singleListBoxHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    html, body { width:100%; height:100%; margin:0; background:#000000; }
+    select {
+      position:absolute;
+      left:10px;
+      top:5px;
+      width:120px;
+      height:75px;
+      padding:4px;
+      font-size:14px;
+      line-height:1;
+    }
+  </style>
+</head>
+<body>
+  <select id="single-list" size="3">
+    <option value="one" selected>One</option>
+    <option value="two">Two</option>
+    <option value="three">Three</option>
+  </select>
+</body>
+</html>
+)html";
+    skui::Runtime singleListBoxRuntime(options);
+    singleListBoxRuntime.resize(kWidth, kHeight, 1.0f);
+    std::string singleListValue;
+    singleListBoxRuntime.setElementEventCallback(
+        [&](const skui::ElementEvent& event) {
+            if (event.id == "single-list" &&
+                event.type == skui::ElementEventType::Input) {
+                singleListValue = event.value;
+            }
+        });
+    if (!singleListBoxRuntime.loadDocumentFromString(singleListBoxHtml, "")) {
+        std::cerr << "single list box load failed: "
+                  << singleListBoxRuntime.lastError() << "\n";
+        return 1;
+    }
+    sendMouse(singleListBoxRuntime,
+              skui::EventType::MouseDown,
+              30.0f,
+              59.0f);
+    sendMouse(singleListBoxRuntime,
+              skui::EventType::MouseUp,
+              30.0f,
+              59.0f);
+    ok = expect(singleListValue == "three",
+                "select size greater than one should use a single-select list box") &&
          ok;
 
     constexpr std::string_view lowContrastGradientHtml = R"html(

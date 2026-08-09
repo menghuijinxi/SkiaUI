@@ -197,9 +197,15 @@ YGSize measureSelectNode(YGNodeConstRef node,
                                select->style.fontSize,
                                select->style.fontBold));
     }
-    float measuredHeight = std::max(
+    const float lineHeight = std::max(
         12.0f,
         select->style.fontSize * select->style.lineHeight);
+    float measuredHeight = lineHeight *
+        static_cast<float>(selectVisibleOptionCount(*select));
+    if (isSelectListBox(*select)) {
+        measuredHeight += select->resolvedPadding.top +
+                          select->resolvedPadding.bottom;
+    }
     if (widthMode == YGMeasureModeExactly) {
         measuredWidth = width;
     } else if (widthMode == YGMeasureModeAtMost) {
@@ -1046,10 +1052,11 @@ void LayoutEngine::buildYoga(Node& node, YGNodeRef yogaNode, bool isRoot) {
     setEdge(yogaNode, YGNodeStyleSetPosition, YGNodeStyleSetPositionPercent, YGNodeStyleSetPositionAuto, YGEdgeBottom, s.inset.bottom);
 
     const bool contentEditableTextNode = isContentEditableTextNode(node);
-    const bool hasText = !node.text.empty() ||
-                         !node.value.empty() ||
-                         (node.tag == "input" && !node.placeholder.empty()) ||
-                         contentEditableTextNode;
+    const bool hasText = !isCheckableNode(node) &&
+                         (!node.text.empty() ||
+                          !node.value.empty() ||
+                          (node.tag == "input" && !node.placeholder.empty()) ||
+                          contentEditableTextNode);
     const bool needsTextMeasure = needsIntrinsicMeasure(s.width) ||
                                   needsIntrinsicMeasure(s.height);
     const bool selectNode = isSelectNode(node);
