@@ -478,6 +478,12 @@ bool isTextareaNode(const Node& node) {
     return node.tag == "textarea";
 }
 
+bool usesWrappedTextLines(const Node& node) {
+    return node.tag == "selectable" ||
+           isTextareaNode(node) ||
+           isContentEditableTextNode(node);
+}
+
 float lineHeightForNode(const Node& node) {
     return std::max(12.0f, node.style.fontSize * node.style.lineHeight);
 }
@@ -2711,7 +2717,7 @@ void SkiaRenderer::drawInputSelection(SkCanvas& canvas, const Node& node) {
     const SkRect content = contentRectForText(node);
     canvas.save();
     canvas.clipRect(node.layout.sk(), SkClipOp::kIntersect, true);
-    if (isTextareaNode(node)) {
+    if (isTextareaNode(node) || isContentEditableTextNode(node)) {
         const float lineHeight = lineHeightForNode(node);
         const std::vector<TextLine>& lines = textLines(node, node.value);
         const TextLineRange lineRange = visibleTextLineRange(content,
@@ -2945,10 +2951,10 @@ void SkiaRenderer::drawText(SkCanvas& canvas, const Node& node) {
     if (inputPlaceholder) {
         textColor = SkColorSetA(textColor, static_cast<U8CPU>(std::min(150, static_cast<int>(SkColorGetA(textColor)))));
     }
-    if (node.tag == "selectable") {
+    if (node.tag == "selectable" || isContentEditableTextNode(node)) {
         const float lineHeight = lineHeightForNode(node);
         const std::vector<TextLine>& lines = textLines(node, *value);
-        const bool clipsOverflow = clipsTextOverflow(node);
+        const bool clipsOverflow = editable || clipsTextOverflow(node);
         if (clipsOverflow) {
             canvas.save();
             canvas.clipRect(node.layout.sk(), SkClipOp::kIntersect, true);
@@ -3087,7 +3093,7 @@ void SkiaRenderer::drawInputCompositionUnderline(SkCanvas& canvas, const Node& n
     size_t lineStart = 0;
     float lineTop = content.top();
     float lineHeight = content.height();
-    if (isTextareaNode(node)) {
+    if (isTextareaNode(node) || isContentEditableTextNode(node)) {
         const std::vector<TextLine>& lines = textLines(node, node.value);
         lineHeight = lineHeightForNode(node);
         for (size_t i = 0; i < lines.size(); ++i) {
@@ -3124,7 +3130,7 @@ std::optional<Rect> SkiaRenderer::inputCaretRect(const Node& node) {
     size_t lineStart = 0;
     float lineTop = content.top();
     float lineHeight = content.height();
-    if (isTextareaNode(node)) {
+    if (isTextareaNode(node) || isContentEditableTextNode(node)) {
         const std::vector<TextLine>& lines = textLines(node, node.value);
         lineHeight = lineHeightForNode(node);
         for (size_t i = 0; i < lines.size(); ++i) {
@@ -3301,7 +3307,7 @@ const std::vector<SkiaRenderer::TextLine>& SkiaRenderer::textLines(const Node& n
     size_t start = 0;
     for (size_t i = 0; i < value.size(); ++i) {
         if (value[i] == '\n') {
-            if (node.tag == "selectable" || node.tag == "textarea") {
+            if (usesWrappedTextLines(node)) {
                 appendWrappedTextLines(start, i);
             } else {
                 entry.lines.push_back({start, i});
@@ -3309,7 +3315,7 @@ const std::vector<SkiaRenderer::TextLine>& SkiaRenderer::textLines(const Node& n
             start = i + 1;
         }
     }
-    if (node.tag == "selectable" || node.tag == "textarea") {
+    if (usesWrappedTextLines(node)) {
         appendWrappedTextLines(start, value.size());
     } else {
         entry.lines.push_back({start, value.size()});

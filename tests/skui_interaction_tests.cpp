@@ -8320,6 +8320,73 @@ int main() {
                 "plaintext-only descendants should inherit editing and target their host") &&
          ok;
 
+    constexpr std::string_view wrappedEditableUrl =
+        "https://www.bilibili.com/video/BV1Pm4y127ui/?share_source="
+        "copy_web&vd_source=eab9a93ad11792ced9853cdf23c6d5f5";
+    const std::string wrappedEditableHtml =
+        R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    html, body { width: 140px; height: 90px; margin: 0; background-color: #000000; }
+    #wrapped-editor {
+      width: 120px;
+      min-height: 70px;
+      display: flex;
+      flex-direction: column;
+      color: #ffffff;
+      font-size: 14px;
+    }
+    #wrapped-url { width: 96px; min-height: 20px; margin: 0; }
+  </style>
+</head>
+<body>
+  <div id="wrapped-editor" contenteditable="true" contenteditable-flow="inline">
+    <p id="wrapped-url">)html" +
+        std::string(wrappedEditableUrl) +
+        R"html(</p>
+  </div>
+</body>
+</html>
+)html";
+    skui::Runtime wrappedEditableRuntime(options);
+    wrappedEditableRuntime.resize(kWidth, kHeight, 1.0f);
+    ok = expect(wrappedEditableRuntime.loadDocumentFromString(
+                    wrappedEditableHtml),
+                "wrapped contenteditable document should load") &&
+         ok;
+    const std::string wrappedLinkRange =
+        "0:" + std::to_string(wrappedEditableUrl.size()) +
+        ":open-url:" + std::string(wrappedEditableUrl);
+    ok = expect(wrappedEditableRuntime.setAttributeById(
+                    "wrapped-url", "data-links", wrappedLinkRange),
+                "contenteditable URL should accept link range metadata") &&
+         ok;
+    ok = expect(wrappedEditableRuntime.collapseSelection("wrapped-url", 0),
+                "wrapped contenteditable should place the caret at the URL start") &&
+         ok;
+    const std::optional<skui::LayoutRect> wrappedUrlStartCaret =
+        wrappedEditableRuntime.editingCaretRect();
+    ok = expect(wrappedEditableRuntime.collapseSelection(
+                    "wrapped-url", wrappedEditableUrl.size()),
+                "wrapped contenteditable should place the caret at the URL end") &&
+         ok;
+    const std::optional<skui::LayoutRect> wrappedUrlEndCaret =
+        wrappedEditableRuntime.editingCaretRect();
+    ok = expect(wrappedUrlStartCaret.has_value() &&
+                    wrappedUrlEndCaret.has_value() &&
+                    wrappedUrlEndCaret->y > wrappedUrlStartCaret->y + 10.0f,
+                "long contenteditable URLs should wrap onto multiple visual lines") &&
+         ok;
+    std::vector<uint32_t> wrappedEditablePixels;
+    ok = renderPixels(wrappedEditableRuntime, wrappedEditablePixels) && ok;
+    ok = expect(std::count(wrappedEditablePixels.begin(),
+                           wrappedEditablePixels.end(),
+                           solidColor(11, 105, 183)) > 0,
+                "contenteditable URL ranges should render with link styling") &&
+         ok;
+
     constexpr std::string_view atomicSelectionHtml = R"html(
 <!doctype html>
 <html>
