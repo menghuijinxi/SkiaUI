@@ -2391,6 +2391,279 @@ int main() {
     ok = expect(countBrightPixels(paddingPixels, 60, 10, 72, 50) == 0,
                 "percentage padding should offset text inside the label content box") && ok;
 
+    constexpr std::string_view fontShorthandHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      position: relative;
+      width: 140px;
+      height: 90px;
+      background-color: #000000;
+      color: #ffffff;
+      font: 13px "Microsoft YaHei", "Segoe UI", sans-serif;
+    }
+    .label {
+      position: absolute;
+      left: 8px;
+      top: 8px;
+      width: auto;
+      background-color: #204060;
+    }
+    input {
+      position: absolute;
+      left: 8px;
+      top: 38px;
+      width: 120px;
+      height: 26px;
+      padding: 2px 4px;
+      border: 0;
+      background-color: #202020;
+      color: #ffffff;
+      font: inherit;
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <label class="label">DomDownTool</label>
+    <input value="Search place">
+  </div>
+</body>
+</html>
+)html";
+
+    constexpr std::string_view explicitFontHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      position: relative;
+      width: 140px;
+      height: 90px;
+      background-color: #000000;
+      color: #ffffff;
+      font-size: 13px;
+      font-weight: normal;
+      line-height: normal;
+      font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
+    }
+    .label {
+      position: absolute;
+      left: 8px;
+      top: 8px;
+      width: auto;
+      background-color: #204060;
+    }
+    input {
+      position: absolute;
+      left: 8px;
+      top: 38px;
+      width: 120px;
+      height: 26px;
+      padding: 2px 4px;
+      border: 0;
+      background-color: #202020;
+      color: #ffffff;
+      font-size: 13px;
+      font-weight: normal;
+      line-height: normal;
+      font-family: Consolas, monospace;
+      font-family: inherit;
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <label class="label">DomDownTool</label>
+    <input value="Search place">
+  </div>
+</body>
+</html>
+)html";
+
+    skui::Runtime fontShorthandRuntime(options);
+    skui::Runtime explicitFontRuntime(options);
+    fontShorthandRuntime.resize(kWidth, kHeight, 1.0f);
+    explicitFontRuntime.resize(kWidth, kHeight, 1.0f);
+    if (!fontShorthandRuntime.loadDocumentFromString(fontShorthandHtml, "") ||
+        !explicitFontRuntime.loadDocumentFromString(explicitFontHtml, "")) {
+        std::cerr << "font shorthand load failed: "
+                  << fontShorthandRuntime.lastError() << " / "
+                  << explicitFontRuntime.lastError() << "\n";
+        return 1;
+    }
+    std::vector<uint32_t> fontShorthandPixels;
+    std::vector<uint32_t> explicitFontPixels;
+    ok = renderPixels(fontShorthandRuntime, fontShorthandPixels) && ok;
+    ok = renderPixels(explicitFontRuntime, explicitFontPixels) && ok;
+    ok = expect(fontShorthandPixels == explicitFontPixels,
+                "font shorthand and font:inherit should match equivalent longhand styles") && ok;
+
+    constexpr std::string_view fontFamilyHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      width: 140px;
+      height: 90px;
+      background-color: #000000;
+    }
+    #font-family-label {
+      width: 100px;
+      color: #ffffff;
+      font-size: 18px;
+      font-family: Arial, sans-serif;
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <selectable id="font-family-label">iiiiiiiiMMMM</selectable>
+  </div>
+</body>
+</html>
+)html";
+
+    skui::Runtime fontFamilyRuntime(options);
+    fontFamilyRuntime.resize(kWidth, kHeight, 1.0f);
+    if (!fontFamilyRuntime.loadDocumentFromString(fontFamilyHtml, "")) {
+        std::cerr << "font family load failed: "
+                  << fontFamilyRuntime.lastError() << "\n";
+        return 1;
+    }
+    std::vector<uint32_t> arialFontPixels;
+    std::vector<uint32_t> monospaceFontPixels;
+    ok = renderPixels(fontFamilyRuntime, arialFontPixels) && ok;
+    ok = expect(countBrightPixels(arialFontPixels, 0, 24, 110, 54) == 0,
+                "Arial fixture should fit on one line before font-family changes") && ok;
+    ok = expect(fontFamilyRuntime.setStyleById(
+                    "font-family-label", "font-family: Consolas, monospace;"),
+                "font-family should update through inline styles") && ok;
+    ok = renderPixels(fontFamilyRuntime, monospaceFontPixels) && ok;
+    ok = expect(arialFontPixels != monospaceFontPixels &&
+                    countBrightPixels(monospaceFontPixels, 0, 24, 110, 54) > 0,
+                "font-family should change text measurement, wrapping, and rendering") && ok;
+
+    constexpr std::string_view flexTextTrailingSpaceHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      width: 140px;
+      height: 90px;
+      background-color: #000000;
+    }
+    .brand {
+      display: flex;
+      gap: 8px;
+      color: #ffffff;
+      font: bold 16px "Microsoft YaHei", sans-serif;
+      white-space: nowrap;
+    }
+    .brand span {
+      color: #a0a0a0;
+      font-size: 11px;
+      font-weight: normal;
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <div class="brand">DomDownTool <span>Preview</span></div>
+  </div>
+</body>
+</html>
+)html";
+
+    std::string flexTextNoTrailingSpaceHtml(flexTextTrailingSpaceHtml);
+    const size_t flexTextBoundarySpace =
+        flexTextNoTrailingSpaceHtml.find("DomDownTool <span>");
+    if (flexTextBoundarySpace == std::string::npos) {
+        std::cerr << "flex text whitespace fixture is invalid\n";
+        return 1;
+    }
+    flexTextNoTrailingSpaceHtml.erase(
+        flexTextBoundarySpace + std::string_view("DomDownTool").size(),
+        1);
+
+    skui::Runtime flexTextTrailingSpaceRuntime(options);
+    skui::Runtime flexTextNoTrailingSpaceRuntime(options);
+    flexTextTrailingSpaceRuntime.resize(kWidth, kHeight, 1.0f);
+    flexTextNoTrailingSpaceRuntime.resize(kWidth, kHeight, 1.0f);
+    if (!flexTextTrailingSpaceRuntime.loadDocumentFromString(
+            flexTextTrailingSpaceHtml,
+            "") ||
+        !flexTextNoTrailingSpaceRuntime.loadDocumentFromString(
+            flexTextNoTrailingSpaceHtml,
+            "")) {
+        std::cerr << "flex text whitespace load failed: "
+                  << flexTextTrailingSpaceRuntime.lastError() << " / "
+                  << flexTextNoTrailingSpaceRuntime.lastError() << "\n";
+        return 1;
+    }
+    std::vector<uint32_t> flexTextTrailingSpacePixels;
+    std::vector<uint32_t> flexTextNoTrailingSpacePixels;
+    ok = renderPixels(
+             flexTextTrailingSpaceRuntime,
+             flexTextTrailingSpacePixels) &&
+         ok;
+    ok = renderPixels(
+             flexTextNoTrailingSpaceRuntime,
+             flexTextNoTrailingSpacePixels) &&
+         ok;
+    ok = expect(
+             flexTextTrailingSpacePixels == flexTextNoTrailingSpacePixels,
+             "anonymous flex text items should discard boundary whitespace") &&
+         ok;
+
+    constexpr std::string_view flexWhitespaceOnlyHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      display: flex;
+      gap: 8px;
+      width: 140px;
+      height: 90px;
+      background-color: #000000;
+      color: #ffffff;
+    }
+  </style>
+</head>
+<body>
+  <div class="root"><span>A</span> <span>B</span></div>
+</body>
+</html>
+)html";
+
+    skui::Runtime flexWhitespaceOnlyRuntime(options);
+    flexWhitespaceOnlyRuntime.resize(kWidth, kHeight, 1.0f);
+    if (!flexWhitespaceOnlyRuntime.loadDocumentFromString(
+            flexWhitespaceOnlyHtml,
+            "")) {
+        std::cerr << "flex whitespace-only load failed: "
+                  << flexWhitespaceOnlyRuntime.lastError() << "\n";
+        return 1;
+    }
+    std::vector<uint32_t> flexWhitespaceOnlyPixels;
+    ok = renderPixels(
+             flexWhitespaceOnlyRuntime,
+             flexWhitespaceOnlyPixels) &&
+         expect(countBrightPixels(
+                    flexWhitespaceOnlyPixels,
+                    0,
+                    0,
+                    kWidth,
+                    kHeight) > 0,
+                "whitespace-only anonymous flex items should be skipped") &&
+         ok;
+
     constexpr std::string_view autoHeightSelectableHtml = R"html(
 <!doctype html>
 <html>

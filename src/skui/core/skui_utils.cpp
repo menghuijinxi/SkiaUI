@@ -51,7 +51,12 @@ struct PositionedGlyph {
 
 struct FallbackTypefaceCache {
     std::mutex mutex;
-    std::unordered_map<uint64_t, sk_sp<SkTypeface>> typefaces;
+    std::unordered_map<std::string, sk_sp<SkTypeface>> typefaces;
+};
+
+struct FontFamilyCache {
+    std::mutex mutex;
+    std::unordered_map<std::string, sk_sp<SkTypeface>> typefaces;
 };
 
 sk_sp<SkTypeface> pickUiTypeface(const sk_sp<SkFontMgr>& manager, bool bold) {
@@ -97,6 +102,98 @@ const UiFontResources& uiFontResources() {
 FallbackTypefaceCache& fallbackTypefaceCache() {
     static FallbackTypefaceCache cache;
     return cache;
+}
+
+FontFamilyCache& fontFamilyCache() {
+    static FontFamilyCache cache;
+    return cache;
+}
+
+std::string lowerAscii(std::string_view value) {
+    std::string result;
+    result.reserve(value.size());
+    for (const unsigned char ch : value) {
+        result.push_back(static_cast<char>(std::tolower(ch)));
+    }
+    return result;
+}
+
+std::vector<std::string> platformFamilies(std::string_view cssFamily) {
+    const std::string family = lowerAscii(cssFamily);
+    if (family == "sans-serif") {
+        return {"Arial", "Microsoft YaHei", "Segoe UI"};
+    }
+    if (family == "system-ui" || family == "ui-sans-serif") {
+        return {"Segoe UI", "Microsoft YaHei UI", "Arial"};
+    }
+    if (family == "serif" || family == "ui-serif") {
+        return {"Times New Roman", "Georgia"};
+    }
+    if (family == "monospace" || family == "ui-monospace") {
+        return {"Consolas", "Courier New"};
+    }
+    return {std::string(cssFamily)};
+}
+
+sk_sp<SkTypeface> matchFamilyTypeface(std::string_view family, bool bold) {
+    const UiFontResources& resources = uiFontResources();
+    if (!resources.manager) {
+        return nullptr;
+    }
+
+    std::string key = bold ? "1|" : "0|";
+    key.append(family);
+    FontFamilyCache& cache = fontFamilyCache();
+    std::lock_guard lock(cache.mutex);
+    if (const auto it = cache.typefaces.find(key); it != cache.typefaces.end()) {
+        return it->second;
+    }
+
+    const SkFontStyle style = bold ? SkFontStyle::Bold() : SkFontStyle::Normal();
+    sk_sp<SkTypeface> typeface = resources.manager->matchFamilyStyle(
+        std::string(family).c_str(), style);
+    cache.typefaces.emplace(std::move(key), typeface);
+    return typeface;
+}
+
+std::vector<sk_sp<SkTypeface>> resolveFamilyTypefaces(
+    const std::vector<std::string>& fontFamilies,
+    bool bold) {
+    std::vector<sk_sp<SkTypeface>> typefaces;
+    for (const std::string& cssFamily : fontFamilies) {
+        for (const std::string& family : platformFamilies(cssFamily)) {
+            sk_sp<SkTypeface> typeface = matchFamilyTypeface(family, bold);
+            if (!typeface) {
+                continue;
+            }
+            const bool duplicate = std::any_of(
+                typefaces.begin(),
+                typefaces.end(),
+                [&](const sk_sp<SkTypeface>& existing) {
+                    return existing.get() == typeface.get();
+                });
+            if (!duplicate) {
+                typefaces.push_back(std::move(typeface));
+            }
+        }
+    }
+    const UiFontResources& resources = uiFontResources();
+    const sk_sp<SkTypeface>& defaultTypeface = bold ? resources.bold : resources.regular;
+    if (typefaces.empty() && defaultTypeface) {
+        typefaces.push_back(defaultTypeface);
+    }
+    return typefaces;
+}
+
+std::string fontFamilyKey(const std::vector<std::string>& fontFamilies) {
+    std::string key;
+    for (const std::string& family : fontFamilies) {
+        key.append(std::to_string(family.size()));
+        key.push_back(':');
+        key.append(family);
+        key.push_back('|');
+    }
+    return key;
 }
 
 SkFont makeConfiguredFont(sk_sp<SkTypeface> typeface, float size) {
@@ -165,17 +262,27 @@ bool isEmojiFormatCharacter(SkUnichar codepoint) {
     return codepoint == 0x200D || codepoint == 0xFE0E || codepoint == 0xFE0F;
 }
 
-sk_sp<SkTypeface> resolveTypeface(SkUnichar codepoint, bool bold) {
+sk_sp<SkTypeface> resolveTypeface(
+    SkUnichar codepoint,
+    bool bold,
+    const std::vector<sk_sp<SkTypeface>>& familyTypefaces,
+    std::string_view familyKey) {
     const UiFontResources& resources = uiFontResources();
-    const sk_sp<SkTypeface>& primary = bold ? resources.bold : resources.regular;
-    if (!isEmojiCharacter(codepoint) &&
-        primary &&
-        primary->unicharToGlyph(codepoint) != 0) {
-        return primary;
+    const sk_sp<SkTypeface> primary = familyTypefaces.empty()
+        ? (bold ? resources.bold : resources.regular)
+        : familyTypefaces.front();
+    if (!isEmojiCharacter(codepoint)) {
+        for (const sk_sp<SkTypeface>& typeface : familyTypefaces) {
+            if (typeface && typeface->unicharToGlyph(codepoint) != 0) {
+                return typeface;
+            }
+        }
     }
 
-    const uint64_t key = static_cast<uint32_t>(codepoint) |
-                         (static_cast<uint64_t>(bold) << 32u);
+    std::string key = bold ? "1|" : "0|";
+    key.append(std::to_string(static_cast<uint32_t>(codepoint)));
+    key.push_back('|');
+    key.append(familyKey);
     FallbackTypefaceCache& cache = fallbackTypefaceCache();
     std::lock_guard lock(cache.mutex);
     if (const auto it = cache.typefaces.find(key); it != cache.typefaces.end()) {
@@ -222,16 +329,22 @@ sk_sp<SkTypeface> resolveTypeface(SkUnichar codepoint, bool bold) {
 UiTextLayout buildUiTextLayout(std::string_view value,
                                float size,
                                bool bold,
+                               const std::vector<std::string>& fontFamilies,
                                bool buildBlob) {
     UiTextLayout layout;
-    const SkFont primaryFont = makeUiFont(size, bold);
+    const std::vector<sk_sp<SkTypeface>> familyTypefaces =
+        resolveFamilyTypefaces(fontFamilies, bold);
+    const UiFontResources& resources = uiFontResources();
+    const sk_sp<SkTypeface> primary = familyTypefaces.empty()
+        ? (bold ? resources.bold : resources.regular)
+        : familyTypefaces.front();
+    const SkFont primaryFont = makeConfiguredFont(primary, size);
     primaryFont.getMetrics(&layout.metrics);
     if (value.empty()) {
         return layout;
     }
 
-    const UiFontResources& resources = uiFontResources();
-    const sk_sp<SkTypeface>& primary = bold ? resources.bold : resources.regular;
+    const std::string familyKey = fontFamilyKey(fontFamilies);
     std::vector<PositionedGlyph> glyphs;
     glyphs.reserve(value.size());
     bool needsFallback = false;
@@ -244,7 +357,8 @@ UiTextLayout buildUiTextLayout(std::string_view value,
             continue;
         }
 
-        sk_sp<SkTypeface> typeface = resolveTypeface(decoded.value, bold);
+        sk_sp<SkTypeface> typeface = resolveTypeface(
+            decoded.value, bold, familyTypefaces, familyKey);
         if (!typeface) {
             typeface = primary;
         }
@@ -399,17 +513,18 @@ sk_sp<SkFontMgr> uiFontManager() {
     return uiFontResources().manager;
 }
 
-SkFont makeUiFont(float size, bool bold) {
-    const UiFontResources& resources = uiFontResources();
-    return makeConfiguredFont(bold ? resources.bold : resources.regular, size);
+UiTextLayout makeUiTextLayout(std::string_view value,
+                              float size,
+                              bool bold,
+                              const std::vector<std::string>& fontFamilies) {
+    return buildUiTextLayout(value, size, bold, fontFamilies, true);
 }
 
-UiTextLayout makeUiTextLayout(std::string_view value, float size, bool bold) {
-    return buildUiTextLayout(value, size, bold, true);
-}
-
-float measureUiTextWidth(std::string_view value, float size, bool bold) {
-    return buildUiTextLayout(value, size, bold, false).width;
+float measureUiTextWidth(std::string_view value,
+                         float size,
+                         bool bold,
+                         const std::vector<std::string>& fontFamilies) {
+    return buildUiTextLayout(value, size, bold, fontFamilies, false).width;
 }
 
 float clampf(float value, float lo, float hi) {
@@ -436,6 +551,32 @@ std::vector<std::string> splitWhitespace(std::string_view value) {
         parts.push_back(part);
     }
     return parts;
+}
+
+std::string_view displayTextValue(const Node& node) {
+    if (!node.value.empty()) {
+        return node.value;
+    }
+    if (node.text.empty()) {
+        return node.placeholder;
+    }
+
+    std::string_view value = node.text;
+    const bool anonymousFlexText = node.tag == "text" &&
+                                   node.parent &&
+                                   node.parent->style.displayFlex;
+    if (!anonymousFlexText) {
+        return value;
+    }
+    while (!value.empty() &&
+           std::isspace(static_cast<unsigned char>(value.front())) != 0) {
+        value.remove_prefix(1);
+    }
+    while (!value.empty() &&
+           std::isspace(static_cast<unsigned char>(value.back())) != 0) {
+        value.remove_suffix(1);
+    }
+    return value;
 }
 
 ContentEditableState contentEditableState(const Node& node) {

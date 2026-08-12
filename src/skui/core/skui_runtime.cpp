@@ -3889,7 +3889,7 @@ public:
 
     size_t inputIndexAtX(const Node& input, float x) {
         const float textStart = renderer.textStartX(input, input.value) - input.layout.x + visualX(input);
-        return renderer.textIndexAtOffset(input.value, input.style.fontSize, input.style.fontBold, x - textStart);
+        return renderer.textIndexAtOffset(input.value, input.style, x - textStart);
     }
 
     SkiaRenderer::TextHitResult selectableHitAtPoint(const Node& node,
@@ -3922,7 +3922,7 @@ public:
         const TextLine line = lines[lineIndex];
         const std::string_view text(input.value.data() + line.start, line.end - line.start);
         const float offset = x - contentX + input.scrollX;
-        return line.start + renderer.textIndexAtOffset(text, input.style.fontSize, input.style.fontBold, offset);
+        return line.start + renderer.textIndexAtOffset(text, input.style, offset);
     }
 
     const std::vector<TextLine>& editableLinesFor(const Node& input) {

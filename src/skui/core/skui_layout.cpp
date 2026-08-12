@@ -150,14 +150,13 @@ YGSize measureTextNode(YGNodeConstRef node,
         return {0.0f, 0.0f};
     }
 
-    const std::string& value = !uiNode->value.empty()
-        ? uiNode->value
-        : (!uiNode->text.empty() ? uiNode->text : uiNode->placeholder);
+    const std::string_view value = displayTextValue(*uiNode);
     const auto measureText = [&](std::string_view text) {
         return measureUiTextWidth(
             text,
             uiNode->style.fontSize,
-            uiNode->style.fontBold);
+            uiNode->style.fontBold,
+            uiNode->style.fontFamilies);
     };
     float measuredWidth = measureText(value);
     float measuredHeight = std::max(12.0f, uiNode->style.fontSize * uiNode->style.lineHeight);
@@ -194,8 +193,9 @@ YGSize measureSelectNode(YGNodeConstRef node,
         measuredWidth = std::max(
             measuredWidth,
             measureUiTextWidth(optionLabel(*option),
-                               select->style.fontSize,
-                               select->style.fontBold));
+                               option->style.fontSize,
+                               option->style.fontBold,
+                               option->style.fontFamilies));
     }
     const float lineHeight = std::max(
         12.0f,
@@ -299,7 +299,8 @@ TextareaScrollMetrics textareaScrollMetrics(const Node& node) {
                         value.data() + lineStart,
                         index - lineStart),
                     node.style.fontSize,
-                    node.style.fontBold));
+                    node.style.fontBold,
+                    node.style.fontFamilies));
             ++lines;
             lineStart = index + 1;
         }
@@ -311,7 +312,8 @@ TextareaScrollMetrics textareaScrollMetrics(const Node& node) {
                 value.data() + lineStart,
                 value.size() - lineStart),
             node.style.fontSize,
-            node.style.fontBold));
+            node.style.fontBold,
+            node.style.fontFamilies));
     return {
         paddingLeft + paddingRight + maxLineWidth,
         paddingTop + paddingBottom + static_cast<float>(lines) * lineHeight,
@@ -844,7 +846,11 @@ std::optional<float> gridItemIntrinsicWidth(const Node& node) {
     const std::string& value =
         !node.value.empty() ? node.value : (!node.text.empty() ? node.text : node.placeholder);
     if (!value.empty()) {
-        return measureUiTextWidth(value, node.style.fontSize, node.style.fontBold);
+        return measureUiTextWidth(
+            value,
+            node.style.fontSize,
+            node.style.fontBold,
+            node.style.fontFamilies);
     }
     return std::nullopt;
 }

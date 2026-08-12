@@ -451,8 +451,10 @@ struct Style {
         bool borderTopRightRadius = false;
         bool borderBottomRightRadius = false;
         bool borderBottomLeftRadius = false;
+        bool font = false;
         bool fontSize = false;
         bool fontBold = false;
+        bool fontFamily = false;
         bool lineHeight = false;
         bool textAlign = false;
         bool textOverflow = false;
@@ -518,8 +520,11 @@ struct Style {
     BackgroundRepeat backgroundRepeat = BackgroundRepeat::Repeat;
     BorderEdges borders;
     CornerRadii borderRadius;
+    bool fontInherit = false;
+    bool fontFamilyInherit = false;
     float fontSize = 16.0f;
     bool fontBold = false;
+    std::vector<std::string> fontFamilies;
     float lineHeight = 1.38f;
     TextAlign textAlign = TextAlign::Left;
     bool textOverflowEllipsis = false;
@@ -762,7 +767,9 @@ public:
     void clearNodeCaches();
     void shutdownCaches();
     [[nodiscard]] MemoryStats memoryStats() const;
-    size_t textIndexAtOffset(std::string_view value, float size, bool bold, float offset);
+    size_t textIndexAtOffset(std::string_view value,
+                             const Style& style,
+                             float offset);
     TextHitResult textHitAtPoint(const Node& node,
                                  const std::string& value,
                                  float x,
@@ -791,6 +798,9 @@ private:
         const std::string* value = nullptr;
         size_t size = 0;
         float maxWidth = -1.0f;
+        float fontSize = 0.0f;
+        bool fontBold = false;
+        std::vector<std::string> fontFamilies;
         std::vector<TextLine> lines;
     };
 
@@ -876,7 +886,6 @@ private:
     int traceSvgCount_ = 0;
     int traceNodeCount_ = 0;
 
-    SkFont font(float size, bool bold) const;
     SkPaint fill(SkColor color) const;
     SkPaint stroke(SkColor color, float width) const;
     SkPaint gradientPaint(const Gradient& gradient,
@@ -960,8 +969,8 @@ private:
     std::optional<std::string> readSvgAsset(const Document& document, std::string_view src);
     std::string resolveAssetPath(const Document& document, std::string_view src) const;
     static bool isSvgSource(std::string_view src);
-    const TextEntry& textEntry(std::string_view value, float size, bool bold);
-    float textWidth(std::string_view value, float size, bool bold);
+    const TextEntry& textEntry(std::string_view value, const Style& style);
+    float textWidth(std::string_view value, const Style& style);
     std::string ellipsizedText(const Node& node, std::string_view value, float maxWidth);
     const std::vector<TextLine>& textLines(const Node& node, const std::string& value);
     std::unordered_map<std::string, SvgDomEntry> svgDomCache_;
@@ -978,12 +987,18 @@ SkColor rgb(unsigned r, unsigned g, unsigned b);
 SkColor rgba(unsigned r, unsigned g, unsigned b, unsigned a);
 SkColor parseColor(std::string_view value, SkColor fallback);
 sk_sp<SkFontMgr> uiFontManager();
-SkFont makeUiFont(float size, bool bold);
-UiTextLayout makeUiTextLayout(std::string_view value, float size, bool bold);
-float measureUiTextWidth(std::string_view value, float size, bool bold);
+UiTextLayout makeUiTextLayout(std::string_view value,
+                              float size,
+                              bool bold,
+                              const std::vector<std::string>& fontFamilies);
+float measureUiTextWidth(std::string_view value,
+                         float size,
+                         bool bold,
+                         const std::vector<std::string>& fontFamilies);
 float clampf(float value, float lo, float hi);
 std::string trim(std::string_view value);
 std::vector<std::string> splitWhitespace(std::string_view value);
+std::string_view displayTextValue(const Node& node);
 enum class ContentEditableState {
     Inherit,
     True,

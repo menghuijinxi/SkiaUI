@@ -168,8 +168,19 @@ std::vector<std::string> splitCommaList(std::string_view raw) {
     std::vector<std::string> items;
     size_t start = 0;
     int depth = 0;
+    char quote = '\0';
     for (size_t i = 0; i < raw.size(); ++i) {
         const char ch = raw[i];
+        if (quote != '\0') {
+            if (ch == quote && (i == 0 || raw[i - 1] != '\\')) {
+                quote = '\0';
+            }
+            continue;
+        }
+        if (ch == '\'' || ch == '"') {
+            quote = ch;
+            continue;
+        }
         if (ch == '(') {
             ++depth;
         } else if (ch == ')' && depth > 0) {
@@ -948,15 +959,23 @@ std::vector<std::string> splitCssTokens(std::string_view raw) {
     std::vector<std::string> tokens;
     size_t start = std::string_view::npos;
     int parenDepth = 0;
+    char quote = '\0';
     for (size_t i = 0; i < raw.size(); ++i) {
         const char ch = raw[i];
-        if (ch == '(') {
+        if (quote != '\0') {
+            if (ch == quote && (i == 0 || raw[i - 1] != '\\')) {
+                quote = '\0';
+            }
+        } else if (ch == '\'' || ch == '"') {
+            quote = ch;
+        } else if (ch == '(') {
             ++parenDepth;
         } else if (ch == ')' && parenDepth > 0) {
             --parenDepth;
         }
 
-        if (std::isspace(static_cast<unsigned char>(ch)) != 0 && parenDepth == 0) {
+        if (std::isspace(static_cast<unsigned char>(ch)) != 0 &&
+            parenDepth == 0 && quote == '\0') {
             if (start != std::string_view::npos) {
                 tokens.push_back(trim(raw.substr(start, i - start)));
                 start = std::string_view::npos;
@@ -1256,6 +1275,135 @@ std::optional<std::vector<Shadow>> parseShadowList(
 
 std::vector<std::string> splitCssWhitespaceTokens(std::string_view raw) {
     return splitCssTokens(raw);
+}
+
+std::vector<std::string> parseFontFamilyList(std::string_view raw) {
+    std::vector<std::string> families;
+    for (std::string family : splitCommaList(raw)) {
+        family = trim(family);
+        if (family.size() >= 2 &&
+            ((family.front() == '"' && family.back() == '"') ||
+             (family.front() == '\'' && family.back() == '\''))) {
+            family = family.substr(1, family.size() - 2);
+        }
+        if (!family.empty()) {
+            families.push_back(std::move(family));
+        }
+    }
+    return families;
+}
+
+std::optional<float> parseFontLineHeight(std::string_view raw, float fontSize) {
+    const std::string value = lower(trim(raw));
+    if (value == "normal") {
+        return 1.38f;
+    }
+    if (std::optional<float> multiplier = parseUnitlessFloat(value);
+        multiplier && *multiplier > 0.0f) {
+        return multiplier;
+    }
+    if (value.ends_with('%')) {
+        if (std::optional<float> percent =
+                parseUnitlessFloat(std::string_view(value).substr(0, value.size() - 1));
+            percent && *percent > 0.0f) {
+            return *percent / 100.0f;
+        }
+    }
+    if (std::optional<float> pixels = parseNumberOrPx(value);
+        pixels && *pixels > 0.0f && fontSize > 0.0f) {
+        return *pixels / fontSize;
+    }
+    return std::nullopt;
+}
+
+bool parseFontShorthand(std::string_view raw, Style& style) {
+    const std::vector<std::string> tokens = splitCssTokens(raw);
+    if (tokens.size() < 2) {
+        return false;
+    }
+
+    size_t sizeIndex = std::string::npos;
+    size_t familyIndex = std::string::npos;
+    float fontSize = 0.0f;
+    std::optional<float> lineHeight;
+    for (size_t index = 0; index < tokens.size(); ++index) {
+        const size_t slash = tokens[index].find('/');
+        const std::string_view sizeToken = std::string_view(tokens[index]).substr(0, slash);
+        if (!sizeToken.ends_with("px")) {
+            continue;
+        }
+        std::optional<float> parsedSize = parseNumberOrPx(sizeToken);
+        if (!parsedSize || *parsedSize <= 0.0f) {
+            continue;
+        }
+        fontSize = *parsedSize;
+        sizeIndex = index;
+        familyIndex = index + 1;
+        if (slash != std::string::npos) {
+            std::string_view lineHeightToken =
+                std::string_view(tokens[index]).substr(slash + 1);
+            if (lineHeightToken.empty() && familyIndex < tokens.size()) {
+                lineHeightToken = tokens[familyIndex++];
+            }
+            lineHeight = parseFontLineHeight(lineHeightToken, fontSize);
+            if (!lineHeight) {
+                return false;
+            }
+        } else if (familyIndex < tokens.size() && tokens[familyIndex].starts_with('/')) {
+            std::string_view lineHeightToken =
+                std::string_view(tokens[familyIndex]).substr(1);
+            ++familyIndex;
+            if (lineHeightToken.empty() && familyIndex < tokens.size()) {
+                lineHeightToken = tokens[familyIndex++];
+            }
+            lineHeight = parseFontLineHeight(lineHeightToken, fontSize);
+            if (!lineHeight) {
+                return false;
+            }
+        }
+        break;
+    }
+    if (sizeIndex == std::string::npos || familyIndex >= tokens.size()) {
+        return false;
+    }
+
+    bool bold = false;
+    for (size_t index = 0; index < sizeIndex; ++index) {
+        const std::string token = lower(tokens[index]);
+        if (token == "bold" || token == "bolder" || token == "600" ||
+            token == "700" || token == "800" || token == "900") {
+            bold = true;
+        } else if (token != "normal" && token != "lighter" &&
+                   token != "100" && token != "200" && token != "300" &&
+                   token != "400" && token != "500") {
+            return false;
+        }
+    }
+
+    std::string familyText;
+    for (size_t index = familyIndex; index < tokens.size(); ++index) {
+        if (!familyText.empty()) {
+            familyText.push_back(' ');
+        }
+        familyText += tokens[index];
+    }
+    std::vector<std::string> families = parseFontFamilyList(familyText);
+    if (families.empty()) {
+        return false;
+    }
+
+    style.fontInherit = false;
+    style.fontFamilyInherit = false;
+    style.fontSize = fontSize;
+    style.fontBold = bold;
+    style.fontFamilies = std::move(families);
+    style.lineHeight = lineHeight.value_or(1.38f);
+    style.flags.font = true;
+    style.flags.fontSize = true;
+    style.flags.fontBold = true;
+    style.flags.fontFamily = true;
+    style.flags.lineHeight = true;
+    return true;
 }
 
 bool applyEdgeShorthand(EdgeValues& edges,
@@ -2205,6 +2353,22 @@ void mergeStyle(Style& target, const Style& source) {
         target.borderRadius.bottomLeft = source.borderRadius.bottomLeft;
         target.flags.borderBottomLeftRadius = true;
     }
+    if (f.font) {
+        target.fontInherit = source.fontInherit;
+        target.flags.font = true;
+        if (source.fontInherit) {
+            target.fontFamilyInherit = false;
+            target.flags.fontSize = false;
+            target.flags.fontBold = false;
+            target.flags.fontFamily = false;
+            target.flags.lineHeight = false;
+        }
+    }
+    if (source.fontFamilyInherit) {
+        target.fontFamilyInherit = true;
+        target.fontFamilies.clear();
+        target.flags.fontFamily = false;
+    }
     if (f.fontSize) {
         target.fontSize = source.fontSize;
         target.flags.fontSize = true;
@@ -2212,6 +2376,11 @@ void mergeStyle(Style& target, const Style& source) {
     if (f.fontBold) {
         target.fontBold = source.fontBold;
         target.flags.fontBold = true;
+    }
+    if (f.fontFamily) {
+        target.fontFamilyInherit = false;
+        target.fontFamilies = source.fontFamilies;
+        target.flags.fontFamily = true;
     }
     if (f.lineHeight) {
         target.lineHeight = source.lineHeight;
@@ -2702,6 +2871,9 @@ void applyInheritedStyle(Node& node, const RuntimeOptions& options) {
         if (!node.style.flags.fontBold) {
             node.style.fontBold = parent.fontBold;
         }
+        if (!node.style.flags.fontFamily) {
+            node.style.fontFamilies = parent.fontFamilies;
+        }
         if (!node.style.flags.lineHeight) {
             node.style.lineHeight = parent.lineHeight;
         }
@@ -2735,6 +2907,9 @@ void applyInheritedStyle(Node& node, const RuntimeOptions& options) {
         }
         if (!pseudoStyle.flags.fontBold) {
             pseudoStyle.fontBold = node.style.fontBold;
+        }
+        if (!pseudoStyle.flags.fontFamily) {
+            pseudoStyle.fontFamilies = node.style.fontFamilies;
         }
         if (!pseudoStyle.flags.lineHeight) {
             pseudoStyle.lineHeight = node.style.lineHeight;
@@ -3529,15 +3704,39 @@ void applyDeclaration(Style& style, std::string_view rawName, std::string_view r
     } else if (name == "content") {
         style.content = unquoteCssValue(value);
         style.flags.content = true;
+    } else if (name == "font") {
+        if (lower(value) == "inherit") {
+            style.fontInherit = true;
+            style.flags.font = true;
+            style.flags.fontSize = false;
+            style.flags.fontBold = false;
+            style.flags.fontFamily = false;
+            style.flags.lineHeight = false;
+        } else {
+            parseFontShorthand(value, style);
+        }
     } else if (name == "font-size" && number) {
         style.fontSize = *number;
         style.flags.fontSize = true;
     } else if (name == "font-weight") {
         style.fontBold = lower(value) == "bold" || value == "600" || value == "700";
         style.flags.fontBold = true;
+    } else if (name == "font-family") {
+        if (lower(value) == "inherit") {
+            style.fontFamilyInherit = true;
+            style.fontFamilies.clear();
+            style.flags.fontFamily = false;
+        } else {
+            std::vector<std::string> families = parseFontFamilyList(value);
+            if (!families.empty()) {
+                style.fontFamilyInherit = false;
+                style.fontFamilies = std::move(families);
+                style.flags.fontFamily = true;
+            }
+        }
     } else if (name == "line-height") {
-        if (std::optional<float> multiplier = parseUnitlessFloat(value);
-            multiplier && *multiplier > 0.0f) {
+        if (std::optional<float> multiplier =
+                parseFontLineHeight(value, 0.0f)) {
             style.lineHeight = *multiplier;
             style.flags.lineHeight = true;
         }
@@ -4120,13 +4319,22 @@ void prepareRootEnvironment(std::string_view css, CssEnvironment& environment) {
     for (const RootBlock& rootBlock : rootBlocks) {
         visitDeclarations(
             rootBlock.declarations, [&](const std::string& name, const DeclarationValue& value) {
-                if (lower(name) != "font-size") {
+                const std::string property = lower(name);
+                if (property != "font-size" && property != "font") {
                     return;
                 }
                 std::optional<std::string> resolved = resolveCssValue(value.value, environment);
                 if (resolved) {
-                    if (std::optional<float> fontSize = parseNumberOrPx(*resolved);
-                        fontSize && *fontSize > 0.0f) {
+                    std::optional<float> fontSize;
+                    if (property == "font-size") {
+                        fontSize = parseNumberOrPx(*resolved);
+                    } else {
+                        Style rootFont;
+                        if (parseFontShorthand(*resolved, rootFont)) {
+                            fontSize = rootFont.fontSize;
+                        }
+                    }
+                    if (fontSize && *fontSize > 0.0f) {
                         environment.rootFontSize = *fontSize;
                     }
                 }

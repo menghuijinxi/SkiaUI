@@ -122,7 +122,8 @@
 逗号 fallback，例如 `var(--panel-color, #ffffff)`；当前不实现元素级变量作用域和继承。
 
 长度声明除各属性表中列出的 `px` / `%` 外，也支持 `rem`。`1rem` 以 `:root` 的
-`font-size` 为基准；未声明根字号时使用默认根字号。根字号本身可用数值、`px` 或 `rem`。
+`font-size` 或 `font` 简写字号为基准；未声明根字号时使用默认根字号。根字号本身可用数字、
+`px` 或 `rem`。
 
 ## 媒体查询
 
@@ -217,7 +218,9 @@ Grid 通过 Yoga 和内部单元格节点实现，覆盖等分 `repeat(N, 1fr)`�
 | `text-shadow` | 逗号分隔的文字阴影；支持偏移、模糊和颜色 |
 | `font-size` | 数字、`px` 或 `rem` |
 | `font-weight` | `bold`、`600`、`700` 为粗体；其他为常规 |
-| `line-height` | 无单位倍率 |
+| `font-family` | 逗号分隔的字体候选列表，支持带引号的名称和 `sans-serif`、`serif`、`monospace`、`system-ui` 通用族 |
+| `font` | 常见简写子集：可选常规/粗体字重、`px` 或解析后的 `rem` 字号、可选 `/ line-height`、字体候选列表；支持 `inherit` |
+| `line-height` | `normal`、无单位倍率或百分比；`font` 简写的 `/ line-height` 还支持 `px` |
 | `text-align` | `left` / `start`、`center`、`right` / `end`，适用于普通文本 |
 | `white-space` | 普通单行文本识别 `nowrap`；与 overflow 和 text-overflow 配合使用 |
 | `text-overflow` | 普通单行文本在 `overflow` 非 visible 且 `white-space: nowrap` 时支持 `ellipsis` |
