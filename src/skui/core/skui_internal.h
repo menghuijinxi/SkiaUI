@@ -99,6 +99,11 @@ enum class PointerEvents {
     None
 };
 
+enum class MixBlendMode {
+    Normal,
+    Lighten
+};
+
 enum class LengthUnit {
     Px,
     Percent,
@@ -465,6 +470,7 @@ struct Style {
         bool textShadow = false;
         bool content = false;
         bool opacity = false;
+        bool mixBlendMode = false;
         bool transform = false;
         bool transformOrigin = false;
         bool filter = false;
@@ -535,6 +541,7 @@ struct Style {
     std::vector<Shadow> textShadows;
     std::string content;
     float opacity = 1.0f;
+    MixBlendMode mixBlendMode = MixBlendMode::Normal;
     Transform transform;
     TransformOrigin transformOrigin;
     Filter filter;

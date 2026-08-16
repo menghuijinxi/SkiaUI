@@ -207,6 +207,7 @@ Grid 通过 Yoga 和内部单元格节点实现，覆盖等分 `repeat(N, 1fr)`�
 | `background-position` | 1-2 个 `px`、百分比或 `left` / `right` / `top` / `bottom` / `center`；百分比按浏览器的“容器尺寸减背景尺寸”公式计算 |
 | `background-repeat` | `repeat`、`no-repeat`、`repeat-x`、`repeat-y` |
 | `mask-image` / `-webkit-mask-image` | 单层线性或径向渐变 alpha 遮罩 |
+| `mix-blend-mode` | 位图和视频支持 `normal`（默认）与 `lighten`；`lighten` 可将黑底视频叠加到背景画面 |
 | `border` | 简单 shorthand：宽度、`solid` / `none`、颜色 |
 | `border-color` | 边框色 |
 | `border-width` | 数字或 `px` |

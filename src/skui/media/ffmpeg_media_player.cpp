@@ -479,6 +479,10 @@ private:
                 const AudioSnapshot audio = audioSnapshot();
                 {
                     std::lock_guard lock(stateMutex_);
+                    if (commandSerial_.load(std::memory_order_relaxed) !=
+                        commandSerial) {
+                        continue;
+                    }
                     decodeEnded_ = true;
                     refreshBufferReadyLocked(audio);
                 }
@@ -498,7 +502,8 @@ private:
             publishVideoFrames(batch,
                                decodeSegmentStartSeconds,
                                loopOffsetSeconds,
-                               loopHead);
+                               loopHead,
+                               commandSerial);
         }
     }
 
@@ -592,11 +597,16 @@ private:
     void publishVideoFrames(const detail::DecodeBatch& batch,
                             double segmentStartSeconds,
                             double loopOffsetSeconds,
-                            LoopHeadCache& loopHead) {
+                            LoopHeadCache& loopHead,
+                            uint64_t commandSerial) {
         const AudioSnapshot audio = audioSnapshot();
         bool addedFrame = false;
         {
             std::lock_guard lock(stateMutex_);
+            // seek() 清空队列时，解码线程可能仍在处理旧批次；禁止旧时间线结果随后写回。
+            if (commandSerial_.load(std::memory_order_relaxed) != commandSerial) {
+                return;
+            }
             for (const detail::DecodedVideoFrame& decoded : batch.videoFrames) {
                 const double frameEnd =
                     decoded.presentationSeconds + decoded.durationSeconds;
@@ -678,6 +688,9 @@ private:
         bool injectedVideo = false;
         {
             std::lock_guard lock(stateMutex_);
+            if (commandSerial_.load(std::memory_order_relaxed) != commandSerial) {
+                return true;
+            }
             for (const detail::DecodedVideoFrame& cached : loopHead.videoFrames) {
                 detail::DecodedVideoFrame frame = cached;
                 frame.presentationSeconds += nextLoopOffsetSeconds;

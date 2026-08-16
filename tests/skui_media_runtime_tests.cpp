@@ -416,6 +416,59 @@ html, body, .video-test {
     return ok;
 }
 
+bool testVideoLightenBlendIsOptIn() {
+    FakePlayerFactory factory;
+    skui::RuntimeOptions options;
+    options.clearColor = SK_ColorBLACK;
+    options.mediaPlayerFactory = factory.callback();
+    skui::Runtime runtime(std::move(options));
+    bool ok = expect(runtime.loadDocumentFromString(R"html(
+<html><head><style>
+html, body, .stage {
+  position: relative;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  background-color: #0000ff;
+}
+video {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 16px;
+  height: 16px;
+}
+.lighten { mix-blend-mode: lighten; }
+</style></head><body>
+  <div class="stage">
+    <video id="normal" src="normal.webm" preload="auto"></video>
+    <video id="lighten" class="lighten" src="lighten.webm" preload="auto"></video>
+  </div>
+</body></html>)html"),
+                     "video blend-mode document loads");
+    ok = expect(factory.players.size() == 2,
+                "blend-mode document creates both players") && ok;
+    uint32_t pixel = 0;
+    ok = expect(runtime.setVisibleById("lighten", false),
+                "lighten video can be hidden") && ok;
+    ok = expect(renderCenter(runtime, pixel), "normal video renders") && ok;
+    ok = expect(pixel == 0xFFFF0000u,
+                "normal video keeps source-over rendering") && ok;
+    ok = expect(runtime.setVisibleById("normal", false) &&
+                    runtime.setVisibleById("lighten", true),
+                "lighten video can replace normal video") && ok;
+    ok = expect(renderCenter(runtime, pixel), "lighten video renders") && ok;
+    ok = expect(pixel == 0xFFFF00FFu,
+                "lighten video keeps the brighter red and blue channels") && ok;
+    ok = expect(runtime.setStyleById("lighten", "mix-blend-mode: normal;"),
+                "runtime style can restore normal blending") && ok;
+    ok = expect(renderCenter(runtime, pixel),
+                "runtime normal blend video renders") && ok;
+    ok = expect(pixel == 0xFFFF0000u,
+                "runtime normal blend restores source-over rendering") && ok;
+    return ok;
+}
+
 }  // namespace
 
 int main() {
@@ -427,6 +480,7 @@ int main() {
     ok = testMetadataPreloadCanEscalateToExplicitPredecode() && ok;
     ok = testVideoMetadataProvidesIntrinsicLayoutSize() && ok;
     ok = testFullscreenVideoFillsExplicitContainingBlock() && ok;
+    ok = testVideoLightenBlendIsOptIn() && ok;
     if (!ok) {
         return 1;
     }

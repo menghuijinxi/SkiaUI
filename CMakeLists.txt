@@ -63,6 +63,10 @@ option(SKIAUI_BUILD_WIN32_DX12 "Build the Win32/DX12 SkUI host target" ON)
 option(SKIAUI_INSTALL_WIN32_DX12 "Install the Win32/DX12 SkUI host target" ON)
 set(SKIAUI_FFMPEG_TEST_MEDIA "" CACHE FILEPATH
     "Optional media file used by the FFmpeg integration test")
+set(SKIAUI_VIDEO_COMPOSITE_TEST_BACKGROUND "" CACHE FILEPATH
+    "Optional background video used by the black-video compositing test")
+set(SKIAUI_VIDEO_COMPOSITE_TEST_OVERLAY "" CACHE FILEPATH
+    "Optional black-background overlay video used by the compositing test")
 option(SKIATEST_USE_SKIA_D3D "Render SkiaLayerDesk through Skia Ganesh D3D12 backend" ON)
 
 if(SKIAUI_ENABLE_FFMPEG_VIDEO)
@@ -253,6 +257,9 @@ if(SKIAUI_BUILD_TESTS)
     if(SKIAUI_ENABLE_FFMPEG_VIDEO)
         add_executable(SkuiFfmpegPlayerTests
             tests/skui_ffmpeg_player_tests.cpp
+        )
+        add_executable(SkuiVideoCompositeTests
+            tests/skui_video_composite_tests.cpp
         )
     endif()
 endif()
@@ -731,6 +738,10 @@ if(SKIAUI_BUILD_TESTS)
             SkuiFfmpeg
             usp10
         )
+        target_link_libraries(SkuiVideoCompositeTests PRIVATE
+            SkuiFfmpeg
+            usp10
+        )
     endif()
 
     if(SKIAUI_BUILD_WIN32)
@@ -755,6 +766,7 @@ if(SKIAUI_BUILD_TESTS)
         )
         if(SKIAUI_ENABLE_FFMPEG_VIDEO)
             target_compile_options(SkuiFfmpegPlayerTests PRIVATE /utf-8 /permissive- /Zc:__cplusplus)
+            target_compile_options(SkuiVideoCompositeTests PRIVATE /utf-8 /permissive- /Zc:__cplusplus)
         endif()
     endif()
 
@@ -777,6 +789,19 @@ if(SKIAUI_BUILD_TESTS)
             add_test(NAME SkuiFfmpegExternalMediaTests
                 COMMAND SkuiFfmpegPlayerTests "${SKIAUI_FFMPEG_TEST_MEDIA}")
             set_tests_properties(SkuiFfmpegExternalMediaTests PROPERTIES
+                WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+            )
+        endif()
+        if(SKIAUI_ENABLE_FFMPEG_VIDEO
+            AND SKIAUI_VIDEO_COMPOSITE_TEST_BACKGROUND
+            AND SKIAUI_VIDEO_COMPOSITE_TEST_OVERLAY)
+            add_test(NAME SkuiVideoCompositeExternalTests
+                COMMAND SkuiVideoCompositeTests
+                        "${SKIAUI_VIDEO_COMPOSITE_TEST_BACKGROUND}"
+                        "${SKIAUI_VIDEO_COMPOSITE_TEST_OVERLAY}"
+                        "${CMAKE_CURRENT_BINARY_DIR}/skui_video_composite_test.png")
+            set_tests_properties(SkuiVideoCompositeExternalTests PROPERTIES
+                TIMEOUT 60
                 WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
             )
         endif()

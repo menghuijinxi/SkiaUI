@@ -2422,6 +2422,10 @@ void mergeStyle(Style& target, const Style& source) {
         target.opacity = source.opacity;
         target.flags.opacity = true;
     }
+    if (f.mixBlendMode) {
+        target.mixBlendMode = source.mixBlendMode;
+        target.flags.mixBlendMode = true;
+    }
     if (f.transform) {
         target.transform = source.transform;
         target.flags.transform = true;
@@ -3763,6 +3767,14 @@ void applyDeclaration(Style& style, std::string_view rawName, std::string_view r
         if (std::optional<float> opacity = parseNumberOrPx(value)) {
             style.opacity = clampf(*opacity, 0.0f, 1.0f);
             style.flags.opacity = true;
+        }
+    } else if (name == "mix-blend-mode") {
+        const std::string mode = lower(value);
+        if (mode == "normal" || mode == "lighten") {
+            style.mixBlendMode = mode == "lighten"
+                                     ? MixBlendMode::Lighten
+                                     : MixBlendMode::Normal;
+            style.flags.mixBlendMode = true;
         }
     } else if (name == "transform") {
         if (std::optional<Transform> transform = parseTransform(value)) {

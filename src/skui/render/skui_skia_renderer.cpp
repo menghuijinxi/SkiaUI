@@ -2141,6 +2141,9 @@ void SkiaRenderer::drawBitmapImage(SkCanvas& canvas,
     }
     SkPaint paint;
     paint.setAntiAlias(true);
+    if (node.style.mixBlendMode == MixBlendMode::Lighten) {
+        paint.setBlendMode(SkBlendMode::kLighten);
+    }
     const SkSamplingOptions sampling = imageWidth < 2 || imageHeight < 2
                                            ? SkSamplingOptions(SkFilterMode::kNearest)
                                            : SkSamplingOptions(SkFilterMode::kLinear);
