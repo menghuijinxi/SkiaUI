@@ -3,6 +3,7 @@
 #include "skui_internal.h"
 
 #include <memory>
+#include <shared_mutex>
 #include <string>
 #include <unordered_map>
 
@@ -27,7 +28,9 @@ public:
     bool pause(Node& node);
     bool seek(Node& node, double seconds);
     bool setMuted(Node& node, bool muted);
-    [[nodiscard]] std::optional<MediaPlaybackState> state(const Node& node) const;
+    [[nodiscard]] std::optional<MediaPlaybackState> stateById(
+        std::string_view id,
+        std::string_view expectedTag) const;
 
 private:
     struct Entry {
@@ -41,6 +44,25 @@ private:
         bool autoplayStarted = false;
     };
 
+    struct PlaybackSnapshot {
+        std::string tag;
+        MediaPlaybackState state;
+    };
+
+    struct TransparentStringHash {
+        using is_transparent = void;
+
+        size_t operator()(std::string_view value) const noexcept {
+            return std::hash<std::string_view>{}(value);
+        }
+    };
+
+    using PlaybackSnapshotMap = std::unordered_map<
+        std::string,
+        PlaybackSnapshot,
+        TransparentStringHash,
+        std::equal_to<>>;
+
     void syncNode(Document& document,
                   Node& node,
                   std::unordered_map<const Node*, bool>& liveNodes);
@@ -50,12 +72,17 @@ private:
     [[nodiscard]] size_t predecodeFrames(const Node& node) const;
     [[nodiscard]] Entry* entry(Node& node);
     [[nodiscard]] const Entry* entry(const Node& node) const;
+    void publishPlaybackSnapshot(const Entry& entry);
+    void publishPlaybackSnapshots();
+    void clearPlaybackSnapshots();
 
     std::string assetRoot_;
     size_t defaultPredecodeFrames_ = 3;
     MediaPlayerFactory playerFactory_;
     std::function<void()> requestRedraw_;
     std::unordered_map<const Node*, Entry> entries_;
+    mutable std::shared_mutex playbackSnapshotsMutex_;
+    PlaybackSnapshotMap playbackSnapshots_;
     bool intrinsicSizeChanged_ = false;
 };
 

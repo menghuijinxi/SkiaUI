@@ -329,6 +329,7 @@ public:
     bool pauseVideoById(std::string_view id);
     bool seekVideoById(std::string_view id, double seconds);
     bool setVideoMutedById(std::string_view id, bool muted);
+    // Thread-safe snapshot that may trail an in-progress media update by one tick.
     [[nodiscard]] std::optional<MediaPlaybackState> videoStateById(
         std::string_view id) const;
     bool prepareAudioById(std::string_view id);
@@ -336,6 +337,7 @@ public:
     bool pauseAudioById(std::string_view id);
     bool seekAudioById(std::string_view id, double seconds);
     bool setAudioMutedById(std::string_view id, bool muted);
+    // Thread-safe snapshot that may trail an in-progress media update by one tick.
     [[nodiscard]] std::optional<MediaPlaybackState> audioStateById(
         std::string_view id) const;
     bool insertHtmlAtSelection(std::string_view editingHostId,

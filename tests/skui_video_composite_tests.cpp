@@ -21,10 +21,12 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -72,6 +74,53 @@ bool expect(bool condition, std::string_view message) {
     }
     return condition;
 }
+
+class WorkerRedrawGate {
+public:
+    WorkerRedrawGate() : ownerThread_(std::this_thread::get_id()) {}
+
+    void requestRedraw() {
+        if (std::this_thread::get_id() == ownerThread_) {
+            return;
+        }
+        std::unique_lock lock(mutex_);
+        if (!armed_ || blocked_) {
+            return;
+        }
+        blocked_ = true;
+        condition_.notify_all();
+        condition_.wait(lock, [this] { return released_; });
+    }
+
+    void arm() {
+        std::lock_guard lock(mutex_);
+        armed_ = true;
+        blocked_ = false;
+        released_ = false;
+    }
+
+    bool waitUntilBlocked(std::chrono::milliseconds timeout) {
+        std::unique_lock lock(mutex_);
+        return condition_.wait_for(lock, timeout, [this] { return blocked_; });
+    }
+
+    void release() {
+        {
+            std::lock_guard lock(mutex_);
+            armed_ = false;
+            released_ = true;
+        }
+        condition_.notify_all();
+    }
+
+private:
+    const std::thread::id ownerThread_;
+    std::mutex mutex_;
+    std::condition_variable condition_;
+    bool armed_ = false;
+    bool blocked_ = false;
+    bool released_ = false;
+};
 
 bool isReady(const std::optional<skui::MediaPlaybackState>& state) {
     return state && (state->readyState == skui::MediaReadyState::Ready ||
@@ -320,6 +369,93 @@ bool testReplayStartsWithFreshFrames(const std::filesystem::path& mediaPath) {
     return ok;
 }
 
+bool testImmediateReplayStartsAfterFirstFrame(
+    const std::filesystem::path& mediaPath) {
+    constexpr size_t kPredecodeFrames = 10;
+    WorkerRedrawGate redrawGate;
+    const skui::MediaPlayerFactory factory =
+        skui::ffmpeg::makeMediaPlayerFactory();
+    std::unique_ptr<skui::MediaPlayer> player = factory({[&redrawGate] {
+        redrawGate.requestRedraw();
+    }});
+    bool ok = expect(player->setSource(skui::MediaSourceOptions{
+                         pathToUtf8(mediaPath),
+                         kPredecodeFrames,
+                         false,
+                         true,
+                     }),
+                     "immediate replay fixture source is accepted");
+    ok = expect(player->prepare(), "immediate replay fixture begins predecode") && ok;
+    ok = waitForPlayerReady(*player, std::chrono::seconds(10)) && ok;
+    if (!ok) {
+        player->close();
+        return false;
+    }
+
+    player->pause();
+    redrawGate.arm();
+    ok = expect(player->seek(0.0), "immediate replay resets to zero") && ok;
+    ok = expect(player->play(), "immediate replay accepts play without waiting") && ok;
+    const bool firstBatchPublished =
+        redrawGate.waitUntilBlocked(std::chrono::seconds(10));
+    const skui::MediaPlaybackState beforeTick = player->state();
+    const bool firstFrameVisible = player->currentFrame() != nullptr;
+    (void)player->tick(0.0);
+    const skui::MediaPlaybackState afterTick = player->state();
+    redrawGate.release();
+
+    ok = expect(firstBatchPublished, "immediate replay publishes its first batch") && ok;
+    ok = expect(firstFrameVisible, "immediate replay exposes its first frame") && ok;
+    ok = expect(beforeTick.bufferedVideoFrames < kPredecodeFrames,
+                "fixture pauses before the full predecode target") && ok;
+    ok = expect(afterTick.readyState == skui::MediaReadyState::Playing,
+                "immediate replay starts when its first fresh frame is ready") && ok;
+    player->close();
+    return ok;
+}
+
+bool testPredecodedFramesAreNotReleasedBySeek(
+    const std::filesystem::path& mediaPath) {
+    constexpr size_t kPredecodeFrames = 10;
+    constexpr int kSeekSamples = 7;
+    constexpr double kMaximumMedianSeekMilliseconds = 0.75;
+    const skui::MediaPlayerFactory factory =
+        skui::ffmpeg::makeMediaPlayerFactory();
+    std::unique_ptr<skui::MediaPlayer> player = factory({});
+    bool ok = expect(player->setSource(skui::MediaSourceOptions{
+                         pathToUtf8(mediaPath),
+                         kPredecodeFrames,
+                         false,
+                         true,
+                     }),
+                     "seek release fixture source is accepted");
+    ok = expect(player->prepare(), "seek release fixture begins predecode") && ok;
+    ok = waitForPlayerReady(*player, std::chrono::seconds(10)) && ok;
+    if (!ok) {
+        player->close();
+        return false;
+    }
+
+    std::vector<double> seekMilliseconds;
+    seekMilliseconds.reserve(kSeekSamples);
+    for (int sample = 0; sample < kSeekSamples; ++sample) {
+        const auto start = std::chrono::steady_clock::now();
+        ok = expect(player->seek(0.0), "predecoded seek is accepted") && ok;
+        const auto elapsed = std::chrono::steady_clock::now() - start;
+        seekMilliseconds.push_back(
+            std::chrono::duration<double, std::milli>(elapsed).count());
+        ok = waitForPlayerReady(*player, std::chrono::seconds(10)) && ok;
+    }
+
+    std::sort(seekMilliseconds.begin(), seekMilliseconds.end());
+    const double medianMilliseconds = seekMilliseconds[kSeekSamples / 2];
+    std::cout << "predecoded seek median: " << medianMilliseconds << " ms\n";
+    ok = expect(medianMilliseconds < kMaximumMedianSeekMilliseconds,
+                "seek must not synchronously release predecoded 4K frames") && ok;
+    player->close();
+    return ok;
+}
+
 int run(const std::filesystem::path& backgroundPath,
         const std::filesystem::path& overlayPath,
         const std::filesystem::path& outputPath) {
@@ -387,6 +523,8 @@ html, body, .stage { background-color: #000000; }
     ok = expect(writeComparison(outputPath, destination, source, composite),
                 "comparison PNG is written") && ok;
     ok = testReplayStartsWithFreshFrames(overlayPath) && ok;
+    ok = testImmediateReplayStartsAfterFirstFrame(overlayPath) && ok;
+    ok = testPredecodedFramesAreNotReleasedBySeek(overlayPath) && ok;
     return ok ? 0 : 1;
 }
 

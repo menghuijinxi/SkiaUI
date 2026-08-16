@@ -49,6 +49,7 @@ struct FakePlayerState {
     int pauseCalls = 0;
     int tickCalls = 0;
     int closeCalls = 0;
+    int stateCalls = 0;
 };
 
 class FakePlayer final : public skui::MediaPlayer {
@@ -146,6 +147,7 @@ public:
     }
 
     skui::MediaPlaybackState state() const override {
+        ++state_->stateCalls;
         return state_->playback;
     }
 
@@ -318,6 +320,49 @@ bool testMetadataAutoplayAndRemovalLifecycle() {
     return ok;
 }
 
+bool testPlaybackStateQueriesUsePublishedSnapshots() {
+    FakePlayerFactory factory;
+    skui::RuntimeOptions options;
+    options.mediaPlayerFactory = factory.callback();
+    skui::Runtime runtime(std::move(options));
+    bool ok = expect(runtime.loadDocumentFromString(R"html(
+<html><body>
+  <video id="clip" src="clip.webm"></video>
+</body></html>)html"),
+                     "snapshot document loads");
+    ok = expect(factory.players.size() == 1,
+                "snapshot document creates one player") && ok;
+    if (!ok) {
+        return false;
+    }
+
+    const std::shared_ptr<FakePlayerState>& player = factory.players.front();
+    const int stateCallsAfterLoad = player->stateCalls;
+    const auto initial = runtime.videoStateById("clip");
+    ok = expect(initial && initial->readyState == skui::MediaReadyState::Idle,
+                "initial video snapshot is available") && ok;
+    ok = expect(player->stateCalls == stateCallsAfterLoad,
+                "snapshot query does not enter the media player") && ok;
+
+    player->playback.readyState = skui::MediaReadyState::Failed;
+    const auto beforePublish = runtime.videoStateById("clip");
+    ok = expect(beforePublish &&
+                    beforePublish->readyState == skui::MediaReadyState::Idle,
+                "in-progress player changes do not mutate a published snapshot") && ok;
+    (void)runtime.tick(0.0f);
+    const auto afterPublish = runtime.videoStateById("clip");
+    ok = expect(afterPublish &&
+                    afterPublish->readyState == skui::MediaReadyState::Failed,
+                "runtime tick publishes the latest player state") && ok;
+    ok = expect(!runtime.audioStateById("clip").has_value(),
+                "snapshot query preserves the media element type") && ok;
+    ok = expect(runtime.removeElementById("clip"),
+                "snapshot video can be removed") && ok;
+    ok = expect(!runtime.videoStateById("clip").has_value(),
+                "removing a video also removes its snapshot") && ok;
+    return ok;
+}
+
 bool testMetadataPreloadCanEscalateToExplicitPredecode() {
     FakePlayerFactory factory;
     skui::RuntimeOptions options;
@@ -477,6 +522,7 @@ int main() {
     ok = testOnDemandPlayDoesNotPreload() && ok;
     ok = testAudioElementUsesAudioOnlyPlayback() && ok;
     ok = testMetadataAutoplayAndRemovalLifecycle() && ok;
+    ok = testPlaybackStateQueriesUsePublishedSnapshots() && ok;
     ok = testMetadataPreloadCanEscalateToExplicitPredecode() && ok;
     ok = testVideoMetadataProvidesIntrinsicLayoutSize() && ok;
     ok = testFullscreenVideoFillsExplicitContainingBlock() && ok;

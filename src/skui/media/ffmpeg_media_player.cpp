@@ -73,9 +73,11 @@ public:
         sourceOptions_ = options;
         sourceOptions_.predecodeFrames =
             std::clamp<size_t>(options.predecodeFrames, 1, 100);
+        retiredVideoImages_.reserve(sourceOptions_.predecodeFrames + 1);
         playbackState_ = {};
         playbackState_.readyState = MediaReadyState::Idle;
         pausedTimelineSeconds_ = 0.0;
+        startupVideoFrames_ = 1;
         return true;
     }
 
@@ -172,9 +174,9 @@ public:
             playbackBaseSeconds_ = target;
             playbackActive_ = false;
             bufferReady_ = false;
+            startupVideoFrames_ = 1;
             decodeEnded_ = false;
-            currentFrame_.reset();
-            videoFrames_.clear();
+            retireAllVideoFramesLocked();
             playbackState_.currentSeconds = target;
             playbackState_.bufferedVideoFrames = 0;
             playbackState_.readyState = MediaReadyState::Prebuffering;
@@ -186,8 +188,12 @@ public:
     }
 
     void close() override {
-        cancelRequested_.store(true, std::memory_order_relaxed);
         commandSerial_.fetch_add(1, std::memory_order_relaxed);
+        {
+            std::lock_guard lock(stateMutex_);
+            retireAllVideoFramesLocked();
+        }
+        cancelRequested_.store(true, std::memory_order_relaxed);
         wakeDecoder_.notify_all();
         if (worker_.joinable()) {
             worker_.join();
@@ -202,14 +208,13 @@ public:
         }
 
         std::lock_guard lock(stateMutex_);
-        videoFrames_.clear();
-        currentFrame_.reset();
         requestedLoad_ = LoadRequest::None;
         opened_ = false;
         explicitPrepareRequested_ = false;
         playRequested_ = false;
         playbackActive_ = false;
         bufferReady_ = false;
+        startupVideoFrames_ = 1;
         decodeEnded_ = false;
         pendingSeekSeconds_.reset();
         playbackState_.bufferedVideoFrames = 0;
@@ -239,7 +244,8 @@ public:
             size_t consumedCount = 0;
             while (!videoFrames_.empty() &&
                    videoFrames_.front().presentationSeconds <= clockSeconds + 0.0005) {
-                currentFrame_ = videoFrames_.front().image;
+                retireVideoImageLocked(currentFrame_);
+                currentFrame_ = std::move(videoFrames_.front().image);
                 lastDisplayedEndSeconds_ =
                     videoFrames_.front().presentationSeconds +
                     videoFrames_.front().durationSeconds;
@@ -271,6 +277,7 @@ public:
                 pausedTimelineSeconds_ = clockSeconds;
                 playbackActive_ = false;
                 bufferReady_ = false;
+                startupVideoFrames_ = 1;
                 playbackState_.readyState = MediaReadyState::Rebuffering;
                 shouldPauseForRebuffer = audio.enabled;
                 changed = true;
@@ -358,6 +365,9 @@ private:
             }
             explicitPrepareRequested_ =
                 explicitPrepareRequested_ || explicitPrepare;
+            if (explicitPrepare) {
+                startupVideoFrames_ = sourceOptions_.predecodeFrames;
+            }
             if (request == LoadRequest::Play) {
                 playRequested_ = true;
             }
@@ -395,12 +405,18 @@ private:
         detail::DecoderSession decoder(cancelRequested_);
         std::string error;
         if (!decoder.open(source, decodeVideo, error)) {
-            fail(std::move(error));
+            releaseRetiredVideoImages();
+            if (!cancelRequested_.load(std::memory_order_relaxed)) {
+                fail(std::move(error));
+            }
             return;
         }
 
         if (!configureAudio(decoder, error)) {
-            fail(std::move(error));
+            releaseRetiredVideoImages();
+            if (!cancelRequested_.load(std::memory_order_relaxed)) {
+                fail(std::move(error));
+            }
             return;
         }
         publishMetadata(decoder.metadata());
@@ -421,26 +437,44 @@ private:
              decoder.metadata().durationSeconds > 0.0
                  ? decoder.metadata().durationSeconds
                  : kLoopHeadMaximumSeconds});
-        while (!cancelRequested_.load(std::memory_order_relaxed)) {
+        std::vector<sk_sp<SkImage>> retiredVideoImages;
+        while (true) {
             std::optional<double> seekTarget;
             uint64_t commandSerial = 0;
+            bool cancelRequested = false;
+            bool decodeRequested = false;
             {
                 std::unique_lock lock(stateMutex_);
                 wakeDecoder_.wait(lock, [this] {
                     return cancelRequested_.load(std::memory_order_relaxed) ||
+                           !retiredVideoImages_.empty() ||
                            pendingSeekSeconds_.has_value() || shouldDecodeLocked();
                 });
-                if (cancelRequested_.load(std::memory_order_relaxed)) {
-                    return;
+                takeRetiredVideoImagesLocked(retiredVideoImages);
+                cancelRequested =
+                    cancelRequested_.load(std::memory_order_relaxed);
+                if (!cancelRequested) {
+                    seekTarget = pendingSeekSeconds_;
+                    pendingSeekSeconds_.reset();
+                    commandSerial =
+                        commandSerial_.load(std::memory_order_relaxed);
+                    decodeRequested = seekTarget.has_value() || shouldDecodeLocked();
                 }
-                seekTarget = pendingSeekSeconds_;
-                pendingSeekSeconds_.reset();
-                commandSerial = commandSerial_.load(std::memory_order_relaxed);
+            }
+            retiredVideoImages.clear();
+            if (cancelRequested) {
+                return;
+            }
+            if (!decodeRequested) {
+                continue;
             }
 
             if (seekTarget) {
                 if (!decoder.seek(*seekTarget, error)) {
-                    fail(std::move(error));
+                    releaseRetiredVideoImages();
+                    if (!cancelRequested_.load(std::memory_order_relaxed)) {
+                        fail(std::move(error));
+                    }
                     return;
                 }
                 decodeSegmentStartSeconds = *seekTarget;
@@ -456,10 +490,14 @@ private:
             detail::DecodeBatch batch;
             const detail::DecodeStatus status = decoder.decodeNext(batch, error);
             if (status == detail::DecodeStatus::Interrupted) {
+                releaseRetiredVideoImages();
                 return;
             }
             if (status == detail::DecodeStatus::Failed) {
-                fail(std::move(error));
+                releaseRetiredVideoImages();
+                if (!cancelRequested_.load(std::memory_order_relaxed)) {
+                    fail(std::move(error));
+                }
                 return;
             }
             if (status == detail::DecodeStatus::EndOfStream) {
@@ -473,7 +511,10 @@ private:
                     continue;
                 }
                 if (!error.empty()) {
-                    fail(std::move(error));
+                    releaseRetiredVideoImages();
+                    if (!cancelRequested_.load(std::memory_order_relaxed)) {
+                        fail(std::move(error));
+                    }
                     return;
                 }
                 const AudioSnapshot audio = audioSnapshot();
@@ -845,6 +886,37 @@ private:
                            });
     }
 
+    void retireVideoImageLocked(sk_sp<SkImage>& image) {
+        if (image) {
+            // Raster 图像析构可能释放大块像素内存并同步使 Skia 缓存失效。
+            retiredVideoImages_.push_back(std::move(image));
+        }
+    }
+
+    void retireAllVideoFramesLocked() {
+        retireVideoImageLocked(currentFrame_);
+        for (detail::DecodedVideoFrame& frame : videoFrames_) {
+            retireVideoImageLocked(frame.image);
+        }
+        videoFrames_.clear();
+    }
+
+    void takeRetiredVideoImagesLocked(std::vector<sk_sp<SkImage>>& images) {
+        images.reserve(retiredVideoImages_.size());
+        for (sk_sp<SkImage>& image : retiredVideoImages_) {
+            images.push_back(std::move(image));
+        }
+        retiredVideoImages_.clear();
+    }
+
+    void releaseRetiredVideoImages() {
+        std::vector<sk_sp<SkImage>> images;
+        {
+            std::lock_guard lock(stateMutex_);
+            takeRetiredVideoImagesLocked(images);
+        }
+    }
+
     bool shouldDecodeLocked() const {
         if (!opened_ || decodeEnded_ || requestedLoad_ == LoadRequest::None ||
             requestedLoad_ == LoadRequest::Metadata) {
@@ -863,7 +935,7 @@ private:
     }
 
     void refreshBufferReadyLocked(const AudioSnapshot& audio) {
-        const size_t targetFrames = targetVideoFramesLocked();
+        const size_t targetFrames = std::max<size_t>(1, startupVideoFrames_);
         const bool videoReady = !playbackState_.hasVideo ||
                                 videoFrames_.size() >= targetFrames || decodeEnded_;
         bool audioReady = true;
@@ -1012,6 +1084,7 @@ private:
     MediaPlaybackState playbackState_;
     std::deque<detail::DecodedVideoFrame> videoFrames_;
     sk_sp<SkImage> currentFrame_;
+    std::vector<sk_sp<SkImage>> retiredVideoImages_;
     LoadRequest requestedLoad_ = LoadRequest::None;
     std::optional<double> pendingSeekSeconds_;
     double frameDurationSeconds_ = 1.0 / 30.0;
@@ -1019,6 +1092,7 @@ private:
     double playbackBaseSeconds_ = 0.0;
     double lastDecodedEndSeconds_ = 0.0;
     double lastDisplayedEndSeconds_ = 0.0;
+    size_t startupVideoFrames_ = 1;
     uint64_t audioPlayedOrigin_ = 0;
     std::chrono::steady_clock::time_point wallClockOrigin_{};
     bool opened_ = false;

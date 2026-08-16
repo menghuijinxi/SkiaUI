@@ -2745,8 +2745,7 @@ public:
     [[nodiscard]] std::optional<MediaPlaybackState> mediaStateById(
         std::string_view id,
         std::string_view expectedTag) const {
-        const Node* node = mediaNodeById(id, expectedTag);
-        return node ? mediaController.state(*node) : std::nullopt;
+        return mediaController.stateById(id, expectedTag);
     }
 
     float logicalWidth() const {

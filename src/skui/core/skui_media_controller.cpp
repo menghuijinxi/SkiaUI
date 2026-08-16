@@ -3,7 +3,10 @@
 #include <algorithm>
 #include <charconv>
 #include <filesystem>
+#include <mutex>
+#include <shared_mutex>
 #include <string_view>
+#include <unordered_set>
 #include <utility>
 
 namespace skui {
@@ -69,9 +72,11 @@ void MediaController::sync(Document& document) {
             ++it;
         }
     }
+    publishPlaybackSnapshots();
 }
 
 void MediaController::close() {
+    clearPlaybackSnapshots();
     for (auto& [node, playback] : entries_) {
         (void)node;
         playback.player->close();
@@ -87,6 +92,7 @@ bool MediaController::tick(double deltaSeconds) {
         changed = playback.player->tick(deltaSeconds) || changed;
         const sk_sp<SkImage> previousFrame = node.videoFrame;
         refreshNode(node, playback);
+        publishPlaybackSnapshot(playback);
         changed = previousFrame != node.videoFrame || changed;
     }
     return changed;
@@ -111,12 +117,18 @@ bool MediaController::prepare(Node& node) {
     if (accepted) {
         playback->preloadMode = "auto";
     }
+    publishPlaybackSnapshot(*playback);
     return accepted;
 }
 
 bool MediaController::play(Node& node) {
     Entry* playback = entry(node);
-    return playback && playback->player->play();
+    if (!playback) {
+        return false;
+    }
+    const bool accepted = playback->player->play();
+    publishPlaybackSnapshot(*playback);
+    return accepted;
 }
 
 bool MediaController::pause(Node& node) {
@@ -125,12 +137,18 @@ bool MediaController::pause(Node& node) {
         return false;
     }
     playback->player->pause();
+    publishPlaybackSnapshot(*playback);
     return true;
 }
 
 bool MediaController::seek(Node& node, double seconds) {
     Entry* playback = entry(node);
-    return playback && playback->player->seek(seconds);
+    if (!playback) {
+        return false;
+    }
+    const bool accepted = playback->player->seek(seconds);
+    publishPlaybackSnapshot(*playback);
+    return accepted;
 }
 
 bool MediaController::setMuted(Node& node, bool muted) {
@@ -140,15 +158,19 @@ bool MediaController::setMuted(Node& node, bool muted) {
     }
     playback->muted = muted;
     playback->player->setMuted(muted);
+    publishPlaybackSnapshot(*playback);
     return true;
 }
 
-std::optional<MediaPlaybackState> MediaController::state(const Node& node) const {
-    const Entry* playback = entry(node);
-    if (!playback) {
+std::optional<MediaPlaybackState> MediaController::stateById(
+    std::string_view id,
+    std::string_view expectedTag) const {
+    std::shared_lock snapshotsLock(playbackSnapshotsMutex_);
+    const auto snapshot = playbackSnapshots_.find(id);
+    if (snapshot == playbackSnapshots_.end() || snapshot->second.tag != expectedTag) {
         return std::nullopt;
     }
-    return playback->player->state();
+    return snapshot->second.state;
 }
 
 void MediaController::syncNode(Document& document,
@@ -279,6 +301,38 @@ MediaController::Entry* MediaController::entry(Node& node) {
 const MediaController::Entry* MediaController::entry(const Node& node) const {
     const auto it = entries_.find(&node);
     return it == entries_.end() ? nullptr : &it->second;
+}
+
+void MediaController::publishPlaybackSnapshot(const Entry& playback) {
+    if (playback.node->id.empty()) {
+        return;
+    }
+    PlaybackSnapshot snapshot{playback.node->tag, playback.player->state()};
+
+    std::unique_lock snapshotsLock(playbackSnapshotsMutex_);
+    playbackSnapshots_.insert_or_assign(playback.node->id, std::move(snapshot));
+}
+
+void MediaController::publishPlaybackSnapshots() {
+    std::unordered_set<std::string> liveIds;
+    liveIds.reserve(entries_.size());
+    for (const auto& [node, playback] : entries_) {
+        (void)node;
+        publishPlaybackSnapshot(playback);
+        if (!playback.node->id.empty()) {
+            liveIds.insert(playback.node->id);
+        }
+    }
+
+    std::unique_lock snapshotsLock(playbackSnapshotsMutex_);
+    std::erase_if(playbackSnapshots_, [&liveIds](const auto& item) {
+        return !liveIds.contains(item.first);
+    });
+}
+
+void MediaController::clearPlaybackSnapshots() {
+    std::unique_lock snapshotsLock(playbackSnapshotsMutex_);
+    playbackSnapshots_.clear();
 }
 
 }  // namespace skui
