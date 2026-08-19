@@ -83,6 +83,10 @@ struct ElementEvent {
     bool checked = false;
     float x = 0.0f;
     float y = 0.0f;
+    float elementX = 0.0f;
+    float elementY = 0.0f;
+    float elementWidth = 0.0f;
+    float elementHeight = 0.0f;
     float scrollX = 0.0f;
     float scrollY = 0.0f;
     MouseButton button = MouseButton::None;

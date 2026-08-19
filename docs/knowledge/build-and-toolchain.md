@@ -9,8 +9,10 @@ UE's 1.5 library makes valid PNG files fail to decode.
 Use the dedicated preset when producing libraries for the UE 5.5 plugin:
 
 ```powershell
-cmake --preset ue55-v143-libpng15
+$ProjectFfmpegRoot = 'E:/Project/Init_Ue_Project_UE5_5/Plugins/FFmpeg_UE/Source/ThirdParty/x64-windows'
+cmake --preset ue55-v143-libpng15 -DSKIAUI_FFMPEG_ROOT=$ProjectFfmpegRoot
 cmake --build --preset ue55-v143-libpng15-release --parallel
+$env:Path = "$ProjectFfmpegRoot/bin;$env:Path"
 ctest --test-dir build/ue55-v143-libpng15 -C Release --output-on-failure
 cmake --install build/ue55-v143-libpng15 --config Release
 ```
@@ -31,3 +33,9 @@ targets must use public dependencies on UE's `UElibPNG` and `zlib`, keeping one
 PNG/zlib implementation in the process. Verify the final Unreal link response
 file contains UE's `libpng15_static.lib` and `zlibstatic.lib`, and does not
 contain `libpng16.lib` or `zs.lib`.
+
+For the FFmpeg-enabled UE build, configure `SKIAUI_FFMPEG_ROOT` with the
+project's `Plugins/FFmpeg_UE/Source/ThirdParty/x64-windows` directory. This
+builds `SkuiFfmpeg.lib` against the same FFmpeg headers and import libraries
+that Unreal loads at runtime. Do not let this preset resolve its default vcpkg
+FFmpeg package, because a different FFmpeg major version is not ABI-compatible.

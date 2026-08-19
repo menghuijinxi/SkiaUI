@@ -78,6 +78,7 @@ public:
         playbackState_.readyState = MediaReadyState::Idle;
         pausedTimelineSeconds_ = 0.0;
         startupVideoFrames_ = 1;
+        pausedSeekReady_ = false;
         return true;
     }
 
@@ -149,14 +150,6 @@ public:
         commandSerial_.fetch_add(1, std::memory_order_relaxed);
 
         {
-            std::lock_guard audioLock(audioMutex_);
-            if (audioOutput_) {
-                audioOutput_->suspend();
-                audioOutput_->flush();
-            }
-        }
-
-        {
             std::lock_guard lock(stateMutex_);
             if (sourceOptions_.source.empty()) {
                 return false;
@@ -173,10 +166,17 @@ public:
             pausedTimelineSeconds_ = target;
             playbackBaseSeconds_ = target;
             playbackActive_ = false;
+            progressiveSeekPreview_ = playRequested_;
+            pausedSeekReady_ = false;
             bufferReady_ = false;
             startupVideoFrames_ = 1;
             decodeEnded_ = false;
-            retireAllVideoFramesLocked();
+            if (!currentFrame_ && !videoFrames_.empty()) {
+                currentFrame_ = std::move(videoFrames_.front().image);
+                videoFrames_.pop_front();
+            }
+            retireQueuedVideoFramesLocked();
+            seekPreviewPending_ = playbackState_.hasVideo;
             playbackState_.currentSeconds = target;
             playbackState_.bufferedVideoFrames = 0;
             playbackState_.readyState = MediaReadyState::Prebuffering;
@@ -216,6 +216,9 @@ public:
         bufferReady_ = false;
         startupVideoFrames_ = 1;
         decodeEnded_ = false;
+        seekPreviewPending_ = false;
+        progressiveSeekPreview_ = false;
+        pausedSeekReady_ = false;
         pendingSeekSeconds_.reset();
         playbackState_.bufferedVideoFrames = 0;
         playbackState_.bufferedAudioSeconds = 0.0;
@@ -369,7 +372,25 @@ private:
                 startupVideoFrames_ = sourceOptions_.predecodeFrames;
             }
             if (request == LoadRequest::Play) {
+                const bool wasPaused = !playRequested_;
                 playRequested_ = true;
+                if (pausedSeekReady_) {
+                    pausedSeekReady_ = false;
+                    bufferReady_ = false;
+                    startupVideoFrames_ = 1;
+                    if (currentFrame_ && playbackState_.hasVideo) {
+                        detail::DecodedVideoFrame firstPlaybackFrame;
+                        firstPlaybackFrame.presentationSeconds = pausedTimelineSeconds_;
+                        firstPlaybackFrame.durationSeconds = frameDurationSeconds_;
+                        firstPlaybackFrame.hasAlpha = playbackState_.hasAlpha;
+                        firstPlaybackFrame.image = currentFrame_;
+                        videoFrames_.push_front(std::move(firstPlaybackFrame));
+                    }
+                }
+                if (wasPaused && seekPreviewPending_) {
+                    seekPreviewPending_ = false;
+                    progressiveSeekPreview_ = false;
+                }
             }
             if (!opened_) {
                 playbackState_.readyState = MediaReadyState::Opening;
@@ -438,6 +459,12 @@ private:
                  ? decoder.metadata().durationSeconds
                  : kLoopHeadMaximumSeconds});
         std::vector<sk_sp<SkImage>> retiredVideoImages;
+        uint64_t decodeCommandSerial =
+            commandSerial_.load(std::memory_order_relaxed);
+        bool awaitingSeekFrame = false;
+        bool decodeProgressiveSeekPreview = false;
+        bool decodePausedSeekPreview = false;
+        bool decodeIsSeekCommand = false;
         while (true) {
             std::optional<double> seekTarget;
             uint64_t commandSerial = 0;
@@ -454,10 +481,21 @@ private:
                 cancelRequested =
                     cancelRequested_.load(std::memory_order_relaxed);
                 if (!cancelRequested) {
-                    seekTarget = pendingSeekSeconds_;
-                    pendingSeekSeconds_.reset();
-                    commandSerial =
-                        commandSerial_.load(std::memory_order_relaxed);
+                    if (playRequested_ && decodePausedSeekPreview) {
+                        decodePausedSeekPreview = false;
+                        decodeProgressiveSeekPreview = true;
+                        awaitingSeekFrame = true;
+                    }
+                    if (!awaitingSeekFrame && pendingSeekSeconds_) {
+                        seekTarget = pendingSeekSeconds_;
+                        pendingSeekSeconds_.reset();
+                        decodeCommandSerial =
+                            commandSerial_.load(std::memory_order_relaxed);
+                        decodeProgressiveSeekPreview = progressiveSeekPreview_;
+                        decodePausedSeekPreview = !playRequested_;
+                        decodeIsSeekCommand = true;
+                    }
+                    commandSerial = decodeCommandSerial;
                     decodeRequested = seekTarget.has_value() || shouldDecodeLocked();
                 }
             }
@@ -470,7 +508,15 @@ private:
             }
 
             if (seekTarget) {
+                if (!resetAudioForSeek(commandSerial)) {
+                    continue;
+                }
                 if (!decoder.seek(*seekTarget, error)) {
+                    if (commandSerial_.load(std::memory_order_relaxed) !=
+                        commandSerial) {
+                        error.clear();
+                        continue;
+                    }
                     releaseRetiredVideoImages();
                     if (!cancelRequested_.load(std::memory_order_relaxed)) {
                         fail(std::move(error));
@@ -480,6 +526,7 @@ private:
                 decodeSegmentStartSeconds = *seekTarget;
                 loopOffsetSeconds = 0.0;
                 nextQueuedAudioSeconds = *seekTarget;
+                awaitingSeekFrame = decoder.metadata().hasVideo;
                 {
                     std::lock_guard lock(stateMutex_);
                     decodeEnded_ = false;
@@ -491,7 +538,11 @@ private:
             const detail::DecodeStatus status = decoder.decodeNext(batch, error);
             if (status == detail::DecodeStatus::Interrupted) {
                 releaseRetiredVideoImages();
-                return;
+                if (cancelRequested_.load(std::memory_order_relaxed)) {
+                    return;
+                }
+                error.clear();
+                continue;
             }
             if (status == detail::DecodeStatus::Failed) {
                 releaseRetiredVideoImages();
@@ -501,6 +552,7 @@ private:
                 return;
             }
             if (status == detail::DecodeStatus::EndOfStream) {
+                awaitingSeekFrame = false;
                 if (restartLoop(decoder,
                                 decodeSegmentStartSeconds,
                                 loopOffsetSeconds,
@@ -532,19 +584,52 @@ private:
                 continue;
             }
 
-            if (!processAudio(batch,
-                              decodeSegmentStartSeconds,
-                              loopOffsetSeconds,
-                              nextQueuedAudioSeconds,
-                              loopHead,
-                              commandSerial)) {
+            if (!decoder.metadata().hasVideo ||
+                (decodeProgressiveSeekPreview && !batch.videoFrames.empty()) ||
+                (decodePausedSeekPreview && !batch.videoFrames.empty()) ||
+                batchReachesSeconds(batch, decodeSegmentStartSeconds)) {
+                awaitingSeekFrame = false;
+            }
+            if (commandSerial_.load(std::memory_order_relaxed) !=
+                commandSerial) {
+                publishVideoFrames(batch,
+                                   decodeSegmentStartSeconds,
+                                   loopOffsetSeconds,
+                                   loopHead,
+                                   commandSerial,
+                                   decodeIsSeekCommand,
+                                   decodePausedSeekPreview);
+                if (decodeIsSeekCommand && !awaitingSeekFrame) {
+                    decodeIsSeekCommand = false;
+                }
                 continue;
+            }
+            bool suppressPausedSeekAudio = false;
+            {
+                std::lock_guard lock(stateMutex_);
+                suppressPausedSeekAudio =
+                    decodePausedSeekPreview && !playRequested_;
+            }
+            if (!suppressPausedSeekAudio) {
+                if (!processAudio(batch,
+                                  decodeSegmentStartSeconds,
+                                  loopOffsetSeconds,
+                                  nextQueuedAudioSeconds,
+                                  loopHead,
+                                  commandSerial)) {
+                    continue;
+                }
             }
             publishVideoFrames(batch,
                                decodeSegmentStartSeconds,
                                loopOffsetSeconds,
                                loopHead,
-                               commandSerial);
+                               commandSerial,
+                               decodeIsSeekCommand,
+                               decodePausedSeekPreview);
+            if (decodeIsSeekCommand && !awaitingSeekFrame) {
+                decodeIsSeekCommand = false;
+            }
         }
     }
 
@@ -582,6 +667,18 @@ private:
         std::lock_guard audioLock(audioMutex_);
         audioOutput_ = std::move(output);
         return true;
+    }
+
+    bool resetAudioForSeek(uint64_t commandSerial) {
+        if (commandSerial_.load(std::memory_order_relaxed) != commandSerial) {
+            return false;
+        }
+        std::lock_guard audioLock(audioMutex_);
+        if (audioOutput_) {
+            audioOutput_->suspend();
+            audioOutput_->flush();
+        }
+        return commandSerial_.load(std::memory_order_relaxed) == commandSerial;
     }
 
     void publishMetadata(const detail::StreamMetadata& metadata) {
@@ -639,14 +736,114 @@ private:
                             double segmentStartSeconds,
                             double loopOffsetSeconds,
                             LoopHeadCache& loopHead,
-                            uint64_t commandSerial) {
+                            uint64_t commandSerial,
+                            bool isSeekCommand,
+                            bool pausedSeekPreview) {
         const AudioSnapshot audio = audioSnapshot();
         bool addedFrame = false;
+        bool presentedPreview = false;
         {
-            std::lock_guard lock(stateMutex_);
-            // seek() 清空队列时，解码线程可能仍在处理旧批次；禁止旧时间线结果随后写回。
+            std::unique_lock lock(stateMutex_);
             if (commandSerial_.load(std::memory_order_relaxed) != commandSerial) {
+                const detail::DecodedVideoFrame* preview = nullptr;
+                if (isSeekCommand && seekPreviewPending_ &&
+                    !batch.videoFrames.empty()) {
+                    if (progressiveSeekPreview_ || pausedSeekPreview) {
+                        preview = &batch.videoFrames.back();
+                    } else {
+                        const auto targetFrame = std::find_if(
+                            batch.videoFrames.begin(),
+                            batch.videoFrames.end(),
+                            [segmentStartSeconds](
+                                const detail::DecodedVideoFrame& decoded) {
+                                return decoded.presentationSeconds +
+                                           decoded.durationSeconds + 0.0005 >=
+                                       segmentStartSeconds;
+                            });
+                        if (targetFrame != batch.videoFrames.end()) {
+                            preview = &*targetFrame;
+                        }
+                    }
+                }
+                if (preview) {
+                    retireVideoImageLocked(currentFrame_);
+                    currentFrame_ = preview->image;
+                    lastDisplayedEndSeconds_ =
+                        preview->presentationSeconds + preview->durationSeconds;
+                    ++playbackState_.displayedVideoFrames;
+                    presentedPreview = true;
+                }
+                lock.unlock();
+                if (presentedPreview) {
+                    requestRedraw();
+                }
                 return;
+            }
+            if (seekPreviewPending_ && pausedSeekPreview && !playRequested_ &&
+                !batch.videoFrames.empty()) {
+                const detail::DecodedVideoFrame& preview = batch.videoFrames.back();
+                retireVideoImageLocked(currentFrame_);
+                currentFrame_ = preview.image;
+                lastDisplayedEndSeconds_ =
+                    preview.presentationSeconds + preview.durationSeconds;
+                ++playbackState_.displayedVideoFrames;
+                seekPreviewPending_ = false;
+                pausedSeekReady_ = true;
+                bufferReady_ = true;
+                playbackState_.readyState = MediaReadyState::Ready;
+                playbackState_.hasAlpha =
+                    playbackState_.hasAlpha || decoderFrameHasAlpha(batch);
+                playbackState_.bufferedVideoFrames = videoFrames_.size();
+                lock.unlock();
+                requestRedraw();
+                return;
+            }
+            if (seekPreviewPending_ && !progressiveSeekPreview_) {
+                for (const detail::DecodedVideoFrame& decoded : batch.videoFrames) {
+                    const double frameEnd =
+                        decoded.presentationSeconds + loopOffsetSeconds +
+                        decoded.durationSeconds;
+                    if (frameEnd + 0.0005 < segmentStartSeconds) {
+                        continue;
+                    }
+                    retireVideoImageLocked(currentFrame_);
+                    currentFrame_ = decoded.image;
+                    lastDisplayedEndSeconds_ = frameEnd;
+                    ++playbackState_.displayedVideoFrames;
+                    seekPreviewPending_ = false;
+                    presentedPreview = true;
+                    if (!playRequested_) {
+                        pausedSeekReady_ = true;
+                        bufferReady_ = true;
+                        playbackState_.readyState = MediaReadyState::Ready;
+                    }
+                    break;
+                }
+                playbackState_.hasAlpha =
+                    playbackState_.hasAlpha || decoderFrameHasAlpha(batch);
+                playbackState_.bufferedVideoFrames = videoFrames_.size();
+                refreshBufferReadyLocked(audio);
+                if (!playRequested_) {
+                    lock.unlock();
+                    if (presentedPreview) {
+                        requestRedraw();
+                    }
+                    return;
+                }
+            }
+            const bool batchReachesTarget =
+                batchReachesSeconds(batch, segmentStartSeconds);
+            if (seekPreviewPending_ && progressiveSeekPreview_ &&
+                !batchReachesTarget &&
+                !batch.videoFrames.empty()) {
+                const detail::DecodedVideoFrame& preview =
+                    batch.videoFrames.back();
+                retireVideoImageLocked(currentFrame_);
+                currentFrame_ = preview.image;
+                lastDisplayedEndSeconds_ =
+                    preview.presentationSeconds + preview.durationSeconds;
+                ++playbackState_.displayedVideoFrames;
+                presentedPreview = true;
             }
             for (const detail::DecodedVideoFrame& decoded : batch.videoFrames) {
                 const double frameEnd =
@@ -667,12 +864,23 @@ private:
                     frameEnd + loopOffsetSeconds);
                 addedFrame = true;
             }
+            if (seekPreviewPending_ && !videoFrames_.empty()) {
+                retireVideoImageLocked(currentFrame_);
+                currentFrame_ = std::move(videoFrames_.front().image);
+                lastDisplayedEndSeconds_ =
+                    videoFrames_.front().presentationSeconds +
+                    videoFrames_.front().durationSeconds;
+                videoFrames_.pop_front();
+                ++playbackState_.displayedVideoFrames;
+                seekPreviewPending_ = false;
+                presentedPreview = true;
+            }
             playbackState_.hasAlpha =
                 playbackState_.hasAlpha || decoderFrameHasAlpha(batch);
             playbackState_.bufferedVideoFrames = videoFrames_.size();
             refreshBufferReadyLocked(audio);
         }
-        if (addedFrame) {
+        if (addedFrame || presentedPreview) {
             requestRedraw();
         }
     }
@@ -747,6 +955,11 @@ private:
             requestRedraw();
         }
         if (!decoder.seek(0.0, error)) {
+            if (commandSerial_.load(std::memory_order_relaxed) !=
+                commandSerial) {
+                error.clear();
+                return true;
+            }
             return false;
         }
         segmentStartSeconds =
@@ -886,6 +1099,18 @@ private:
                            });
     }
 
+    static bool batchReachesSeconds(const detail::DecodeBatch& batch,
+                                    double targetSeconds) {
+        return std::any_of(
+            batch.videoFrames.begin(),
+            batch.videoFrames.end(),
+            [targetSeconds](const detail::DecodedVideoFrame& frame) {
+                return frame.presentationSeconds + frame.durationSeconds +
+                           0.0005 >=
+                       targetSeconds;
+            });
+    }
+
     void retireVideoImageLocked(sk_sp<SkImage>& image) {
         if (image) {
             // Raster 图像析构可能释放大块像素内存并同步使 Skia 缓存失效。
@@ -895,6 +1120,10 @@ private:
 
     void retireAllVideoFramesLocked() {
         retireVideoImageLocked(currentFrame_);
+        retireQueuedVideoFramesLocked();
+    }
+
+    void retireQueuedVideoFramesLocked() {
         for (detail::DecodedVideoFrame& frame : videoFrames_) {
             retireVideoImageLocked(frame.image);
         }
@@ -920,6 +1149,9 @@ private:
     bool shouldDecodeLocked() const {
         if (!opened_ || decodeEnded_ || requestedLoad_ == LoadRequest::None ||
             requestedLoad_ == LoadRequest::Metadata) {
+            return false;
+        }
+        if (pausedSeekReady_) {
             return false;
         }
         if (!playbackState_.hasVideo) {
@@ -1102,6 +1334,9 @@ private:
     bool bufferReady_ = false;
     bool decodeEnded_ = false;
     bool underrunActive_ = false;
+    bool seekPreviewPending_ = false;
+    bool progressiveSeekPreview_ = false;
+    bool pausedSeekReady_ = false;
 
     mutable std::mutex audioMutex_;
     std::unique_ptr<AudioOutput> audioOutput_;

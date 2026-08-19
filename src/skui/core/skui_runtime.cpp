@@ -1145,6 +1145,10 @@ ElementEvent makeElementEvent(ElementEventType type, const Node& node, const Eve
     event.checked = node.checked;
     event.x = x;
     event.y = y;
+    event.elementX = node.layout.x;
+    event.elementY = node.layout.y;
+    event.elementWidth = node.layout.w;
+    event.elementHeight = node.layout.h;
     event.scrollX = node.scrollX;
     event.scrollY = node.scrollY;
     event.button = source.button;
@@ -5191,7 +5195,7 @@ bool Runtime::handleEvent(const Event& event) {
                 layoutNeeded = true;
             }
         }
-        if (Node* target = releasedAction ? releasedAction : pressedAction;
+        if (Node* target = pressedAction ? pressedAction : releasedAction;
             target && impl_->options.onElementEvent) {
             mouseUpEvent = makeElementEvent(
                 ElementEventType::MouseUp, *target, event, x, y);

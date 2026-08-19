@@ -518,6 +518,12 @@ Win32 适配层会读写标准 `HTML Format`、`CF_UNICODETEXT` 和 `CF_HDROP`�
 
 事件坐标应使用绘制目标的像素坐标，并和 `Runtime::resize(width, height, dpiScale)` 里的 `width`、`height` 保持同一坐标系。Runtime 会用 `dpiScale * RuntimeOptions::scale` 反算 SkUI 逻辑坐标；如果宿主已经提前把输入转换成逻辑坐标，就应传 `dpiScale = 1.0f` 并避免重复设置 UI 缩放。
 
+元素回调中的 `ElementEvent::x/y` 是还原缩放后的页面逻辑坐标，
+`elementX/elementY/elementWidth/elementHeight` 是事件目标的布局矩形，使用同一逻辑坐标系。
+拖动条、分隔条等控件应使用这组字段计算相对位置，不要根据窗口分辨率反推元素边界。
+鼠标按下 `data-action` 元素后，拖动期间的 `MouseMove` 和最终 `MouseUp` 会继续发给该元素；
+即使指针移到另一个交互元素上，宿主也能可靠结束拖动状态。
+
 ## 业务交互推荐写法
 
 HTML：

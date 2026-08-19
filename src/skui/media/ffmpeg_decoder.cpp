@@ -29,7 +29,6 @@ namespace skui::ffmpeg::detail {
 namespace {
 
 constexpr double kDefaultFrameDurationSeconds = 1.0 / 30.0;
-
 std::string ffmpegError(int code) {
     std::array<char, AV_ERROR_MAX_STRING_SIZE> buffer{};
     av_strerror(code, buffer.data(), buffer.size());
@@ -244,13 +243,20 @@ public:
             return false;
         }
         const double clampedSeconds = std::max(0.0, seconds);
-        const int64_t target = static_cast<int64_t>(std::llround(
-            (timelineOriginSeconds_ + clampedSeconds) * AV_TIME_BASE));
-        const int seekResult = avformat_seek_file(
-            format_.get(), -1, std::numeric_limits<int64_t>::min(), target,
-            std::numeric_limits<int64_t>::max(), AVSEEK_FLAG_BACKWARD);
+        const int streamIndex = metadata_.hasVideo ? videoStreamIndex_
+                                                   : audioStreamIndex_;
+        const AVStream* stream = format_->streams[streamIndex];
+        int64_t target = av_rescale_q(
+            static_cast<int64_t>(std::llround(clampedSeconds * AV_TIME_BASE)),
+            AV_TIME_BASE_Q,
+            stream->time_base);
+        if (stream->start_time != AV_NOPTS_VALUE) {
+            target += stream->start_time;
+        }
+        const int seekResult = av_seek_frame(
+            format_.get(), streamIndex, target, AVSEEK_FLAG_BACKWARD);
         if (seekResult < 0) {
-            error = "avformat_seek_file failed: " + ffmpegError(seekResult);
+            error = "av_seek_frame failed: " + ffmpegError(seekResult);
             return false;
         }
         if (videoCodec_) {

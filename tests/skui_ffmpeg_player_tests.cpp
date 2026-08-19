@@ -8,10 +8,12 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <iostream>
 #include <limits>
 #include <memory>
@@ -50,6 +52,10 @@ struct FakeAudioState {
     bool running = false;
     bool muted = false;
     std::string error;
+    std::condition_variable controlChanged;
+    bool blockSuspend = false;
+    bool suspendEntered = false;
+    bool releaseSuspend = false;
 };
 
 class FakeAudioOutput final : public skui::AudioOutput {
@@ -103,9 +109,14 @@ public:
     }
 
     void suspend() override {
-        std::lock_guard lock(state_->mutex);
+        std::unique_lock lock(state_->mutex);
         state_->running = false;
         ++state_->suspendCalls;
+        state_->suspendEntered = true;
+        state_->controlChanged.notify_all();
+        state_->controlChanged.wait(lock, [this] {
+            return !state_->blockSuspend || state_->releaseSuspend;
+        });
     }
 
     void finish() override {
@@ -391,6 +402,74 @@ bool testGeneratedAudioOnlyWavPlayback() {
            testAudioOnlyPlayback(fixture.path());
 }
 
+bool testSeekDoesNotBlockOnAudioControl() {
+    TemporaryWavFile fixture;
+    if (!check(fixture.create(),
+               "seek audio-control fixture should be created")) {
+        return false;
+    }
+
+    const auto audioState = std::make_shared<FakeAudioState>();
+    skui::AudioOutputFactory audioFactory = [audioState] {
+        return std::make_unique<FakeAudioOutput>(audioState);
+    };
+    const skui::MediaPlayerFactory factory =
+        skui::ffmpeg::makeMediaPlayerFactory(std::move(audioFactory));
+    std::unique_ptr<skui::MediaPlayer> player = factory({});
+    if (!check(player->setSource(skui::MediaSourceOptions{
+                   fixture.path(),
+                   1,
+                   false,
+                   false,
+                   false,
+               }),
+               "seek audio-control source should be accepted") ||
+        !check(player->prepare(), "seek audio-control source should prepare") ||
+        !waitUntilBuffered(*player, std::chrono::seconds(10))) {
+        return false;
+    }
+
+    {
+        std::lock_guard lock(audioState->mutex);
+        audioState->blockSuspend = true;
+        audioState->suspendEntered = false;
+        audioState->releaseSuspend = false;
+    }
+    std::future<bool> seekResult = std::async(
+        std::launch::async,
+        [&player] {
+            return player->seek(0.2);
+        });
+    const bool returnedWhileWorkerBlocked =
+        seekResult.wait_for(std::chrono::milliseconds(200)) ==
+        std::future_status::ready;
+
+    bool suspendEntered = false;
+    {
+        std::unique_lock lock(audioState->mutex);
+        suspendEntered = audioState->controlChanged.wait_for(
+            lock,
+            std::chrono::seconds(2),
+            [&audioState] {
+                return audioState->suspendEntered;
+            });
+        audioState->releaseSuspend = true;
+        audioState->blockSuspend = false;
+        audioState->controlChanged.notify_all();
+    }
+    const bool accepted = seekResult.get();
+    const bool readyAfterRelease = waitUntilBuffered(
+        *player, std::chrono::seconds(10));
+    player->close();
+    return check(returnedWhileWorkerBlocked,
+                 "seek should not wait for the audio control worker") &&
+           check(suspendEntered,
+                 "seek worker should perform the deferred audio reset") &&
+           check(accepted, "deferred audio seek should be accepted") &&
+           check(readyAfterRelease,
+                 "deferred audio seek should finish after audio reset");
+}
+
 bool testResampledAudioDoesNotInsertSilentFrames() {
     TemporaryWavFile fixture;
     if (!check(fixture.createTone44100Hz(),
@@ -430,8 +509,16 @@ bool testResampledAudioDoesNotInsertSilentFrames() {
     }
 
     std::lock_guard lock(audioState->mutex);
-    return check(audioState->bufferedFrames >= 23000,
-                 "resample fixture should queue its PCM") &&
+    constexpr size_t kExpectedOutputFrames = 24000;
+    constexpr size_t kFrameTolerance = 512;
+    return check(audioState->format.sampleRate == 48000,
+                 "resample fixture should use the 48 kHz output format") &&
+           check(audioState->bufferedFrames >=
+                     kExpectedOutputFrames - kFrameTolerance,
+                 "resample fixture should preserve its expected duration") &&
+           check(audioState->bufferedFrames <=
+                     kExpectedOutputFrames + kFrameTolerance,
+                 "resample fixture should not stretch its output duration") &&
            check(audioState->silentWriteFrames == 0,
                  "resampling should not inject silent PCM frames");
 }
@@ -523,14 +610,23 @@ bool testPredecodeAndAudioClock(const std::string& mediaPath,
         return false;
     }
 
+    size_t suspendCallsBeforeUserPause = 0;
+    size_t finishCallsBeforeUserPause = 0;
+    if (prepared.hasAudio) {
+        std::lock_guard lock(audioState->mutex);
+        suspendCallsBeforeUserPause = audioState->suspendCalls;
+        finishCallsBeforeUserPause = audioState->finishCalls;
+    }
     player->pause();
+    const uint64_t displayedBeforePausedSeek =
+        player->state().displayedVideoFrames;
     if (prepared.hasAudio) {
         std::lock_guard lock(audioState->mutex);
         if (!check(audioState->pauseCalls == 1,
                    "user pause should use the pause audio notification") ||
-            !check(audioState->suspendCalls == 0,
+            !check(audioState->suspendCalls == suspendCallsBeforeUserPause,
                    "user pause should not use the transient suspend notification") ||
-            !check(audioState->finishCalls == 0,
+            !check(audioState->finishCalls == finishCallsBeforeUserPause,
                    "user pause should not use the finish audio notification")) {
             return false;
         }
@@ -544,12 +640,105 @@ bool testPredecodeAndAudioClock(const std::string& mediaPath,
     }
 
     const double seekTarget = prepared.durationSeconds > 1.0
-                                  ? 0.5
+                                  ? prepared.durationSeconds * 0.75
                                   : prepared.durationSeconds * 0.5;
-    if (!check(player->seek(seekTarget), "seek should be accepted") ||
-        !waitUntilBuffered(*player, std::chrono::seconds(10)) ||
+    const sk_sp<SkImage> frameBeforeSeek = player->currentFrame();
+    const auto pausedSeekStarted = std::chrono::steady_clock::now();
+    if (!check(frameBeforeSeek != nullptr,
+               "playback should expose a frame before seeking") ||
+        !check(player->seek(seekTarget), "seek should be accepted") ||
         !check(player->currentFrame() != nullptr,
-               "seek should decode a replacement frame before resuming")) {
+               "seek should retain a visible frame while decoding") ||
+        !waitUntilBuffered(*player, std::chrono::seconds(10))) {
+        return false;
+    }
+    const auto pausedSeekElapsed =
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - pausedSeekStarted);
+    const sk_sp<SkImage> frameAfterSeek = player->currentFrame();
+    if (!check(frameAfterSeek != nullptr,
+               "seek should decode a replacement preview frame before resuming") ||
+        !check(frameAfterSeek.get() != frameBeforeSeek.get(),
+               "seek should replace the retained frame with the target frame") ||
+        !check(pausedSeekElapsed < std::chrono::milliseconds(750),
+               "paused seek should publish its first preview frame promptly") ||
+        !check(player->state().displayedVideoFrames ==
+                   displayedBeforePausedSeek + 1,
+                "paused seek should display only one preview frame")) {
+        return false;
+    }
+    const SkImage* pausedSeekFrame = frameAfterSeek.get();
+    const uint64_t pausedSeekDisplayCount =
+        player->state().displayedVideoFrames;
+    bool pausedSeekChangedAgain = false;
+    const auto pausedSeekStableDeadline =
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(150);
+    while (std::chrono::steady_clock::now() < pausedSeekStableDeadline) {
+        (void)player->tick(0.0);
+        if (player->currentFrame().get() != pausedSeekFrame ||
+            player->state().displayedVideoFrames != pausedSeekDisplayCount) {
+            pausedSeekChangedAgain = true;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    if (!check(!pausedSeekChangedAgain,
+               "paused seek should keep the target frame visible")) {
+        return false;
+    }
+    const std::array<double, 4> pausedSeekTargets{
+        seekTarget * 0.25,
+        seekTarget * 0.75,
+        seekTarget * 0.4,
+        seekTarget * 0.9,
+    };
+    const uint64_t displayedBeforeRapidPausedSeek =
+        player->state().displayedVideoFrames;
+    bool pausedPreviewPublishedWhileSeeking = false;
+    double finalPausedSeekTarget = 0.0;
+    for (size_t index = 0; index < 50; ++index) {
+        finalPausedSeekTarget =
+            pausedSeekTargets[index % pausedSeekTargets.size()];
+        if (!check(player->seek(finalPausedSeekTarget),
+                   "paused rapid seek target should be accepted")) {
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        (void)player->tick(0.0);
+        pausedPreviewPublishedWhileSeeking =
+            pausedPreviewPublishedWhileSeeking ||
+            player->state().displayedVideoFrames >
+                displayedBeforeRapidPausedSeek;
+    }
+    finalPausedSeekTarget = pausedSeekTargets.back();
+    if (!check(player->seek(finalPausedSeekTarget),
+               "final paused rapid seek target should be accepted")) {
+        return false;
+    }
+    bool rapidPausedSeekReady = false;
+    const auto rapidPausedSeekDeadline =
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(1500);
+    while (std::chrono::steady_clock::now() < rapidPausedSeekDeadline) {
+        (void)player->tick(0.0);
+        const skui::MediaPlaybackState state = player->state();
+        if (state.readyState == skui::MediaReadyState::Ready &&
+            state.displayedVideoFrames > displayedBeforeRapidPausedSeek) {
+            rapidPausedSeekReady = true;
+            break;
+        }
+        if (state.readyState == skui::MediaReadyState::Failed) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    const skui::MediaPlaybackState rapidPausedSeekState = player->state();
+    if (!check(pausedPreviewPublishedWhileSeeking,
+               "paused continuous seek should publish preview frames") ||
+        !check(rapidPausedSeekReady,
+               "paused rapid seek should finish without waiting for predecode") ||
+        !check(std::abs(rapidPausedSeekState.currentSeconds -
+                        finalPausedSeekTarget) < 0.01,
+               "paused rapid seek should keep the latest target timeline")) {
         return false;
     }
     if (prepared.hasAudio) {
@@ -561,6 +750,172 @@ bool testPredecodeAndAudioClock(const std::string& mediaPath,
     }
     player->close();
     return true;
+}
+
+bool testPausedSeekKeepsAudioTimeline(const std::string& mediaPath) {
+    const auto audioState = std::make_shared<FakeAudioState>();
+    skui::AudioOutputFactory audioFactory = [audioState] {
+        return std::make_unique<FakeAudioOutput>(audioState);
+    };
+    const skui::MediaPlayerFactory factory =
+        skui::ffmpeg::makeMediaPlayerFactory(std::move(audioFactory));
+    std::unique_ptr<skui::MediaPlayer> player = factory({});
+    if (!check(player->setSource(skui::MediaSourceOptions{
+                   mediaPath,
+                   3,
+                   false,
+                   false,
+                   true,
+               }),
+               "audio timeline source should be accepted") ||
+        !check(player->prepare(), "audio timeline source should prepare") ||
+        !waitUntilBuffered(*player, std::chrono::seconds(10))) {
+        return false;
+    }
+
+    const skui::MediaPlaybackState prepared = player->state();
+    if (!prepared.hasAudio) {
+        player->close();
+        return true;
+    }
+
+    const double seekTarget = std::max(0.1, prepared.durationSeconds * 0.75);
+    const uint64_t displayedBeforeSeek = prepared.displayedVideoFrames;
+    if (!check(player->seek(seekTarget),
+               "audio timeline paused seek should be accepted")) {
+        return false;
+    }
+
+    bool pausedSeekReady = false;
+    const auto pausedSeekDeadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (std::chrono::steady_clock::now() < pausedSeekDeadline) {
+        (void)player->tick(0.0);
+        const skui::MediaPlaybackState state = player->state();
+        if (state.readyState == skui::MediaReadyState::Ready &&
+            state.displayedVideoFrames > displayedBeforeSeek) {
+            pausedSeekReady = true;
+            break;
+        }
+        if (state.readyState == skui::MediaReadyState::Failed) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    if (!check(pausedSeekReady,
+               "paused audio seek should expose a preview before playback")) {
+        player->close();
+        return false;
+    }
+
+    if (!check(player->play(),
+               "paused audio seek should resume playback")) {
+        player->close();
+        return false;
+    }
+    bool playing = false;
+    const auto playbackDeadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (std::chrono::steady_clock::now() < playbackDeadline) {
+        (void)player->tick(0.0);
+        if (player->state().readyState == skui::MediaReadyState::Playing) {
+            playing = true;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    if (!check(playing, "paused audio seek should become Playing") ||
+        !check(std::abs(player->state().currentSeconds - seekTarget) < 0.02,
+               "audio playback should start at the paused seek target")) {
+        player->close();
+        return false;
+    }
+
+    audioState->advance(0.1);
+    (void)player->tick(0.1);
+    const skui::MediaPlaybackState advanced = player->state();
+    player->close();
+    return check(std::abs(advanced.currentSeconds - (seekTarget + 0.1)) < 0.03,
+                 "audio playback clock should advance from the paused seek target");
+}
+
+bool testRapidSeekUsesLatestTarget(const std::string& mediaPath) {
+    const skui::MediaPlayerFactory factory =
+        skui::ffmpeg::makeMediaPlayerFactory();
+    std::unique_ptr<skui::MediaPlayer> player = factory({});
+    if (!check(player->setSource(skui::MediaSourceOptions{
+                   mediaPath,
+                   1,
+                   false,
+                   false,
+                   true,
+               }),
+               "rapid-seek source should be accepted") ||
+        !check(player->prepare(), "rapid-seek source should prepare") ||
+        !waitUntilBuffered(*player, std::chrono::seconds(10))) {
+        return false;
+    }
+
+    const skui::MediaPlaybackState prepared = player->state();
+    const sk_sp<SkImage> frameBeforeSeek = player->currentFrame();
+    if (!check(prepared.durationSeconds > 0.0,
+               "rapid-seek source should expose a duration") ||
+        !check(frameBeforeSeek != nullptr,
+               "rapid-seek source should expose an initial frame")) {
+        return false;
+    }
+    if (!check(player->play(), "rapid-seek source should play while dragging")) {
+        return false;
+    }
+
+    const std::array<double, 5> progressTargets{0.8, 0.15, 0.65, 0.3, 0.72};
+    double finalTarget = 0.0;
+    bool previewPublishedWhileSeeking = false;
+    for (size_t index = 0; index < 50; ++index) {
+        const double progress = progressTargets[index % progressTargets.size()];
+        finalTarget = prepared.durationSeconds * progress;
+        if (!check(player->seek(finalTarget),
+                   "rapid seek target should be accepted")) {
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        (void)player->tick(0.0);
+        previewPublishedWhileSeeking = previewPublishedWhileSeeking ||
+            player->currentFrame().get() != frameBeforeSeek.get();
+    }
+    finalTarget = prepared.durationSeconds * progressTargets.back();
+    if (!check(player->seek(finalTarget),
+               "final rapid seek target should be accepted")) {
+        return false;
+    }
+    player->pause();
+
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    bool finalFrameReady = false;
+    while (std::chrono::steady_clock::now() < deadline) {
+        (void)player->tick(0.0);
+        const skui::MediaPlaybackState state = player->state();
+        if (state.readyState == skui::MediaReadyState::Failed) {
+            std::cerr << "rapid seek failed: " << state.error << '\n';
+            break;
+        }
+        if ((state.readyState == skui::MediaReadyState::Ready ||
+             state.readyState == skui::MediaReadyState::Paused) &&
+            player->currentFrame().get() != frameBeforeSeek.get()) {
+            finalFrameReady = true;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    const skui::MediaPlaybackState finalState = player->state();
+    player->close();
+    return check(previewPublishedWhileSeeking,
+                 "continuous seek should publish preview frames while input continues") &&
+           check(finalFrameReady,
+                 "rapid seek should publish a replacement frame") &&
+           check(std::abs(finalState.currentSeconds - finalTarget) < 0.01,
+                 "rapid seek should keep the latest target timeline");
 }
 
 bool testRuntimeVideoFillsExplicitBox(const std::string& mediaPath) {
@@ -605,11 +960,16 @@ html, body, .video-test {
     const auto deadline =
         std::chrono::steady_clock::now() + std::chrono::seconds(10);
     bool frameReady = false;
+    const size_t initialDisplayedFrames =
+        runtime.videoStateById("clip")
+            .value_or(skui::MediaPlaybackState{})
+            .displayedVideoFrames;
     while (std::chrono::steady_clock::now() < deadline) {
         (void)runtime.tick(0.01f);
         const std::optional<skui::MediaPlaybackState> state =
             runtime.videoStateById("clip");
-        if (state && state->bufferedVideoFrames > 0) {
+        if (state && (state->bufferedVideoFrames > 0 ||
+                      state->displayedVideoFrames > initialDisplayedFrames)) {
             frameReady = true;
             break;
         }
@@ -698,6 +1058,12 @@ int main(int argc, char** argv) {
     if (!testPredecodeAndAudioClock(argv[1], expectVp9Alpha)) {
         return 1;
     }
+    if (!testPausedSeekKeepsAudioTimeline(argv[1])) {
+        return 1;
+    }
+    if (!testRapidSeekUsesLatestTarget(argv[1])) {
+        return 1;
+    }
     if (!testRuntimeVideoFillsExplicitBox(argv[1])) {
         return 1;
     }
@@ -705,6 +1071,9 @@ int main(int argc, char** argv) {
         return 1;
     }
     if (!testGeneratedAudioOnlyWavPlayback()) {
+        return 1;
+    }
+    if (!testSeekDoesNotBlockOnAudioControl()) {
         return 1;
     }
     if (!testResampledAudioDoesNotInsertSilentFrames()) {

@@ -984,10 +984,12 @@ int main() {
 
         int clickCount = 0;
         std::string lastAction;
+        skui::ElementEvent lastClickEvent;
         runtime.setElementEventCallback([&](const skui::ElementEvent& event) {
             if (event.type == skui::ElementEventType::Click) {
                 ++clickCount;
                 lastAction = event.action;
+                lastClickEvent = event;
                 runtime.addClassById(event.id, "selected");
             }
         });
@@ -1012,6 +1014,11 @@ int main() {
         ok = expect(hover != active, "div:active should change rendered output") && ok;
         ok = expect(clickCount == 1, "click should be emitted for data-action div") && ok;
         ok = expect(lastAction == "tile-click", "click action should be routed from data-action") && ok;
+        ok = expect(lastClickEvent.elementX == 10.0f &&
+                        lastClickEvent.elementY == 10.0f &&
+                        lastClickEvent.elementWidth == 80.0f &&
+                        lastClickEvent.elementHeight == 40.0f,
+                    "element events should include the target layout bounds") && ok;
         ok = expect(runtime.hasClassById("tile", "selected"), "click callback should be able to mutate classes") && ok;
         ok = expect(selected != normal, "class mutation after click should repaint") && ok;
         ok = runtime.setTextById("tile", "label") && ok;
@@ -1023,6 +1030,55 @@ int main() {
         });
         sendMouse(runtime, skui::EventType::MouseMove, 20.0f, 20.0f);
         ok = expect(actionMoves == 1, "mouse move should be emitted for data-action elements") && ok;
+    }
+    {
+        constexpr std::string_view pointerCaptureHtml = R"html(
+<!doctype html>
+<html><head><style>
+html, body, .surface {
+  position: relative;
+  width: 140px;
+  height: 90px;
+  margin: 0;
+}
+.track {
+  position: absolute;
+  left: 10px;
+  top: 10px;
+  width: 80px;
+  height: 20px;
+}
+</style></head><body>
+  <div class="surface" data-action="surface">
+    <div class="track" data-action="track"></div>
+  </div>
+</body></html>
+)html";
+
+        skui::Runtime pointerCaptureRuntime(options);
+        pointerCaptureRuntime.resize(kWidth, kHeight, 1.0f);
+        if (!pointerCaptureRuntime.loadDocumentFromString(pointerCaptureHtml, "")) {
+            std::cerr << "pointer capture load failed: "
+                      << pointerCaptureRuntime.lastError() << "\n";
+            return 1;
+        }
+        std::string capturedMoveAction;
+        std::string capturedUpAction;
+        pointerCaptureRuntime.setElementEventCallback(
+            [&](const skui::ElementEvent& event) {
+                if (event.type == skui::ElementEventType::MouseMove) {
+                    capturedMoveAction = event.action;
+                } else if (event.type == skui::ElementEventType::MouseUp) {
+                    capturedUpAction = event.action;
+                }
+            });
+        sendMouse(pointerCaptureRuntime, skui::EventType::MouseDown, 20.0f, 20.0f);
+        sendMouse(pointerCaptureRuntime, skui::EventType::MouseMove, 120.0f, 70.0f);
+        sendMouse(pointerCaptureRuntime, skui::EventType::MouseUp, 120.0f, 70.0f);
+        ok = expect(capturedMoveAction == "track",
+                    "pointer drag should stay captured by the pressed action") && ok;
+        ok = expect(capturedUpAction == "track",
+                    "mouse up should return to the pressed action after leaving it") && ok;
     }
     {
         constexpr std::string_view transformedHitHtml = R"html(
