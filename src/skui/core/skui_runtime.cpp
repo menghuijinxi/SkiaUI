@@ -70,6 +70,13 @@ bool isRenderableNode(const Node& node) {
            node.layout.h > 0.0f;
 }
 
+bool clipsHitTestChildren(const Node& node) {
+    return node.style.overflowX != Overflow::Visible ||
+           node.style.overflowY != Overflow::Visible ||
+           node.scrollX > 0.0f ||
+           node.scrollY > 0.0f;
+}
+
 LayoutTransform multiplyTransform(const LayoutTransform& lhs,
                                   const LayoutTransform& rhs) {
     return {
@@ -350,13 +357,17 @@ Node* hitTest(Node& node, float x, float y) {
             nodeTransform(node), localX, localY, localX, localY)) {
         return nullptr;
     }
-    if (!isRenderableNode(node) || !node.layout.contains(localX, localY)) {
+    if (!isRenderableNode(node)) {
+        return nullptr;
+    }
+    const bool insideLayout = node.layout.contains(localX, localY);
+    if (!insideLayout && clipsHitTestChildren(node)) {
         return nullptr;
     }
     const Rect contentClip = scrollContentClipRect(node);
     if (!contentClip.contains(localX, localY) &&
         (node.style.scrollbarGutterStable || shouldShowScrollbarX(node) || shouldShowScrollbarY(node))) {
-        return node.style.pointerEvents == PointerEvents::None ? nullptr : &node;
+        return insideLayout && node.style.pointerEvents != PointerEvents::None ? &node : nullptr;
     }
     const float childX = localX + node.scrollX;
     const float childY = localY + node.scrollY;
@@ -374,7 +385,7 @@ Node* hitTest(Node& node, float x, float y) {
             }
         }
     }
-    return node.style.pointerEvents == PointerEvents::None ? nullptr : &node;
+    return insideLayout && node.style.pointerEvents != PointerEvents::None ? &node : nullptr;
 }
 
 void collectChain(Node* node, std::vector<Node*>& out) {
@@ -410,6 +421,45 @@ std::string lowerAscii(std::string value) {
         return static_cast<char>(std::tolower(ch));
     });
     return value;
+}
+
+bool isSingleClipboardUrl(std::string_view text) {
+    const std::string value = trim(text);
+    if (value.empty()) {
+        return false;
+    }
+    const std::string lower = lowerAscii(value);
+    if (!lower.starts_with("http://") &&
+        !lower.starts_with("https://")) {
+        return false;
+    }
+    return std::none_of(value.begin(), value.end(), [](unsigned char ch) {
+        return std::isspace(ch) != 0;
+    });
+}
+
+bool clipboardItemsAreTextOnly(const std::vector<ClipboardItem>& items) {
+    return std::all_of(items.begin(), items.end(), [](const ClipboardItem& item) {
+        return item.type == ClipboardItemType::Text;
+    });
+}
+
+std::string clipboardTextFromItems(const std::vector<ClipboardItem>& items) {
+    std::string text;
+    for (const ClipboardItem& item : items) {
+        text += item.text;
+    }
+    return text;
+}
+
+bool shouldPreferPlainClipboardUrl(const ClipboardContent& content) {
+    if (!isSingleClipboardUrl(content.text) ||
+        content.items.empty() ||
+        !clipboardItemsAreTextOnly(content.items)) {
+        return false;
+    }
+
+    return trim(clipboardTextFromItems(content.items)) != trim(content.text);
 }
 
 std::string classAttributeValue(const std::vector<std::string>& classes) {
@@ -4913,7 +4963,8 @@ bool Runtime::handleEvent(const Event& event) {
             stateChanged = true;
             layoutNeeded = true;
             consumed = true;
-        } else if (Node* atomic = contentEditableAtomicTarget(hit)) {
+        } else if (Node* atomic = contentEditableAtomicTarget(hit);
+                   atomic && !actionTarget(hit)) {
             stateChanged = impl_->setFocusedNode(nullptr) || stateChanged;
             layoutNeeded = true;
             if (impl_->selectedText) {
@@ -5206,28 +5257,33 @@ bool Runtime::handleEvent(const Event& event) {
                     ElementEventType::MouseUp, *selectable, event, x, y);
             }
         }
-        if (click) {
+        Node* pressedSelectable = selectableTextTarget(pressed);
+        const bool selectableLinkCandidate =
+            event.button == MouseButton::Left &&
+            pressedSelectable &&
+            pressedSelectable == selectableTextTarget(hit) &&
+            impl_->options.onElementEvent;
+        if (selectableLinkCandidate) {
+            const bool selectedText =
+                pressedSelectable->selectionStart != pressedSelectable->selectionEnd;
+            const size_t index =
+                impl_->selectableIndexAtPoint(*pressedSelectable, x, y);
+            if (!selectedText) {
+                if (const Node::TextLink* link = selectableLinkAtIndex(
+                        *pressedSelectable, index)) {
+                    selectableLinkEvent = makeSelectableLinkEvent(
+                        *pressedSelectable, *link, event, x, y);
+                }
+            }
+        }
+        if (click && !selectableLinkEvent) {
             if (impl_->options.onElementEvent) {
                 clickEvent = makeElementEvent(
                     ElementEventType::Click, *pressedAction, event, x, y);
             }
-        } else if (event.button == MouseButton::Left) {
-            Node* selectable = selectableTextTarget(pressed);
-            if (selectable &&
-                selectable == selectableTextTarget(hit) &&
-                impl_->options.onElementEvent) {
-                const bool selectedText =
-                    selectable->selectionStart != selectable->selectionEnd;
-                const size_t index = impl_->selectableIndexAtPoint(*selectable, x, y);
-                if (!selectedText) {
-                    if (const Node::TextLink* link = selectableLinkAtIndex(*selectable, index)) {
-                        selectableLinkEvent = makeSelectableLinkEvent(
-                            *selectable, *link, event, x, y);
-                    }
-                }
-            } else {
-                consumed = pressedConsumesPointer || hitConsumesPointer;
-            }
+        } else if (event.button == MouseButton::Left &&
+                   !selectableLinkCandidate) {
+            consumed = pressedConsumesPointer || hitConsumesPointer;
         }
         if (mouseUpEvent) {
             impl_->options.onElementEvent(*mouseUpEvent);
@@ -6919,6 +6975,14 @@ ClipboardContent Runtime::readClipboardContent() {
                 content.html, content.items, error)) {
             impl_->lastError = std::move(error);
         }
+    }
+    if (shouldPreferPlainClipboardUrl(content)) {
+        content.items.clear();
+        content.items.push_back({
+            ClipboardItemType::Text,
+            trim(content.text),
+            {},
+        });
     }
     if (content.items.empty() && !content.text.empty()) {
         content.items.push_back(

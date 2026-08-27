@@ -111,6 +111,55 @@ int main() {
     sendKey(runtime, 'C', true);
     ok = expect(clipboard.empty(), "clicking a link should not leave selected text") && ok;
 
+    constexpr std::string_view actionSelectableHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    .root {
+      position: relative;
+      width: 180px;
+      height: 120px;
+      background-color: #000000;
+    }
+    selectable {
+      position: absolute;
+      left: 10px;
+      top: 10px;
+      width: 150px;
+      height: 70px;
+      color: #ffffff;
+      font-size: 16px;
+    }
+  </style>
+</head>
+<body>
+  <div class="root">
+    <selectable data-action="message-context:1">first<br><a href="https://example.com/action-priority">open link</a><br>last</selectable>
+  </div>
+</body>
+</html>
+)html";
+
+    action.clear();
+    skui::Runtime actionSelectableRuntime(options);
+    actionSelectableRuntime.resize(180, 120, 1.0f);
+    if (!actionSelectableRuntime.loadDocumentFromString(actionSelectableHtml, "")) {
+        std::cerr << "action selectable load failed: "
+                  << actionSelectableRuntime.lastError() << "\n";
+        return 1;
+    }
+    sendMouse(actionSelectableRuntime, skui::EventType::MouseDown, 22.0f, 33.0f);
+    sendMouse(actionSelectableRuntime, skui::EventType::MouseUp, 22.0f, 33.0f);
+    ok = expect(action == "open-url:https://example.com/action-priority",
+                "selectable link clicks should beat the selectable host action") && ok;
+
+    action.clear();
+    sendMouse(actionSelectableRuntime, skui::EventType::MouseDown, 22.0f, 20.0f);
+    sendMouse(actionSelectableRuntime, skui::EventType::MouseUp, 22.0f, 20.0f);
+    ok = expect(action == "message-context:1",
+                "non-link selectable clicks should keep the host action") && ok;
+
     constexpr std::string_view mixedLinkHtml = R"html(
 <!doctype html>
 <html>

@@ -421,6 +421,27 @@ bool testRichClipboard(const skui::RuntimeOptions& baseOptions) {
                     "standard HTML should preserve inline whitespace and blocks") &&
              ok;
     }
+
+    readOptions.readClipboardContent = [] {
+        skui::ClipboardContent content;
+        content.text = "https://www.bilibili.com/";
+        content.html = R"html(
+<html><body>
+<!--StartFragment--><a href="https://www.bilibili.com/">哔哩哔哩 - bilibili</a><!--EndFragment-->
+</body></html>
+)html";
+        return content;
+    };
+    skui::Runtime browserLinkRuntime(readOptions);
+    const skui::ClipboardContent browserLinkContent =
+        browserLinkRuntime.readClipboardContent();
+    ok = expect(browserLinkContent.items.size() == 1u &&
+                    browserLinkContent.items[0].type ==
+                        skui::ClipboardItemType::Text &&
+                    browserLinkContent.items[0].text ==
+                        "https://www.bilibili.com/",
+                "browser address bar link paste should prefer plain URL over HTML title") &&
+         ok;
     return ok;
 }
 
@@ -2071,6 +2092,95 @@ html, body, .surface {
                 "runtime-restored pointer events should emit click") && ok;
     ok = expect(passThroughWheelEvents == 2,
                 "runtime-restored pointer events should emit mouse wheel") && ok;
+
+    constexpr std::string_view visibleOverflowActionHtml = R"html(
+<!doctype html>
+<html>
+<head>
+  <style>
+    html, body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      background-color: #000000;
+    }
+    .parent {
+      position: absolute;
+      left: 10px;
+      top: 10px;
+      width: 70px;
+      height: 35px;
+      overflow: visible;
+      background-color: #222222;
+    }
+    .clipped-parent {
+      left: 90px;
+      overflow: hidden;
+    }
+    .action {
+      position: absolute;
+      left: 10px;
+      top: 50px;
+      width: 45px;
+      height: 24px;
+      background-color: #00aa99;
+    }
+  </style>
+</head>
+<body>
+  <div class="parent">
+    <div id="visible-overflow-action" class="action" data-action="visible-overflow"></div>
+  </div>
+  <div class="parent clipped-parent">
+    <div id="hidden-overflow-action" class="action" data-action="hidden-overflow"></div>
+  </div>
+</body>
+</html>
+)html";
+    skui::Runtime visibleOverflowActionRuntime(options);
+    visibleOverflowActionRuntime.resize(kWidth, kHeight, 1.0f);
+    if (!visibleOverflowActionRuntime.loadDocumentFromString(
+            visibleOverflowActionHtml,
+            "")) {
+        std::cerr << "visible overflow action load failed: "
+                  << visibleOverflowActionRuntime.lastError() << "\n";
+        return 1;
+    }
+    int visibleOverflowClicks = 0;
+    int hiddenOverflowClicks = 0;
+    visibleOverflowActionRuntime.setElementEventCallback(
+        [&](const skui::ElementEvent& event) {
+            if (event.type != skui::ElementEventType::Click) {
+                return;
+            }
+            if (event.action == "visible-overflow") {
+                ++visibleOverflowClicks;
+            } else if (event.action == "hidden-overflow") {
+                ++hiddenOverflowClicks;
+            }
+        });
+    sendMouse(visibleOverflowActionRuntime,
+              skui::EventType::MouseDown,
+              35.0f,
+              72.0f);
+    sendMouse(visibleOverflowActionRuntime,
+              skui::EventType::MouseUp,
+              35.0f,
+              72.0f);
+    sendMouse(visibleOverflowActionRuntime,
+              skui::EventType::MouseDown,
+              115.0f,
+              72.0f);
+    sendMouse(visibleOverflowActionRuntime,
+              skui::EventType::MouseUp,
+              115.0f,
+              72.0f);
+    ok = expect(visibleOverflowClicks == 1,
+                "absolutely positioned actions outside visible overflow parents should click") &&
+         ok;
+    ok = expect(hiddenOverflowClicks == 0,
+                "hidden overflow parents should still clip child hit testing") &&
+         ok;
 
     constexpr std::string_view selectorHtml = R"html(
 <!doctype html>
