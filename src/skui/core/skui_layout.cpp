@@ -150,7 +150,16 @@ YGSize measureTextNode(YGNodeConstRef node,
         return {0.0f, 0.0f};
     }
 
-    const std::string_view value = displayTextValue(*uiNode);
+    std::string compositionValue;
+    std::string_view value = displayTextValue(*uiNode);
+    if (!uiNode->compositionText.empty()) {
+        const size_t cursor =
+            std::min(uiNode->cursorIndex, uiNode->value.size());
+        compositionValue = uiNode->value.substr(0, cursor);
+        compositionValue += uiNode->compositionText;
+        compositionValue += uiNode->value.substr(cursor);
+        value = compositionValue;
+    }
     const auto measureText = [&](std::string_view text) {
         return measureUiTextWidth(
             text,

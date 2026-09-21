@@ -4,6 +4,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace {
 
@@ -15,12 +16,25 @@ bool expect(bool condition, std::string_view message)
     return condition;
 }
 
-bool sendEnter(skui::Runtime& runtime, bool shiftKey)
+bool sendEnter(skui::Runtime& runtime,
+               bool shiftKey,
+               bool isComposing = false)
 {
     skui::Event event;
     event.type = skui::EventType::KeyDown;
     event.key = 0x0D;
     event.shiftKey = shiftKey;
+    event.isComposing = isComposing;
+    return runtime.handleEvent(event);
+}
+
+bool sendIme(skui::Runtime& runtime,
+             skui::EventType type,
+             std::string text = {})
+{
+    skui::Event event;
+    event.type = type;
+    event.text = std::move(text);
     return runtime.handleEvent(event);
 }
 
@@ -32,7 +46,7 @@ int main()
 <!doctype html>
 <html>
 <body>
-  <div id="editor" contenteditable="true">
+  <div id="editor" contenteditable="true" contenteditable-flow="inline">
     <p id="paragraph">hello</p>
   </div>
 </body>
@@ -72,6 +86,20 @@ int main()
                     caretAtEnd->height > 0.0f,
                 "focused contenteditable should expose its caret rectangle") &&
          ok;
+    ok = expect(sendIme(runtime,
+                        skui::EventType::ImeComposition,
+                        "composition"),
+                "contenteditable should consume IME composition text") &&
+         ok;
+    const std::optional<skui::LayoutRect> caretDuringComposition =
+        runtime.editingCaretRect();
+    ok = expect(caretDuringComposition.has_value() &&
+                    caretDuringComposition->x > caretAtEnd->x + 20.0f,
+                "IME composition text should participate in inline layout") &&
+         ok;
+    ok = expect(sendIme(runtime, skui::EventType::ImeEnd),
+                "contenteditable should consume IME composition end") &&
+         ok;
     ok = expect(runtime.collapseSelection("paragraph", 0),
                 "contenteditable should move the caret to the start") &&
          ok;
@@ -83,6 +111,15 @@ int main()
          ok;
     ok = expect(runtime.collapseSelection("paragraph", 5),
                 "contenteditable should restore the caret before Enter") &&
+         ok;
+    ok = expect(!sendEnter(runtime, false, true),
+                "IME composing Enter should pass through to the platform") &&
+         ok;
+    ok = expect(callbackCount == 0 &&
+                    runtime.childElementIdsById("editor").size() == 1 &&
+                    runtime.textContentById("paragraph") ==
+                        std::optional<std::string>("hello"),
+                "IME composing Enter should not reach application callbacks") &&
          ok;
     ok = expect(sendEnter(runtime, false),
                 "handled Enter should be consumed") &&

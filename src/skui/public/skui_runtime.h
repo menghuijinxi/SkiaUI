@@ -228,6 +228,7 @@ struct Event {
     unsigned key = 0;
     bool shiftKey = false;
     bool ctrlKey = false;
+    bool isComposing = false;
     std::string text;
 };
 

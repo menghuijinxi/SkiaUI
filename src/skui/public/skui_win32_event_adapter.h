@@ -52,6 +52,7 @@ private:
     bool trackingMouseLeave_ = false;
     bool captureOwned_ = false;
     MouseButton capturedButton_ = MouseButton::None;
+    bool imeComposing_ = false;
     std::bitset<256> consumedKeys_;
     std::wstring suppressedImeChars_;
     HCURSOR currentCursor_ = nullptr;

@@ -1877,6 +1877,31 @@ html, body, .surface {
                                                 WM_LBUTTONUP,
                                                 0,
                                                 MAKELPARAM(10, 10));
+            const std::optional<LRESULT> imeStartResult =
+                keyboardAdapter.handleMessage(window.hwnd(),
+                                              WM_IME_STARTCOMPOSITION,
+                                              0,
+                                              0);
+            ok = expect(!imeStartResult.has_value(),
+                        "win32 adapter should pass through IME start") && ok;
+            const std::optional<LRESULT> composingKeyDownResult =
+                keyboardAdapter.handleMessage(window.hwnd(),
+                                              WM_KEYDOWN,
+                                              VK_LEFT,
+                                              0);
+            ok = expect(!composingKeyDownResult.has_value(),
+                        "win32 adapter should pass composing key down to the IME") && ok;
+            const std::optional<LRESULT> composingKeyUpResult =
+                keyboardAdapter.handleMessage(window.hwnd(),
+                                              WM_KEYUP,
+                                              VK_LEFT,
+                                              0);
+            ok = expect(!composingKeyUpResult.has_value(),
+                        "win32 adapter should pass composing key up to the IME") && ok;
+            (void)keyboardAdapter.handleMessage(window.hwnd(),
+                                                WM_IME_ENDCOMPOSITION,
+                                                0,
+                                                0);
             const std::optional<LRESULT> keyDownResult =
                 keyboardAdapter.handleMessage(window.hwnd(), WM_KEYDOWN, VK_LEFT, 0);
             ok = expect(keyDownResult.has_value() && *keyDownResult == 0,

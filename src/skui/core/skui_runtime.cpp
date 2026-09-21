@@ -5387,6 +5387,9 @@ bool Runtime::handleEvent(const Event& event) {
         break;
     }
     case EventType::KeyDown: {
+        if (event.isComposing) {
+            return false;
+        }
         Node* input = impl_->focusedNode;
         constexpr unsigned kBackspace = 0x08;
         constexpr unsigned kEnter = 0x0D;

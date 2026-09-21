@@ -613,6 +613,8 @@ std::optional<LRESULT> Win32EventAdapter::handleMessage(HWND hwnd,
     case WM_KILLFOCUS:
         consumedKeys_.reset();
         cancelMouseCapture();
+        imeComposing_ = false;
+        (void)sendImeEvent(EventType::ImeEnd);
         break;
     case WM_CHAR:
         if (!suppressedImeChars_.empty() &&
@@ -628,34 +630,44 @@ std::optional<LRESULT> Win32EventAdapter::handleMessage(HWND hwnd,
         }
         break;
     case WM_IME_STARTCOMPOSITION:
+        imeComposing_ = true;
         updateImePosition(hwnd);
         break;
-    case WM_IME_COMPOSITION:
+    case WM_IME_COMPOSITION: {
         updateImePosition(hwnd);
+        bool consumed = false;
         if (lParam & GCS_RESULTSTR) {
-            bool consumed = false;
             const std::wstring result = imeCompositionString(hwnd, GCS_RESULTSTR);
             if (!result.empty()) {
-                consumed = sendTextInputEvent(utf8FromWide(result));
-                if (consumed) {
+                const bool resultConsumed =
+                    sendTextInputEvent(utf8FromWide(result));
+                consumed = resultConsumed || consumed;
+                if (resultConsumed) {
                     suppressedImeChars_ += result;
                 }
             }
-            consumed = sendImeEvent(EventType::ImeEnd) || consumed;
-            updateImePosition(hwnd);
-            if (consumed) {
-                return 0;
-            }
-            break;
         }
         if (lParam & GCS_COMPSTR) {
-            if (sendImeEvent(EventType::ImeComposition,
-                             utf8FromWide(imeCompositionString(hwnd, GCS_COMPSTR)))) {
-                return 0;
-            }
+            std::string composition =
+                utf8FromWide(imeCompositionString(hwnd, GCS_COMPSTR));
+            imeComposing_ = !composition.empty();
+            consumed = sendImeEvent(
+                           imeComposing_ ? EventType::ImeComposition
+                                         : EventType::ImeEnd,
+                           std::move(composition)) ||
+                       consumed;
+        } else if (lParam & GCS_RESULTSTR) {
+            imeComposing_ = false;
+            consumed = sendImeEvent(EventType::ImeEnd) || consumed;
+        }
+        updateImePosition(hwnd);
+        if (consumed) {
+            return 0;
         }
         break;
+    }
     case WM_IME_ENDCOMPOSITION:
+        imeComposing_ = false;
         if (sendImeEvent(EventType::ImeEnd)) {
             return 0;
         }
@@ -737,6 +749,7 @@ bool Win32EventAdapter::sendKeyEvent(EventType type, WPARAM key) {
     event.key = static_cast<unsigned>(key);
     event.shiftKey = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
     event.ctrlKey = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+    event.isComposing = imeComposing_;
     const bool consumed = runtime_.handleEvent(event);
     notifyRuntimeDirty();
     return consumed;
