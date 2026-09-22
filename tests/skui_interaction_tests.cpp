@@ -2279,6 +2279,61 @@ html, body, .surface {
     ok = expect(selectorAttribute == solidColor(0x77, 0x88, 0x99), "attribute selector should apply after setAttributeById") && ok;
     ok = expect(selectorInline == solidColor(0xAB, 0xCD, 0xEF), "setStyleById should update inline style") && ok;
 
+    constexpr std::string_view unchangedMutationHtml = R"html(
+<!doctype html>
+<html>
+<body>
+  <div id="unchanged-style" style="width: 20px; height: 20px;"></div>
+  <div id="unchanged-text">same text</div>
+  <div id="unchanged-attribute" data-state="same"></div>
+  <div id="unchanged-visible" style="display: flex"></div>
+  <div id="unchanged-events" style="pointer-events: auto"></div>
+</body>
+</html>
+)html";
+    skui::Runtime unchangedMutationRuntime(options);
+    unchangedMutationRuntime.resize(kWidth, kHeight, 1.0f);
+    if (!unchangedMutationRuntime.loadDocumentFromString(
+            unchangedMutationHtml, "")) {
+        std::cerr << "unchanged mutation load failed: "
+                  << unchangedMutationRuntime.lastError() << "\n";
+        return 1;
+    }
+
+    unchangedMutationRuntime.clearDirty();
+    ok = expect(unchangedMutationRuntime.setStyleById(
+                    "unchanged-style", "width: 20px; height: 20px;") &&
+                    !unchangedMutationRuntime.dirty(),
+                "setting the same inline style should not dirty layout") && ok;
+    unchangedMutationRuntime.clearDirty();
+    ok = expect(unchangedMutationRuntime.setTextById(
+                    "unchanged-text", "same text") &&
+                    !unchangedMutationRuntime.dirty(),
+                "setting the same text should not dirty layout") && ok;
+    unchangedMutationRuntime.clearDirty();
+    ok = expect(unchangedMutationRuntime.setAttributeById(
+                    "unchanged-attribute", "data-state", "same") &&
+                    !unchangedMutationRuntime.dirty(),
+                "setting the same attribute should not dirty layout") && ok;
+    unchangedMutationRuntime.clearDirty();
+    ok = expect(unchangedMutationRuntime.setVisibleById(
+                    "unchanged-visible", true) &&
+                    !unchangedMutationRuntime.dirty(),
+                "setting the same visibility should not dirty layout") && ok;
+    unchangedMutationRuntime.clearDirty();
+    ok = expect(unchangedMutationRuntime.setConsumesEventsById(
+                    "unchanged-events", true) &&
+                    !unchangedMutationRuntime.dirty(),
+                "setting the same pointer event behavior should not dirty layout") && ok;
+    unchangedMutationRuntime.clearDirty();
+    ok = expect(unchangedMutationRuntime.applyUpdates(
+                    {{{"unchanged-style",
+                       "width: 20px; height: 20px;"}},
+                     {{"unchanged-text", "same text"}},
+                     {{"unchanged-attribute", "data-state", "same"}}}) &&
+                    !unchangedMutationRuntime.dirty(),
+                "a batch containing only unchanged values should not dirty layout") && ok;
+
     constexpr std::string_view importantHtml = R"html(
 <!doctype html>
 <html>

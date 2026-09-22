@@ -6242,6 +6242,11 @@ bool Runtime::setStyleById(std::string_view id, std::string_view declarations) {
     if (!node) {
         return false;
     }
+    const auto currentStyle = node->attributes.find("style");
+    if (currentStyle != node->attributes.end() &&
+        currentStyle->second == declarations) {
+        return true;
+    }
     node->inlineStyle = {};
     node->inlineImportantStyle = {};
     parseInlineStyle(declarations, node->inlineStyle, node->inlineImportantStyle,
@@ -6264,10 +6269,16 @@ bool Runtime::setTextById(std::string_view id, std::string_view text) {
         return false;
     }
     if (isContentEditableTextNode(*node)) {
+        if (node->value == text && node->text.empty()) {
+            return true;
+        }
         node->value = std::string(text);
         node->text.clear();
         clampInputCursor(*node);
     } else {
+        if (node->text == text) {
+            return true;
+        }
         node->text = std::string(text);
     }
     markTextChanged(*node);
@@ -6289,8 +6300,9 @@ bool Runtime::setValueById(std::string_view id, std::string_view value) {
     }
 
     if (isSelectNode(*node)) {
-        setSelectValue(*node, value);
-        impl_->requestLayout();
+        if (setSelectValue(*node, value)) {
+            impl_->requestLayout();
+        }
         return true;
     }
 
@@ -6347,6 +6359,11 @@ bool Runtime::setAttributeById(std::string_view id, std::string_view name, std::
     if (normalizedName.empty()) {
         return false;
     }
+    const auto currentValue = node->attributes.find(normalizedName);
+    if (currentValue != node->attributes.end() &&
+        currentValue->second == value) {
+        return true;
+    }
     node->attributes[normalizedName] = std::string(value);
     syncNodeAttribute(*node, normalizedName, impl_->document.cssEnvironment);
     synchronizeOwningSelectForAttribute(*node, normalizedName);
@@ -6377,6 +6394,7 @@ bool Runtime::applyUpdates(const RuntimeUpdates& updates) {
         (updates.styles.empty() && updates.texts.empty() && updates.attributes.empty())) {
         return false;
     }
+    bool accepted = false;
     bool changed = false;
 
     for (const StyleUpdate& update : updates.styles) {
@@ -6385,6 +6403,12 @@ bool Runtime::applyUpdates(const RuntimeUpdates& updates) {
         }
         Node* node = findById(*impl_->document.root, update.id);
         if (!node) {
+            continue;
+        }
+        accepted = true;
+        const auto currentStyle = node->attributes.find("style");
+        if (currentStyle != node->attributes.end() &&
+            currentStyle->second == update.declarations) {
             continue;
         }
         node->inlineStyle = {};
@@ -6403,11 +6427,18 @@ bool Runtime::applyUpdates(const RuntimeUpdates& updates) {
         if (!node) {
             continue;
         }
+        accepted = true;
         if (isContentEditableTextNode(*node)) {
+            if (node->value == update.text && node->text.empty()) {
+                continue;
+            }
             node->value = update.text;
             node->text.clear();
             clampInputCursor(*node);
         } else {
+            if (node->text == update.text) {
+                continue;
+            }
             node->text = update.text;
         }
         markTextChanged(*node);
@@ -6427,6 +6458,12 @@ bool Runtime::applyUpdates(const RuntimeUpdates& updates) {
         }
         const std::string normalizedName = lowerAscii(trim(update.name));
         if (normalizedName.empty()) {
+            continue;
+        }
+        accepted = true;
+        const auto currentValue = node->attributes.find(normalizedName);
+        if (currentValue != node->attributes.end() &&
+            currentValue->second == update.value) {
             continue;
         }
         node->attributes[normalizedName] = update.value;
@@ -6449,7 +6486,7 @@ bool Runtime::applyUpdates(const RuntimeUpdates& updates) {
         changed = true;
     }
     if (!changed) {
-        return false;
+        return accepted;
     }
     impl_->requestLayout();
     return true;
@@ -6759,7 +6796,16 @@ bool Runtime::setVisibleById(std::string_view id, bool visible) {
     if (!node) {
         return false;
     }
-    const std::string nextStyle = styleWithDisplay(node->attributes["style"], visible);
+    const auto currentStyle = node->attributes.find("style");
+    const std::string_view declarations =
+        currentStyle == node->attributes.end()
+            ? std::string_view{}
+            : std::string_view(currentStyle->second);
+    const std::string nextStyle = styleWithDisplay(declarations, visible);
+    if (currentStyle != node->attributes.end() &&
+        currentStyle->second == nextStyle) {
+        return true;
+    }
     node->attributes["style"] = nextStyle;
     syncNodeAttribute(*node, "style", impl_->document.cssEnvironment);
     impl_->lastError.clear();
@@ -6775,7 +6821,17 @@ bool Runtime::setConsumesEventsById(std::string_view id, bool consumesEvents) {
     if (!node) {
         return false;
     }
-    const std::string nextStyle = styleWithPointerEvents(node->attributes["style"], consumesEvents);
+    const auto currentStyle = node->attributes.find("style");
+    const std::string_view declarations =
+        currentStyle == node->attributes.end()
+            ? std::string_view{}
+            : std::string_view(currentStyle->second);
+    const std::string nextStyle =
+        styleWithPointerEvents(declarations, consumesEvents);
+    if (currentStyle != node->attributes.end() &&
+        currentStyle->second == nextStyle) {
+        return true;
+    }
     node->attributes["style"] = nextStyle;
     syncNodeAttribute(*node, "style", impl_->document.cssEnvironment);
     impl_->lastError.clear();
