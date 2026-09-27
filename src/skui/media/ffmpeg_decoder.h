@@ -57,7 +57,9 @@ public:
     bool open(const std::string& source, bool decodeVideo, std::string& error);
     bool configureAudio(const AudioOutputFormat& format, std::string& error);
     bool seek(double seconds, std::string& error);
-    DecodeStatus decodeNext(DecodeBatch& batch, std::string& error);
+    DecodeStatus decodeNext(DecodeBatch& batch,
+                            double discardVideoBeforeSeconds,
+                            std::string& error);
 
     [[nodiscard]] const StreamMetadata& metadata() const;
 

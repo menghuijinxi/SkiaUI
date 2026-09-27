@@ -284,7 +284,9 @@ public:
         return true;
     }
 
-    DecodeStatus decodeNext(DecodeBatch& batch, std::string& error) {
+    DecodeStatus decodeNext(DecodeBatch& batch,
+                            double discardVideoBeforeSeconds,
+                            std::string& error) {
         batch = {};
         if (cancelRequested_.load(std::memory_order_relaxed)) {
             return DecodeStatus::Interrupted;
@@ -293,7 +295,8 @@ public:
         if (!demuxEnded_) {
             const int readResult = av_read_frame(format_.get(), packet_.get());
             if (readResult >= 0) {
-                const DecodeStatus status = decodePacket(batch, error);
+                const DecodeStatus status =
+                    decodePacket(batch, discardVideoBeforeSeconds, error);
                 av_packet_unref(packet_.get());
                 return status;
             }
@@ -308,7 +311,8 @@ public:
             demuxEnded_ = true;
         }
 
-        const DecodeStatus flushStatus = flushDecoders(batch, error);
+        const DecodeStatus flushStatus =
+            flushDecoders(batch, discardVideoBeforeSeconds, error);
         if (flushStatus == DecodeStatus::Produced ||
             flushStatus == DecodeStatus::Failed) {
             return flushStatus;
@@ -417,7 +421,9 @@ private:
         return true;
     }
 
-    DecodeStatus decodePacket(DecodeBatch& batch, std::string& error) {
+    DecodeStatus decodePacket(DecodeBatch& batch,
+                              double discardVideoBeforeSeconds,
+                              std::string& error) {
         if (packet_->stream_index == videoStreamIndex_) {
             const int sendResult = avcodec_send_packet(videoCodec_.get(), packet_.get());
             if (sendResult < 0) {
@@ -425,7 +431,7 @@ private:
                         ffmpegError(sendResult);
                 return DecodeStatus::Failed;
             }
-            return drainVideo(batch, error);
+            return drainVideo(batch, discardVideoBeforeSeconds, error);
         }
         if (audioCodec_ && packet_->stream_index == audioStreamIndex_) {
             const int sendResult = avcodec_send_packet(audioCodec_.get(), packet_.get());
@@ -439,7 +445,9 @@ private:
         return DecodeStatus::Produced;
     }
 
-    DecodeStatus drainVideo(DecodeBatch& batch, std::string& error) {
+    DecodeStatus drainVideo(DecodeBatch& batch,
+                            double discardBeforeSeconds,
+                            std::string& error) {
         while (true) {
             const int receiveResult =
                 avcodec_receive_frame(videoCodec_.get(), decodeFrame_.get());
@@ -452,8 +460,15 @@ private:
                 return DecodeStatus::Failed;
             }
 
+            const VideoFrameTiming timing = readVideoFrameTiming();
+            if (timing.presentationSeconds + timing.durationSeconds + 0.0005 <
+                discardBeforeSeconds) {
+                av_frame_unref(decodeFrame_.get());
+                continue;
+            }
+
             DecodedVideoFrame frame;
-            if (!convertVideoFrame(frame, error)) {
+            if (!convertVideoFrame(frame, timing, error)) {
                 av_frame_unref(decodeFrame_.get());
                 return DecodeStatus::Failed;
             }
@@ -489,7 +504,9 @@ private:
         }
     }
 
-    DecodeStatus flushDecoders(DecodeBatch& batch, std::string& error) {
+    DecodeStatus flushDecoders(DecodeBatch& batch,
+                               double discardVideoBeforeSeconds,
+                               std::string& error) {
         if (videoCodec_ && !videoFlushSent_) {
             const int sendResult = avcodec_send_packet(videoCodec_.get(), nullptr);
             if (sendResult < 0 && sendResult != AVERROR_EOF) {
@@ -499,7 +516,8 @@ private:
             videoFlushSent_ = true;
         }
         if (videoCodec_) {
-            const DecodeStatus videoStatus = drainVideo(batch, error);
+            const DecodeStatus videoStatus =
+                drainVideo(batch, discardVideoBeforeSeconds, error);
             if (videoStatus == DecodeStatus::Failed) {
                 return videoStatus;
             }
@@ -527,7 +545,33 @@ private:
                    : DecodeStatus::Produced;
     }
 
-    bool convertVideoFrame(DecodedVideoFrame& output, std::string& error) {
+    struct VideoFrameTiming {
+        double presentationSeconds = 0.0;
+        double durationSeconds = 0.0;
+    };
+
+    VideoFrameTiming readVideoFrameTiming() {
+        const AVStream* stream = format_->streams[videoStreamIndex_];
+        double presentationSeconds = rationalSeconds(
+            decodeFrame_->best_effort_timestamp, stream->time_base);
+        if (std::isfinite(presentationSeconds)) {
+            presentationSeconds =
+                std::max(0.0, presentationSeconds - timelineOriginSeconds_);
+        } else {
+            presentationSeconds = nextVideoSeconds_;
+        }
+        double durationSeconds =
+            rationalSeconds(decodeFrame_->duration, stream->time_base);
+        if (!std::isfinite(durationSeconds) || durationSeconds <= 0.0) {
+            durationSeconds = metadata_.frameDurationSeconds;
+        }
+        nextVideoSeconds_ = presentationSeconds + durationSeconds;
+        return {presentationSeconds, durationSeconds};
+    }
+
+    bool convertVideoFrame(DecodedVideoFrame& output,
+                           const VideoFrameTiming& timing,
+                           std::string& error) {
         const AVPixelFormat pixelFormat =
             static_cast<AVPixelFormat>(decodeFrame_->format);
         const AVPixFmtDescriptor* descriptor = av_pix_fmt_desc_get(pixelFormat);
@@ -576,7 +620,9 @@ private:
             error = "sws_scale did not produce a complete video frame";
             return false;
         }
-        premultiplyBgra(pixels);
+        if (decodedAlpha) {
+            premultiplyBgra(pixels);
+        }
 
         const SkImageInfo imageInfo = SkImageInfo::Make(
             decodeFrame_->width,
@@ -590,21 +636,8 @@ private:
             return false;
         }
 
-        const AVStream* stream = format_->streams[videoStreamIndex_];
-        double presentationSeconds = rationalSeconds(
-            decodeFrame_->best_effort_timestamp, stream->time_base);
-        if (std::isfinite(presentationSeconds)) {
-            presentationSeconds = std::max(0.0, presentationSeconds - timelineOriginSeconds_);
-        } else {
-            presentationSeconds = nextVideoSeconds_;
-        }
-        double durationSeconds = rationalSeconds(decodeFrame_->duration, stream->time_base);
-        if (!std::isfinite(durationSeconds) || durationSeconds <= 0.0) {
-            durationSeconds = metadata_.frameDurationSeconds;
-        }
-        output.presentationSeconds = presentationSeconds;
-        output.durationSeconds = durationSeconds;
-        nextVideoSeconds_ = presentationSeconds + durationSeconds;
+        output.presentationSeconds = timing.presentationSeconds;
+        output.durationSeconds = timing.durationSeconds;
         return true;
     }
 
@@ -730,8 +763,10 @@ bool DecoderSession::seek(double seconds, std::string& error) {
     return impl_->seek(seconds, error);
 }
 
-DecodeStatus DecoderSession::decodeNext(DecodeBatch& batch, std::string& error) {
-    return impl_->decodeNext(batch, error);
+DecodeStatus DecoderSession::decodeNext(DecodeBatch& batch,
+                                        double discardVideoBeforeSeconds,
+                                        std::string& error) {
+    return impl_->decodeNext(batch, discardVideoBeforeSeconds, error);
 }
 
 const StreamMetadata& DecoderSession::metadata() const {

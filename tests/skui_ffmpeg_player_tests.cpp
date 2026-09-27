@@ -918,6 +918,69 @@ bool testRapidSeekUsesLatestTarget(const std::string& mediaPath) {
                  "rapid seek should keep the latest target timeline");
 }
 
+bool testRapidSeekResumesPlayback(const std::string& mediaPath) {
+    const skui::MediaPlayerFactory factory =
+        skui::ffmpeg::makeMediaPlayerFactory();
+    std::unique_ptr<skui::MediaPlayer> player = factory({});
+    if (!check(player->setSource(skui::MediaSourceOptions{
+                   mediaPath,
+                   1,
+                   true,
+                   false,
+                   true,
+               }),
+               "playing rapid-seek source should be accepted") ||
+        !check(player->prepare(), "playing rapid-seek source should prepare") ||
+        !waitUntilBuffered(*player, std::chrono::seconds(10)) ||
+        !check(player->play(), "playing rapid-seek source should play")) {
+        return false;
+    }
+
+    const skui::MediaPlaybackState prepared = player->state();
+    const std::array<double, 5> progressTargets{0.8, 0.15, 0.65, 0.3, 0.72};
+    for (size_t index = 0; index < 50; ++index) {
+        const double target =
+            prepared.durationSeconds *
+            progressTargets[index % progressTargets.size()];
+        if (!check(player->seek(target),
+                   "playing rapid seek target should be accepted")) {
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        (void)player->tick(0.0);
+    }
+
+    const double finalTarget = prepared.durationSeconds * 0.57;
+    const uint64_t displayedBeforeFinalSeek =
+        player->state().displayedVideoFrames;
+    if (!check(player->seek(finalTarget),
+               "final playing rapid seek target should be accepted")) {
+        return false;
+    }
+
+    bool resumed = false;
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (std::chrono::steady_clock::now() < deadline) {
+        (void)player->tick(0.0);
+        const skui::MediaPlaybackState state = player->state();
+        if (state.readyState == skui::MediaReadyState::Failed) {
+            std::cerr << "playing rapid seek failed: " << state.error << '\n';
+            break;
+        }
+        if (state.readyState == skui::MediaReadyState::Playing &&
+            state.displayedVideoFrames > displayedBeforeFinalSeek &&
+            state.currentSeconds >= finalTarget) {
+            resumed = true;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    player->close();
+    return check(resumed,
+                 "rapid seek should resume playback from the latest target");
+}
+
 bool testRuntimeVideoFillsExplicitBox(const std::string& mediaPath) {
     skui::RuntimeOptions options;
     options.clearColor = SK_ColorGREEN;
@@ -1062,6 +1125,9 @@ int main(int argc, char** argv) {
         return 1;
     }
     if (!testRapidSeekUsesLatestTarget(argv[1])) {
+        return 1;
+    }
+    if (!testRapidSeekResumesPlayback(argv[1])) {
         return 1;
     }
     if (!testRuntimeVideoFillsExplicitBox(argv[1])) {

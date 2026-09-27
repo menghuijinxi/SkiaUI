@@ -535,7 +535,8 @@ private:
             }
 
             detail::DecodeBatch batch;
-            const detail::DecodeStatus status = decoder.decodeNext(batch, error);
+            const detail::DecodeStatus status =
+                decoder.decodeNext(batch, decodeSegmentStartSeconds, error);
             if (status == detail::DecodeStatus::Interrupted) {
                 releaseRetiredVideoImages();
                 if (cancelRequested_.load(std::memory_order_relaxed)) {
