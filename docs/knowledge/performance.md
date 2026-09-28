@@ -9,6 +9,49 @@ WASAPI 回调使用固定内存的单生产者/单消费者环形缓冲，不调
 获取业务互斥锁。硬件解码尚未接入，当前 CPU 解码和 BGRA 上传数据应作为后续 GPU 直达
 原型的性能基线。
 
+### UE 视频纹理避免重复整帧复制
+
+现象：`SkiaUiVideoComponent` 播放视频时，游戏线程和 1% low 帧率明显下降；同一项目中的
+UE Widget Texture 模式没有同等幅度的性能问题。
+
+影响范围：FFmpeg 软件解码后，把当前帧提交给 UE 材质纹理的路径。Widget Texture 是 Skia
+直接绘制到包装后的 UE GPU 纹理，不经过这条 CPU 视频上传路径，因此不能把两者视为相同实现。
+
+根因：
+
+- `sws_scale` 先写入 `std::vector`，再由 `RasterFromPixmapCopy` 复制到 `SkImage`。
+- 不透明视频也逐像素执行 BGRA 预乘，做了无效的全帧计算。
+- UE 游戏线程通过 `SkImage::readPixels` 再复制到 `TArray`，之后渲染线程才上传到 GPU。
+- 组件一次 Tick 内重复获取完整播放状态。
+
+解码层解决方案：
+
+- 用 `SkData::MakeUninitialized` 分配最终 raster image 存储，让 `sws_scale` 直接写入，
+  再通过 `SkImages::RasterFromData` 转移所有权，删除中间位图复制。
+- 只有解码结果确实含 Alpha 时才执行预乘。
+
+UE 集成最终没有保留专用视频纹理上传器。`USkiaUiVideoComponent` 改为承载完整 HTML 页面的
+离屏 `UWidgetComponent`：内部 `USkiaUiWidget` 使用 Slate Direct Screen 直接写入最终供 3D 材质
+采样的 RenderTarget，组件自身不提交场景面片。这样视频、CSS 和其他 HTML 内容共用现有 SkiaUI
+渲染路径，也不再维护 `SkImage -> UpdateTexture2D` 的第二套呈现实现。共享 Actor 只引用源组件的
+同一个 RenderTarget，不创建自己的 Runtime 或解码器。
+
+验证方式：
+
+```powershell
+& 'C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe' --build --preset ue55-v143-libpng15-release --parallel --target SkuiFfmpeg SkuiFfmpegPlayerTests
+& 'C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\ctest.exe' --test-dir build\ue55-v143-libpng15 -C Release -R SkuiFfmpegPlayerTests --output-on-failure
+```
+
+快速检查清单：
+
+- 普通不透明视频不应进入 Alpha 预乘循环。
+- UE 集成不应再出现专用视频纹理的逐帧 `readPixels`、`TArray` 或 `UpdateTexture2D`。
+- 3D HTML 组件只应持有一个最终 RenderTarget，并且不提交自己的 WidgetComponent SceneProxy。
+- 共享 Actor 不应创建第二个 HTML Runtime、视频解码器或 RenderTarget。
+- 目前仍有一次必要的 raster 视频帧到 Skia GPU 资源上传；若它成为新瓶颈，应单独验证硬件解码
+  和 YUV GPU 转换，不要重新引入游戏线程读回。
+
 ## 图片解码缓存需要预算和淘汰
 
 现象：包含大量或可切换图片的页面会把已解码位图长期留在内存里。滚动、切换 `img`

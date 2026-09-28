@@ -21,9 +21,9 @@ extern "C" {
 #include <libswscale/swscale.h>
 }
 
+#include "include/core/SkData.h"
 #include "include/core/SkImage.h"
 #include "include/core/SkImageInfo.h"
-#include "include/core/SkPixmap.h"
 
 namespace skui::ffmpeg::detail {
 namespace {
@@ -118,8 +118,8 @@ double rationalSeconds(int64_t value, AVRational timeBase) {
     return static_cast<double>(value) * av_q2d(timeBase);
 }
 
-void premultiplyBgra(std::vector<uint8_t>& pixels) {
-    for (size_t index = 0; index + 3 < pixels.size(); index += 4) {
+void premultiplyBgra(uint8_t* pixels, size_t pixelByteCount) {
+    for (size_t index = 0; index + 3 < pixelByteCount; index += 4) {
         const uint32_t alpha = pixels[index + 3];
         pixels[index] = static_cast<uint8_t>((pixels[index] * alpha + 127) / 255);
         pixels[index + 1] =
@@ -603,10 +603,26 @@ private:
             return false;
         }
 
+        if (decodeFrame_->width <= 0 || decodeFrame_->height <= 0) {
+            error = "decoder returned invalid video frame dimensions";
+            return false;
+        }
         const size_t rowBytes = static_cast<size_t>(decodeFrame_->width) * 4;
-        std::vector<uint8_t> pixels(
-            rowBytes * static_cast<size_t>(decodeFrame_->height));
-        uint8_t* destination[] = {pixels.data()};
+        const size_t height = static_cast<size_t>(decodeFrame_->height);
+        if (rowBytes > static_cast<size_t>(std::numeric_limits<int>::max()) ||
+            height > std::numeric_limits<size_t>::max() / rowBytes) {
+            error = "decoded video frame dimensions are too large";
+            return false;
+        }
+
+        const size_t pixelByteCount = rowBytes * height;
+        sk_sp<SkData> pixels = SkData::MakeUninitialized(pixelByteCount);
+        if (!pixels) {
+            error = "unable to allocate decoded video frame pixels";
+            return false;
+        }
+        auto* pixelBytes = static_cast<uint8_t*>(pixels->writable_data());
+        uint8_t* destination[] = {pixelBytes};
         const int destinationLines[] = {static_cast<int>(rowBytes)};
         const int scaledHeight = sws_scale(
             videoScaler_.get(),
@@ -621,7 +637,7 @@ private:
             return false;
         }
         if (decodedAlpha) {
-            premultiplyBgra(pixels);
+            premultiplyBgra(pixelBytes, pixelByteCount);
         }
 
         const SkImageInfo imageInfo = SkImageInfo::Make(
@@ -629,8 +645,8 @@ private:
             decodeFrame_->height,
             kBGRA_8888_SkColorType,
             kPremul_SkAlphaType);
-        const SkPixmap pixmap(imageInfo, pixels.data(), rowBytes);
-        output.image = SkImages::RasterFromPixmapCopy(pixmap);
+        output.image =
+            SkImages::RasterFromData(imageInfo, std::move(pixels), rowBytes);
         if (!output.image) {
             error = "Skia could not create a raster image for a decoded frame";
             return false;
