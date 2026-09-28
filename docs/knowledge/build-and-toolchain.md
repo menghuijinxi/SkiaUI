@@ -9,10 +9,8 @@ UE's 1.5 library makes valid PNG files fail to decode.
 Use the dedicated preset when producing libraries for the UE 5.5 plugin:
 
 ```powershell
-$ProjectFfmpegRoot = 'E:/Project/Init_Ue_Project_UE5_5/Plugins/FFmpeg_UE/Source/ThirdParty/x64-windows'
-cmake --preset ue55-v143-libpng15 -DSKIAUI_FFMPEG_ROOT=$ProjectFfmpegRoot
+cmake --preset ue55-v143-libpng15 "-DSKIAUI_FFMPEG_ROOT:PATH="
 cmake --build --preset ue55-v143-libpng15-release --parallel
-$env:Path = "$ProjectFfmpegRoot/bin;$env:Path"
 ctest --test-dir build/ue55-v143-libpng15 -C Release --output-on-failure
 cmake --install build/ue55-v143-libpng15 --config Release
 ```
@@ -34,8 +32,19 @@ PNG/zlib implementation in the process. Verify the final Unreal link response
 file contains UE's `libpng15_static.lib` and `zlibstatic.lib`, and does not
 contain `libpng16.lib` or `zs.lib`.
 
-For the FFmpeg-enabled UE build, configure `SKIAUI_FFMPEG_ROOT` with the
-project's `Plugins/FFmpeg_UE/Source/ThirdParty/x64-windows` directory. This
-builds `SkuiFfmpeg.lib` against the same FFmpeg headers and import libraries
-that Unreal loads at runtime. Do not let this preset resolve its default vcpkg
-FFmpeg package, because a different FFmpeg major version is not ABI-compatible.
+For the FFmpeg-enabled UE build, keep `SKIAUI_FFMPEG_ROOT` empty. The preset's
+`ffmpeg-video` feature builds and statically links its own FFmpeg and libvpx
+packages. Export those archives and headers together with `SkuiFfmpeg.lib`;
+do not point the build back at an existing plugin copy.
+
+The UE 5.5 release packages use the local `ffmpeg` and `libvpx` overlay ports.
+The FFmpeg overlay removes vcpkg's `/Z7` flag and configures
+`--disable-debug`. The libvpx overlay emits
+`DebugInformationFormat=None` for Release and passes
+`VCPKG_PLATFORM_TOOLSET_VERSION` to MSBuild, so it neither embeds `/Zi`
+records nor falls back to the newest installed v143 compiler. Verify the build
+log uses MSVC `14.38.33130` and contains no `/Zi` or `/Z7`.
+
+`dumpbin /headers` can still show a small `.debug$S` section in each archive
+member. Without `/Zi` or `/Z7`, these are minimal removable COFF compiler
+records rather than full line and type debug information.

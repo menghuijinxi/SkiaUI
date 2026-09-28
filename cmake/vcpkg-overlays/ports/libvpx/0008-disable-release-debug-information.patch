@@ -1,0 +1,10 @@
+--- a/build/make/gen_msvs_vcxproj.sh
++++ b/build/make/gen_msvs_vcxproj.sh
+@@ -445,6 +445,7 @@
+                 debug=NDEBUG
+             fi
+             extradefines=";$defines"
++            [ "$config" = "Release" ] && tag_content DebugInformationFormat None
+             tag_content Optimization $opt
+             tag_content AdditionalIncludeDirectories "$incs;%(AdditionalIncludeDirectories)"
+             tag_content PreprocessorDefinitions "WIN32;$debug;_CRT_SECURE_NO_WARNINGS;_CRT_SECURE_NO_DEPRECATE$extradefines;%(PreprocessorDefinitions)"
